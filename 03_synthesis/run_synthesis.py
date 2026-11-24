@@ -5,9 +5,25 @@ import subprocess
 import time
 import traceback
 import requests
-from dotenv import load_dotenv
 
-load_dotenv()
+
+def load_pipeline_env():
+    for cfg_path in [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "job_config.json"),
+        "/kaggle/src/job_config.json",
+        "/kaggle/working/job_config.json",
+        "job_config.json",
+    ]:
+        if os.path.isfile(cfg_path):
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            for k, v in cfg.items():
+                if v is not None and str(v) != "" and k not in os.environ:
+                    os.environ[k] = str(v)
+            break
+
+
+load_pipeline_env()
 
 
 class GitHubSync:
