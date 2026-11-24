@@ -85,18 +85,19 @@ class GitHubSync:
         cr.raise_for_status()
         return cr.json()
 
-    def upload_asset(self, tag: str, file_path: str):
+    def download_asset(self, tag: str, filename: str, dest_path: str):
         release = self.ensure_release(tag)
-        upload_url = release["upload_url"].split("{")[0]
-        filename = os.path.basename(file_path)
         for asset in release.get("assets", []):
             if asset["name"] == filename:
-                requests.delete(f"{self.api_base}/releases/assets/{asset['id']}", headers=self.headers, timeout=30)
-        up_headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/octet-stream"}
-        with open(file_path, "rb") as f:
-            r = requests.post(f"{upload_url}?name={filename}", headers=up_headers, data=f.read(), timeout=300)
-        r.raise_for_status()
-        return r.json().get("browser_download_url")
+                dl_headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/octet-stream"}
+                with requests.get(asset["url"], headers=dl_headers, stream=True, timeout=300) as r:
+                    r.raise_for_status()
+                    with open(dest_path, "wb") as out:
+                        for chunk in r.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                out.write(chunk)
+                return dest_path
+        raise FileNotFoundError(f"Không tìm thấy asset {filename} trong release {tag}")
 
     def trigger_dispatch(self, event_type: str, client_payload: dict):
         r = requests.post(
