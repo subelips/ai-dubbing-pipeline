@@ -173,6 +173,32 @@ def free_gpu():
         pass
 
 
+def clean_bgm_residual_vocals(bgm_in: str, work_dir: str) -> str:
+    """Giảm vocal dư còn sót trong no_vocals.wav bằng lọc dải + giảm nhẹ mid-channel."""
+    if os.environ.get("BGM_VOCAL_BLEED_REDUCE", "1").strip() == "0":
+        return bgm_in
+
+    cleaned_bgm = os.path.join(work_dir, "no_vocals_cleaned.wav")
+    # Giảm nhẹ kênh giữa (nơi vocal thường tập trung) và lọc tần số cực thấp/cực cao dư thừa
+    af_chain = "highpass=f=80,lowpass=f=14000,stereotools=mlev=0.45:slev=1.05"
+    res = subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", bgm_in,
+            "-af", af_chain,
+            "-ac", "2",
+            "-ar", "44100",
+            cleaned_bgm,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode == 0 and os.path.exists(cleaned_bgm) and os.path.getsize(cleaned_bgm) > 512:
+        print("[INFO] Đã áp dụng bộ lọc giảm vocal dư cho nhạc nền.")
+        return cleaned_bgm
+    return bgm_in
+
+
 def init_vieneu_engine():
     from vieneu import Vieneu  # type: ignore
 
@@ -271,7 +297,6 @@ def synth_single_line(
         probe_data = probe_data.mean(axis=-1)
     actual_dur = max(0.1, len(probe_data) / float(src_sr or 48000))
 
-    # Biên độ tempo êm ái hơn (0.90x - 1.20x) để giữ tự nhiên
     tempo = 1.0
     if actual_dur > slot_dur * 1.08:
         tempo = min(1.20, actual_dur / slot_dur)
@@ -293,7 +318,8 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
     import numpy as np
     import soundfile as sf
 
-    bgm_data, sr = sf.read(bgm_in)
+    effective_bgm = clean_bgm_residual_vocals(bgm_in, work_dir)
+    bgm_data, sr = sf.read(effective_bgm)
     if bgm_data.ndim == 1:
         bgm_data = np.stack([bgm_data, bgm_data], axis=-1)
     total_samples = len(bgm_data)
@@ -356,10 +382,9 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
         if copy_len > 0:
             voice_track[start_sample:end_sample] += seg_f32[:copy_len]
 
-    # Làm mượt ducking nhạc nền ~180ms để không bị giật bật/tắt
     raw_voice_active = (np.abs(voice_track).max(axis=-1) > 1e-3).astype(np.float32)
     smooth_active = _smooth_envelope(raw_voice_active, max(1, int(sr * 0.18)))
-    duck_factor = 1.0 - (0.65 * smooth_active)  # hạ xuống ~0.35 khi có thoại, chuyển tiếp mượt
+    duck_factor = 1.0 - (0.65 * smooth_active)
     ducked_bgm = bgm_data.astype(np.float32) * duck_factor[:, None]
 
     mixed_audio = np.clip(ducked_bgm + voice_track, -1.0, 1.0)
