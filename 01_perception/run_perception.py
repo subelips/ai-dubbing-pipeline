@@ -1,6 +1,7 @@
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
+from difflib import SequenceMatcher
 import gc
 import glob
 import json
@@ -131,11 +132,16 @@ class GitHubSync:
 def send_telegram(bot_token: str, chat_id: str, text: str):
     if not bot_token or not chat_id:
         return
-    requests.post(
-        f"https://api.telegram.org/bot{bot_token}/sendMessage",
-        json={"chat_id": chat_id, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": False},
-        timeout=20,
-    )
+    clean_token = str(bot_token).strip()
+    clean_chat = str(chat_id).strip()
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{clean_token}/sendMessage",
+            json={"chat_id": clean_chat, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": False},
+            timeout=20,
+        )
+    except Exception as e:
+        print(f"[WARN] Gửi Telegram thất bại: {e}")
 
 
 def ensure_deps():
@@ -143,7 +149,7 @@ def ensure_deps():
         [
             sys.executable, "-m", "pip", "install", "-q", "--upgrade",
             "faster-whisper", "nvidia-cublas-cu12", "nvidia-cudnn-cu12",
-            "demucs", "soundfile", "gdown", "transformers", "accelerate",
+            "demucs", "soundfile", "numpy", "gdown", "transformers", "accelerate",
             "paddlepaddle", "paddleocr",
         ],
         check=True,
@@ -200,6 +206,30 @@ def _preload_cuda12_libs():
         os.environ["LD_LIBRARY_PATH"] = ":".join(extra_dirs + ([current_ld] if current_ld else []))
 
 
+def estimate_pitch_gender(clip: "np.ndarray", sr: int) -> tuple[float, str]:
+    import numpy as np
+
+    if clip is None or len(clip) < sr // 2:
+        return 0.0, "unknown"
+    # Ước lượng tần số cơ bản (F0) bằng autocorrelation trong dải 70Hz - 350Hz
+    samples = clip[: min(len(clip), sr * 6)].astype(np.float32)
+    samples = samples - np.mean(samples)
+    if np.max(np.abs(samples)) < 1e-4:
+        return 0.0, "unknown"
+
+    corr = np.correlate(samples, samples, mode="full")[len(samples) - 1:]
+    min_lag = max(1, int(sr / 350))
+    max_lag = min(len(corr) - 1, int(sr / 70))
+    if max_lag <= min_lag:
+        return 0.0, "unknown"
+
+    best_lag = min_lag + int(np.argmax(corr[min_lag:max_lag]))
+    f0 = float(sr) / float(best_lag)
+    if f0 < 165.0:
+        return round(f0, 1), "male"
+    return round(f0, 1), "female"
+
+
 def run_whisper_asr(audio_16k: str) -> list[dict]:
     import numpy as np
     import soundfile as sf
@@ -225,11 +255,17 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
             txt = (seg.text or "").strip()
             if not txt:
                 continue
+            start_t = round(float(seg.start), 2)
+            end_t = round(max(float(seg.end), start_t + 0.5), 2)
+            clip = audio_np[int(start_t * sr): int(end_t * sr)]
+            f0, gender_hint = estimate_pitch_gender(clip, sr)
             segments.append({
                 "id": idx,
-                "start": round(float(seg.start), 2),
-                "end": round(float(seg.end), 2),
+                "start": start_t,
+                "end": end_t,
                 "speaker_id": "SPEAKER_00",
+                "gender_hint": gender_hint,
+                "pitch_hz": f0,
                 "asr_text": txt,
             })
 
@@ -246,7 +282,7 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
     asr_pipe = pipeline(
         "automatic-speech-recognition",
         model=hf_model,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
         device=0 if torch.cuda.is_available() else -1,
     )
     result = asr_pipe(
@@ -260,15 +296,19 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
     for idx, chunk in enumerate(result.get("chunks", [])):
         txt = (chunk.get("text") or "").strip()
         ts = chunk.get("timestamp") or (0.0, 0.0)
-        start_t = float(ts[0]) if ts[0] is not None else 0.0
-        end_t = float(ts[1]) if ts[1] is not None else start_t + 2.0
+        start_t = round(float(ts[0]) if ts[0] is not None else 0.0, 2)
+        end_t = round(max(float(ts[1]) if ts[1] is not None else start_t + 2.0, start_t + 0.5), 2)
         if not txt:
             continue
+        clip = audio_np[int(start_t * sr): int(end_t * sr)]
+        f0, gender_hint = estimate_pitch_gender(clip, sr)
         segments.append({
             "id": idx,
-            "start": round(start_t, 2),
-            "end": round(max(end_t, start_t + 0.5), 2),
+            "start": start_t,
+            "end": end_t,
             "speaker_id": "SPEAKER_00",
+            "gender_hint": gender_hint,
+            "pitch_hz": f0,
             "asr_text": txt,
         })
 
@@ -280,11 +320,13 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
 def extract_ocr_frames(video_path: str, work_dir: str) -> list[tuple[float, str]]:
     ocr_dir = os.path.join(work_dir, "ocr_frames")
     os.makedirs(ocr_dir, exist_ok=True)
+    fps = os.environ.get("OCR_FPS", "1.0")
     subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-vf", "fps=0.5,scale=960:-1", os.path.join(ocr_dir, "f_%04d.jpg")],
+        ["ffmpeg", "-y", "-i", video_path, "-vf", f"fps={fps},scale=1080:-1", os.path.join(ocr_dir, "f_%04d.jpg")],
         capture_output=True,
         text=True,
     )
+    interval = 1.0 / max(0.1, float(fps))
     frames = []
     for fname in sorted(os.listdir(ocr_dir)):
         if not fname.endswith(".jpg"):
@@ -292,10 +334,10 @@ def extract_ocr_frames(video_path: str, work_dir: str) -> list[tuple[float, str]
         try:
             idx = int(fname.split("_")[1].split(".")[0])
         except Exception:
-            idx = len(frames)
-        ts = round((idx - 1) * 2.0 if idx >= 1 else 0.0, 2)
+            idx = len(frames) + 1
+        ts = round((idx - 1) * interval, 2)
         frames.append((ts, os.path.join(ocr_dir, fname)))
-    return frames[:45]
+    return frames[:90]
 
 
 def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
@@ -304,7 +346,6 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
         return []
 
     ocr_records = []
-    seen_texts = set()
     try:
         from paddleocr import PaddleOCR
 
@@ -334,12 +375,11 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
                             if isinstance(info, (list, tuple)) and info:
                                 txt = str(info[0]).strip()
                                 conf = float(info[1]) if len(info) > 1 else 1.0
-                                if txt and conf >= 0.5:
+                                if txt and conf >= 0.55:
                                     line_texts.append(txt)
 
-            merged = " | ".join(line_texts).strip()
-            if merged and merged not in seen_texts:
-                seen_texts.add(merged)
+            merged = " ".join(line_texts).strip()
+            if merged:
                 ocr_records.append({"time": ts, "text": merged})
 
         del ocr
@@ -351,7 +391,52 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
     return ocr_records
 
 
-def run_demucs_and_ref_voice(audio_16k: str, segments: list[dict], work_dir: str) -> str:
+def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> list[dict]:
+    """Đối chiếu ASR và OCR theo thời gian & độ tương đồng để chọn phụ đề chuẩn nhất."""
+    refined = []
+    for seg in segments:
+        s_t = float(seg.get("start", 0.0))
+        e_t = float(seg.get("end", s_t + 1.0))
+        asr_txt = (seg.get("asr_text") or "").strip()
+
+        matched_ocrs = [
+            r["text"].strip()
+            for r in ocr_records
+            if (s_t - 0.8) <= float(r["time"]) <= (e_t + 0.8) and r.get("text")
+        ]
+        # Loại trùng liên tiếp
+        dedup_ocrs = []
+        for t in matched_ocrs:
+            if not dedup_ocrs or t != dedup_ocrs[-1]:
+                dedup_ocrs.append(t)
+        ocr_txt = " ".join(dedup_ocrs).strip()
+
+        best_txt = asr_txt
+        source_mode = "asr_only"
+        if asr_txt and ocr_txt:
+            ratio = SequenceMatcher(None, asr_txt.lower(), ocr_txt.lower()).ratio()
+            # Nếu OCR dài/rõ hơn đáng kể hoặc trùng khớp cao -> ưu tiên OCR cho phần chữ/phụ đề chuẩn
+            if ratio >= 0.65 or (len(ocr_txt) >= len(asr_txt) * 0.85 and len(ocr_txt) >= 4):
+                best_txt = ocr_txt
+                source_mode = "ocr_verified"
+            else:
+                # Giữ ASR làm chính và đính kèm OCR làm chú thích ngữ cảnh
+                best_txt = asr_txt
+                source_mode = "asr_with_ocr_hint"
+        elif ocr_txt and not asr_txt:
+            best_txt = ocr_txt
+            source_mode = "ocr_only"
+
+        item = dict(seg)
+        item["ocr_text"] = ocr_txt
+        item["best_text"] = best_txt
+        item["subtitle_source"] = source_mode
+        refined.append(item)
+    return refined
+
+
+def run_demucs_and_ref_voices(audio_16k: str, segments: list[dict], work_dir: str) -> tuple[str, dict]:
+    import numpy as np
     import soundfile as sf
     import torch
 
@@ -384,24 +469,39 @@ def run_demucs_and_ref_voice(audio_16k: str, segments: list[dict], work_dir: str
             stderr=subprocess.DEVNULL,
         )
 
+    speaker_refs = {}
     try:
         data, sr = sf.read(audio_16k)
-        start_s, end_s = 0.0, min(8.0, len(data) / float(sr))
+        if data.ndim > 1:
+            data = data.mean(axis=-1)
+
+        by_speaker = {}
         for seg in segments:
-            dur = float(seg["end"]) - float(seg["start"])
-            if dur >= 3.0:
-                start_s = float(seg["start"])
-                end_s = min(float(seg["end"]), start_s + 8.0)
-                break
-        if end_s > start_s:
-            clip = data[int(start_s * sr): int(end_s * sr)]
-            ref_path = os.path.join(work_dir, "ref_speaker_SPEAKER_00.wav")
-            sf.write(ref_path, clip, sr)
+            spk = seg.get("speaker_id", "SPEAKER_00")
+            by_speaker.setdefault(spk, []).append(seg)
+
+        for spk, spk_segs in by_speaker.items():
+            best_seg = max(spk_segs, key=lambda x: float(x["end"]) - float(x["start"]), default=None)
+            if not best_seg:
+                continue
+            start_s = max(0.0, float(best_seg["start"]))
+            end_s = min(len(data) / float(sr), max(start_s + 2.0, min(float(best_seg["end"]), start_s + 8.0)))
+            if end_s > start_s:
+                clip = data[int(start_s * sr): int(end_s * sr)]
+                ref_name = f"ref_speaker_{spk}.wav"
+                ref_path = os.path.join(work_dir, ref_name)
+                sf.write(ref_path, clip, sr)
+                f0, gender_hint = estimate_pitch_gender(clip, sr)
+                speaker_refs[spk] = {
+                    "ref_asset": ref_name,
+                    "gender_hint": gender_hint,
+                    "pitch_hz": f0,
+                }
     except Exception:
         pass
 
     free_gpu()
-    return no_vocals_out
+    return no_vocals_out, speaker_refs
 
 
 sync = GitHubSync(GH_REPO, GH_TOKEN)
@@ -439,10 +539,11 @@ def main():
     with ThreadPoolExecutor(max_workers=2) as pool:
         fut_asr = pool.submit(run_whisper_asr, audio_16k)
         fut_ocr = pool.submit(run_paddle_ocr, video_path, work_dir)
-        segments = fut_asr.result()
+        raw_segments = fut_asr.result()
         screen_texts = fut_ocr.result()
 
-    no_vocals_path = run_demucs_and_ref_voice(audio_16k, segments, work_dir)
+    segments = align_and_refine_segments(raw_segments, screen_texts)
+    no_vocals_path, speaker_refs = run_demucs_and_ref_voices(audio_16k, segments, work_dir)
 
     if os.path.exists(no_vocals_path):
         sync.upload_asset(JOB_ID, no_vocals_path)
@@ -451,7 +552,7 @@ def main():
         if fname.startswith("ref_speaker_") and fname.endswith(".wav"):
             sync.upload_asset(JOB_ID, os.path.join(work_dir, fname))
 
-    ocr_summary = "; ".join(f"[{r['time']}s] {r['text']}" for r in screen_texts[:12])
+    ocr_summary = "; ".join(f"[{r['time']}s] {r['text']}" for r in screen_texts[:15])
     scene_context = f"Chữ/phụ đề màn hình (PaddleOCR): {ocr_summary}" if ocr_summary else ""
 
     stage1_payload = {
@@ -459,6 +560,7 @@ def main():
         "video_asset": video_asset,
         "screen_texts": screen_texts,
         "scene_context": scene_context,
+        "speaker_refs": speaker_refs,
         "segments": segments,
     }
     sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done: {JOB_ID}")
@@ -471,7 +573,7 @@ def main():
     send_telegram(
         TG_TOKEN,
         TG_CHAT,
-        f"✅ <b>[Stage 1]</b> Hoàn tất <code>{JOB_ID}</code> ({len(segments)} câu thoại, {len(screen_texts)} dòng OCR) → chuyển sang Stage 2.",
+        f"✅ <b>[Stage 1]</b> Hoàn tất <code>{JOB_ID}</code> ({len(segments)} câu, {len(screen_texts)} OCR) → chuyển sang Stage 2.",
     )
 
 
