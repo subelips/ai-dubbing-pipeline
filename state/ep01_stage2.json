@@ -2,54 +2,68 @@
   "job_id": "ep01",
   "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
   "scene_context": "",
+  "speakers": {
+    "SPEAKER_00": {
+      "ref_asset": "ref_speaker_SPEAKER_00.wav",
+      "gender_hint": "male",
+      "pitch_hz": 71.7
+    }
+  },
   "lines": [
     {
       "id": 0,
       "start": 1.26,
       "end": 1.94,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Vợ ơi"
+      "gender": "female",
+      "text_vi": "Chồng ơi"
     },
     {
       "id": 1,
       "start": 1.94,
       "end": 4.06,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Món cơm của mày đã bị chó ăn mất rồi"
+      "gender": "female",
+      "text_vi": "Món cơm của mày bị chó ăn"
     },
     {
       "id": 2,
       "start": 4.06,
       "end": 5.24,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Mày nên ăn cơm của chó"
+      "gender": "male",
+      "text_vi": "Thì mày nên ăn"
     },
     {
       "id": 3,
       "start": 5.24,
       "end": 6.44,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Chó đã ăn xong rồi"
+      "gender": "female",
+      "text_vi": "Chó đã ăn xong"
     },
     {
       "id": 4,
       "start": 6.44,
       "end": 7.94,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Lúc này đến lượt mày ăn"
+      "gender": "male",
+      "text_vi": "Thì đến lượt mày ăn"
     },
     {
       "id": 5,
       "start": 7.94,
       "end": 8.76,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Ăn đi"
+      "gender": "male",
+      "text_vi": "Ăn"
     },
     {
       "id": 6,
       "start": 8.76,
       "end": 22.87,
       "speaker_id": "SPEAKER_00",
+      "gender": "male",
       "text_vi": "Đây là bữa trưa hôm nay."
     },
     {
@@ -57,97 +71,111 @@
       "start": 22.87,
       "end": 24.77,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Đã kết hôn ba năm."
+      "gender": "male",
+      "text_vi": "Hôn nhân ba năm."
     },
     {
       "id": 8,
       "start": 24.77,
       "end": 28.25,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Vợ tôi khắt khe đến mức cực độ với đồ ăn."
+      "gender": "male",
+      "text_vi": "Vợ tôi khắt khe đến mức không chịu ăn đồ ăn"
     },
     {
       "id": 9,
       "start": 28.25,
       "end": 29.49,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Không bao giờ ăn đồ ăn vặt."
+      "gender": "male",
+      "text_vi": "Từ không bao giờ"
     },
     {
       "id": 10,
       "start": 29.49,
       "end": 30.67,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Không dám động đến đồ ăn kém chất lượng."
+      "gender": "male",
+      "text_vi": "Không ăn đồ ăn"
     },
     {
       "id": 11,
       "start": 30.67,
       "end": 32.47,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Vì vậy tôi phải thức dậy lúc bốn giờ mỗi ngày."
+      "gender": "male",
+      "text_vi": "Vì vậy tôi dậy 4 giờ"
     },
     {
       "id": 12,
       "start": 32.47,
       "end": 35.27,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Tui nấu cho cô ấy những bữa ăn lành mạnh, sạch sẽ nhất."
+      "gender": "male",
+      "text_vi": "Làm ba bữa ăn sạch sẽ, lành mạnh nhất"
     },
     {
       "id": 13,
       "start": 35.27,
       "end": 36.91,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Hôm nay nguyên liệu có tươi không?"
+      "gender": "female",
+      "text_vi": "Hôm nay nguyên liệu"
     },
     {
       "id": 14,
       "start": 36.91,
       "end": 37.99,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Tất cả đều mua từ sáng 4 giờ."
+      "gender": "male",
+      "text_vi": "Tất cả đều mua"
     },
     {
       "id": 15,
       "start": 37.99,
       "end": 39.79,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Mua nguyên liệu tươi nhất từ chợ."
+      "gender": "male",
+      "text_vi": "Mua nguyên liệu tươi"
     },
     {
       "id": 16,
       "start": 39.79,
       "end": 40.75,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Ở chợ, đã rửa lại vài lần rồi."
+      "gender": "male",
+      "text_vi": "Rửa lại vài"
     },
     {
       "id": 17,
       "start": 40.75,
       "end": 41.31,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Ba lần."
+      "gender": "male",
+      "text_vi": "Ba lần"
     },
     {
       "id": 18,
       "start": 41.31,
       "end": 42.61,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Còn dùng nước rửa rau quả nữa."
+      "gender": "male",
+      "text_vi": "Còn dùng nước tẩy"
     },
     {
       "id": 19,
       "start": 42.61,
       "end": 43.57,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Ngâm trong mười lăm phút."
+      "gender": "male",
+      "text_vi": "Ngâm trong"
     },
     {
       "id": 20,
       "start": 43.57,
       "end": 44.23,
       "speaker_id": "SPEAKER_00",
+      "gender": "female",
       "text_vi": "Được rồi."
     },
     {
@@ -155,6 +183,7 @@
       "start": 44.23,
       "end": 45.37,
       "speaker_id": "SPEAKER_00",
+      "gender": "female",
       "text_vi": "Mày đi đi."
     },
     {
@@ -162,27 +191,31 @@
       "start": 45.37,
       "end": 47.31,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Mày chỉ là một nhân viên văn phòng nhỏ."
+      "gender": "female",
+      "text_vi": "Mày chỉ là một tiểu thư"
     },
     {
       "id": 23,
       "start": 47.31,
       "end": 48.59,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Ở đây lâu một chút đi."
+      "gender": "male",
+      "text_vi": "Ở lại đây một"
     },
     {
       "id": 24,
       "start": 48.59,
       "end": 50.69,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Sẽ khiến người khác phải thở dốc không cần thiết."
+      "gender": "male",
+      "text_vi": "Đừng gây phiền toái cho"
     },
     {
       "id": 25,
       "start": 50.69,
       "end": 55.22,
       "speaker_id": "SPEAKER_00",
+      "gender": "male",
       "text_vi": "Được."
     },
     {
@@ -190,20 +223,23 @@
       "start": 55.22,
       "end": 56.92,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Hãy ăn ngay kẻo nguội."
+      "gender": "male",
+      "text_vi": "Cứ趁 nóng ăn đi."
     },
     {
       "id": 27,
       "start": 56.92,
       "end": 58.78,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Ăn nguội sẽ không tốt cho dạ dày."
+      "gender": "male",
+      "text_vi": "Lạnh thì hại dạ dày."
     },
     {
       "id": 28,
       "start": 58.78,
       "end": 63.21,
       "speaker_id": "SPEAKER_00",
+      "gender": "male",
       "text_vi": "Nguyễn Thần."
     },
     {
@@ -211,20 +247,23 @@
       "start": 63.21,
       "end": 64.95,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Lại đi mang cơm cho瑶瑶 rồi sao?"
+      "gender": "male",
+      "text_vi": "Lại đi đưa cơm cho瑶瑶"
     },
     {
       "id": 30,
       "start": 64.95,
       "end": 66.09,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Cảm ơn cậu đã cố gắng."
+      "gender": "male",
+      "text_vi": "Cảm ơn cậu đã"
     },
     {
       "id": 31,
       "start": 66.09,
       "end": 66.85,
       "speaker_id": "SPEAKER_00",
+      "gender": "male",
       "text_vi": "Chăm sóc vợ."
     },
     {
@@ -232,139 +271,159 @@
       "start": 66.85,
       "end": 69.11,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Chỉ là trách nhiệm của một người chồng."
+      "gender": "male",
+      "text_vi": "Là trách nhiệm của một người"
     },
     {
       "id": 33,
       "start": 69.11,
       "end": 70.99,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Nếu không nhờ cậu."
+      "gender": "male",
+      "text_vi": "Nếu không có cậu."
     },
     {
       "id": 34,
       "start": 70.99,
       "end": 73.05,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Và hôn ước gia đình Hạ."
+      "gender": "male",
+      "text_vi": "Chúng ta sẽ không có hôn"
     },
     {
       "id": 35,
       "start": 73.05,
       "end": 74.31,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Nhóm công ty Hạ."
+      "gender": "male",
+      "text_vi": "Nhóm công ty Hạ氏"
     },
     {
       "id": 36,
       "start": 74.31,
       "end": 76.01,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Đã phá sản từ ba năm trước rồi."
+      "gender": "male",
+      "text_vi": "Đã phá sản từ ba năm"
     },
     {
       "id": 37,
       "start": 76.01,
       "end": 77.81,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Nói đi, con trai kế thừa tập đoàn Lục."
+      "gender": "male",
+      "text_vi": "Nói về người thừa kế"
     },
     {
       "id": 38,
       "start": 77.81,
       "end": 79.01,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Thà chịu thua, chịu mất danh dự."
+      "gender": "male",
+      "text_vi": "Thà chịu chết"
     },
     {
       "id": 39,
       "start": 79.01,
       "end": 79.73,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Đến công ty chúng tôi."
+      "gender": "male",
+      "text_vi": "Đến công ty"
     },
     {
       "id": 40,
       "start": 79.73,
       "end": 80.57,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Làm một nhân viên nhỏ."
+      "gender": "male",
+      "text_vi": "Là một nhân"
     },
     {
       "id": 41,
       "start": 80.57,
       "end": 82.81,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Mỗi lần đều giúp công ty bù đắp lỗ hổng."
+      "gender": "male",
+      "text_vi": "Lần nào cũng giúp công ty bù"
     },
     {
       "id": 42,
       "start": 82.81,
       "end": 83.79,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Tôi che giấu danh tính"
+      "gender": "male",
+      "text_vi": "Tôi giấu"
     },
     {
       "id": 43,
       "start": 83.79,
       "end": 85.75,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Để tránh khiến toàn công ty biết"
+      "gender": "female",
+      "text_vi": "Để không ai trong công ty"
     },
     {
       "id": 44,
       "start": 85.75,
       "end": 87.39,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Nhà Hạ dựa vào nhà Lục mới đứng vững"
+      "gender": "male",
+      "text_vi": "Hạ氏 dựa vào Lục氏"
     },
     {
       "id": 45,
       "start": 87.39,
       "end": 88.75,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Để tránh khiến mọi người lo lắng"
+      "gender": "male",
+      "text_vi": "Để tránh lòng"
     },
     {
       "id": 46,
       "start": 88.75,
       "end": 90.97,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Cũng là một cách thử thách Minh Nhu"
+      "gender": "male",
+      "text_vi": "Cũng là một thử thách cho"
     },
     {
       "id": 47,
       "start": 90.97,
       "end": 92.13,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Minh Nhu chẳng biết suy nghĩ"
+      "gender": "male",
+      "text_vi": "Minh Yao chẳng"
     },
     {
       "id": 48,
       "start": 92.13,
       "end": 93.93,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Tôi biết ơn cậu rất nhiều."
+      "gender": "male",
+      "text_vi": "Tôi biết ơn cậu."
     },
     {
       "id": 49,
       "start": 93.93,
       "end": 95.39,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Là một người cha, tôi..."
+      "gender": "male",
+      "text_vi": "Là một người cha"
     },
     {
       "id": 50,
       "start": 95.39,
       "end": 97.45,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Thật sự rất biết ơn cậu."
+      "gender": "male",
+      "text_vi": "Cảm ơn cậu thật lòng."
     },
     {
       "id": 51,
       "start": 97.45,
-      "end": 97.69,
+      "end": 97.95,
       "speaker_id": "SPEAKER_00",
+      "gender": "male",
       "text_vi": "Không cần."
     },
     {
@@ -372,14 +431,16 @@
       "start": 97.69,
       "end": 102.36,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Chìa khóa xe của tôi để quên ở nhà hàng."
+      "gender": "female",
+      "text_vi": "Chìa khóa xe của tôi để ở nhà hàng."
     },
     {
       "id": 53,
       "start": 102.36,
       "end": 103.84,
       "speaker_id": "SPEAKER_00",
-      "text_vi": "Tôi phải quay lại lấy."
+      "gender": "male",
+      "text_vi": "Mình quay lại lấy"
     }
   ]
 }
