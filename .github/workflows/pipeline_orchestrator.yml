@@ -7,9 +7,10 @@ on:
         description: "Mã định danh job (vd: ep01)"
         required: true
         type: string
-      video_url:
-        description: "Link trực tiếp tới file video MP4 đầu vào"
-        required: true
+      video_asset:
+        description: "Tên file video trong Release của job (mặc định: source_input.mp4)"
+        required: false
+        default: "source_input.mp4"
         type: string
   repository_dispatch:
     types: [stage1_completed, stage2_completed]
@@ -25,17 +26,19 @@ jobs:
         id: meta
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ASSET="${{ inputs.video_asset }}"
+            if [ -z "$ASSET" ]; then ASSET="source_input.mp4"; fi
             echo "stage=perception" >> $GITHUB_OUTPUT
             echo "job_id=${{ inputs.job_id }}" >> $GITHUB_OUTPUT
-            echo "video_url=${{ inputs.video_url }}" >> $GITHUB_OUTPUT
+            echo "video_asset=$ASSET" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.action }}" = "stage1_completed" ]; then
             echo "stage=translation" >> $GITHUB_OUTPUT
             echo "job_id=${{ github.event.client_payload.job_id }}" >> $GITHUB_OUTPUT
-            echo "video_url=" >> $GITHUB_OUTPUT
+            echo "video_asset=" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.action }}" = "stage2_completed" ]; then
             echo "stage=synthesis" >> $GITHUB_OUTPUT
             echo "job_id=${{ github.event.client_payload.job_id }}" >> $GITHUB_OUTPUT
-            echo "video_url=" >> $GITHUB_OUTPUT
+            echo "video_asset=" >> $GITHUB_OUTPUT
           fi
 
       - name: Setup Python & Kaggle CLI
@@ -62,7 +65,7 @@ jobs:
           GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
           GH_REPO: ${{ github.repository }}
           JOB_ID: ${{ steps.meta.outputs.job_id }}
-          VIDEO_URL: ${{ steps.meta.outputs.video_url }}
+          VIDEO_ASSET: ${{ steps.meta.outputs.video_asset }}
         run: |
           python - <<'EOF'
           import base64
@@ -74,7 +77,7 @@ jobs:
           repo = os.environ["GH_REPO"]
           token = os.environ["GH_PAT_TOKEN"]
           job_id = os.environ["JOB_ID"]
-          video_url = os.environ["VIDEO_URL"]
+          video_asset = os.environ["VIDEO_ASSET"] or "source_input.mp4"
           branch = "pipeline-state"
           path = "state/jobs.json"
           url = f"https://api.github.com/repos/{repo}/contents/{path}"
@@ -96,7 +99,7 @@ jobs:
                   sha = resp["sha"]
 
               data.setdefault("jobs", {})[job_id] = {
-                  "video_url": video_url,
+                  "video_asset": video_asset,
                   "status": "QUEUED_STAGE1",
               }
               payload = {
