@@ -328,6 +328,7 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
 
 
 def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: str) -> list[dict]:
+    """Ưu tiên pyannote.audio (nếu có HF_TOKEN), tự động fallback sang SpeechBrain ECAPA-TDNN."""
     if not segments:
         return segments
 
@@ -335,7 +336,68 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
     import soundfile as sf
     import torch
 
+    hf_token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or "").strip()
+    pyannote_model = os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip()
+
+    # 1. Ưu tiên pyannote.audio nếu có HF_TOKEN
+    if hf_token:
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pyannote.audio"], check=True)
+            from pyannote.audio import Pipeline
+
+            try:
+                pipeline = Pipeline.from_pretrained(pyannote_model, token=hf_token)
+            except TypeError:
+                pipeline = Pipeline.from_pretrained(pyannote_model, use_auth_token=hf_token)
+
+            if torch.cuda.is_available():
+                pipeline.to(torch.device("cuda:0"))
+
+            diar_kwargs = {}
+            fixed_k_raw = os.environ.get("NUM_SPEAKERS", "").strip()
+            max_spk_raw = os.environ.get("MAX_SPEAKERS", "").strip()
+            if fixed_k_raw.isdigit() and int(fixed_k_raw) >= 1:
+                diar_kwargs["num_speakers"] = int(fixed_k_raw)
+            elif max_spk_raw.isdigit() and int(max_spk_raw) >= 2:
+                diar_kwargs["max_speakers"] = int(max_spk_raw)
+
+            diarization = pipeline(audio_16k, **diar_kwargs)
+
+            turns = []
+            for turn, _, spk in diarization.itertracks(yield_label=True):
+                turns.append((float(turn.start), float(turn.end), str(spk)))
+
+            del pipeline
+            free_gpu()
+
+            if turns:
+                order_map = {}
+                for _, _, raw_spk in sorted(turns, key=lambda x: x[0]):
+                    if raw_spk not in order_map:
+                        order_map[raw_spk] = f"SPEAKER_{len(order_map):02d}"
+
+                for seg in segments:
+                    s_t = float(seg.get("start", 0.0))
+                    e_t = float(seg.get("end", s_t + 0.5))
+                    best_spk = "SPEAKER_00"
+                    best_overlap = 0.0
+                    for t_s, t_e, raw_spk in turns:
+                        ov = max(0.0, min(e_t, t_e) - max(s_t, t_s))
+                        if ov > best_overlap:
+                            best_overlap = ov
+                            best_spk = order_map.get(raw_spk, "SPEAKER_00")
+                    seg["speaker_id"] = best_spk
+
+                detected_list = list(dict.fromkeys(s["speaker_id"] for s in segments))
+                print(f"[INFO] pyannote.audio diarization ({pyannote_model}) phát hiện {len(detected_list)} người nói: {detected_list}")
+                return segments
+        except Exception as py_err:
+            print(f"[WARN] pyannote.audio chưa chạy được ({py_err}), chuyển sang SpeechBrain.")
+            free_gpu()
+
+    # 2. Fallback sang SpeechBrain ECAPA-TDNN + phân cụm tâm cụm
     try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "speechbrain", "scikit-learn"], check=True)
         from sklearn.cluster import AgglomerativeClustering
         from speechbrain.inference.speaker import EncoderClassifier
 
@@ -360,8 +422,10 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
             run_opts={"device": device},
         )
 
-        embeddings = []
-        valid_indices = []
+        anchor_embs = []
+        anchor_indices = []
+        all_embs = {}
+
         for idx, seg in enumerate(segments):
             s_idx = max(0, int(float(seg.get("start", 0.0)) * sr))
             e_idx = min(len(audio_np), int(float(seg.get("end", 0.0)) * sr))
@@ -374,53 +438,70 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
             norm = float(np.linalg.norm(emb))
             if norm > 1e-8:
                 emb = emb / norm
-            embeddings.append(emb)
-            valid_indices.append(idx)
+            all_embs[idx] = emb
+            if len(clip) >= int(1.0 * sr):
+                anchor_embs.append(emb)
+                anchor_indices.append(idx)
 
         del classifier
         free_gpu()
 
-        if len(embeddings) >= 2:
-            emb_mat = np.vstack(embeddings)
-            dist_thresh = float(os.environ.get("DIAR_DIST_THRESHOLD", "0.65"))
-            max_spk = max(2, int(os.environ.get("MAX_SPEAKERS", "4")))
-            clustering = AgglomerativeClustering(
-                n_clusters=None,
-                metric="cosine",
-                linkage="average",
-                distance_threshold=dist_thresh,
-            )
-            raw_labels = clustering.fit_predict(emb_mat)
+        if not anchor_embs and all_embs:
+            anchor_indices = list(all_embs.keys())
+            anchor_embs = [all_embs[i] for i in anchor_indices]
 
-            unique_labels = list(dict.fromkeys(int(x) for x in raw_labels))
-            if len(unique_labels) > max_spk:
-                clustering_fixed = AgglomerativeClustering(
-                    n_clusters=max_spk,
+        if len(anchor_embs) >= 2:
+            emb_mat = np.vstack(anchor_embs)
+            fixed_k_raw = os.environ.get("NUM_SPEAKERS", "").strip()
+            max_spk = max(2, int(os.environ.get("MAX_SPEAKERS", "3")))
+            dist_thresh = float(os.environ.get("DIAR_DIST_THRESHOLD", "0.68"))
+
+            if fixed_k_raw.isdigit() and int(fixed_k_raw) >= 1:
+                k = min(int(fixed_k_raw), len(anchor_embs))
+                clustering = AgglomerativeClustering(n_clusters=k, metric="cosine", linkage="average")
+                anchor_labels = clustering.fit_predict(emb_mat)
+            else:
+                clustering = AgglomerativeClustering(
+                    n_clusters=None,
                     metric="cosine",
                     linkage="average",
+                    distance_threshold=dist_thresh,
                 )
-                raw_labels = clustering_fixed.fit_predict(emb_mat)
+                anchor_labels = clustering.fit_predict(emb_mat)
+                uniq = list(dict.fromkeys(int(x) for x in anchor_labels))
+                if len(uniq) > max_spk:
+                    clustering_k = AgglomerativeClustering(n_clusters=max_spk, metric="cosine", linkage="average")
+                    anchor_labels = clustering_k.fit_predict(emb_mat)
+
+            cluster_vecs = {}
+            for emb, lbl in zip(anchor_embs, anchor_labels):
+                cluster_vecs.setdefault(int(lbl), []).append(emb)
+
+            centroids = {}
+            for lbl, vecs in cluster_vecs.items():
+                c = np.mean(np.vstack(vecs), axis=0)
+                cn = float(np.linalg.norm(c))
+                centroids[lbl] = c / cn if cn > 1e-8 else c
 
             order_map = {}
-            for lbl in raw_labels:
+            for lbl in anchor_labels:
                 ilbl = int(lbl)
                 if ilbl not in order_map:
                     order_map[ilbl] = f"SPEAKER_{len(order_map):02d}"
 
-            assigned_speakers = {}
-            for seg_i, lbl in zip(valid_indices, raw_labels):
-                spk_name = order_map[int(lbl)]
-                segments[seg_i]["speaker_id"] = spk_name
-                assigned_speakers[seg_i] = spk_name
+            assigned = {}
+            for idx, emb in all_embs.items():
+                best_lbl = max(centroids.keys(), key=lambda c_lbl: float(np.dot(emb, centroids[c_lbl])))
+                assigned[idx] = order_map[best_lbl]
 
             last_spk = "SPEAKER_00"
             for idx, seg in enumerate(segments):
-                if idx in assigned_speakers:
-                    last_spk = assigned_speakers[idx]
-                else:
-                    seg["speaker_id"] = last_spk
+                if idx in assigned:
+                    last_spk = assigned[idx]
+                seg["speaker_id"] = last_spk
 
-            print(f"[INFO] SpeechBrain diarization phát hiện {len(order_map)} người nói: {list(order_map.values())}")
+            detected_list = list(dict.fromkeys(s["speaker_id"] for s in segments))
+            print(f"[INFO] SpeechBrain diarization xác định {len(detected_list)} người nói: {detected_list}")
         else:
             for seg in segments:
                 seg["speaker_id"] = "SPEAKER_00"
@@ -440,7 +521,6 @@ def _init_paddle_ocr_engine():
     lang = os.environ.get("PADDLE_OCR_LANG", "ch")
     use_gpu = os.environ.get("PADDLE_OCR_GPU", "0").strip() == "1"
 
-    # PaddleOCR 3.x: tắt xoay tài liệu/uốn trang để chạy nhanh và không làm méo phụ đề ngang
     try:
         return PaddleOCR(
             lang=lang,
@@ -455,7 +535,7 @@ def _init_paddle_ocr_engine():
             return PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=use_gpu)
 
 
-def _ocr_single_image(ocr, img_path: str) -> str:
+def _ocr_single_image(ocr, img_path: str, min_conf: float = 0.25) -> str:
     line_texts = []
     try:
         if hasattr(ocr, "predict"):
@@ -485,7 +565,7 @@ def _ocr_single_image(ocr, img_path: str) -> str:
             scores = list(rec_scores) if rec_scores is not None else [1.0] * len(rec_texts)
             for txt_raw, conf in zip(rec_texts, scores):
                 txt = str(txt_raw).strip()
-                if txt and float(conf) >= 0.45:
+                if txt and float(conf) >= min_conf:
                     line_texts.append(txt)
             continue
 
@@ -496,10 +576,23 @@ def _ocr_single_image(ocr, img_path: str) -> str:
                     if isinstance(info, (list, tuple)) and info:
                         txt = str(info[0]).strip()
                         conf = float(info[1]) if len(info) > 1 else 1.0
-                        if txt and conf >= 0.45:
+                        if txt and conf >= min_conf:
                             line_texts.append(txt)
 
     return " ".join(line_texts).strip()
+
+
+def _enhance_contrast_image(img_path: str) -> str:
+    from PIL import Image, ImageEnhance
+
+    enh_path = img_path + "_enh.jpg"
+    try:
+        img = Image.open(img_path).convert("RGB")
+        img = ImageEnhance.Contrast(img).enhance(1.6)
+        img.save(enh_path, quality=92)
+        return enh_path
+    except Exception:
+        return img_path
 
 
 def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, float, float, float], fps: float) -> list[tuple[float, str]]:
@@ -508,9 +601,9 @@ def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, flo
     crop_w = max(0.2, x2 - x1)
     crop_h = max(0.10, y2 - y1)
     if crop_w >= 0.98 and crop_h >= 0.98:
-        vf_expr = f"fps={fps},scale=1280:-1"
+        vf_expr = f"fps={fps},scale=1920:-1"
     else:
-        vf_expr = f"fps={fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale=1280:-1"
+        vf_expr = f"fps={fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale=1920:-1"
 
     subprocess.run(
         ["ffmpeg", "-y", "-i", video_path, "-vf", vf_expr, os.path.join(out_dir, "f_%04d.jpg")],
@@ -532,14 +625,15 @@ def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, flo
 
 
 def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[float, float, float, float]]:
-    """Dò đa vùng thông minh: thử dải dưới rộng trước, nếu không thấy chữ tự động quét toàn khung hình."""
+    """Quét phụ đề cứng đa vùng + tăng tương phản dự phòng khi nét chữ mờ/khó nhận."""
     candidate_rois = [
-        (0.04, 0.68, 0.96, 0.98),  # Dải phụ đề đáy rộng (không cắt cụt chữ)
-        (0.0, 0.0, 1.0, 1.0),      # Toàn khung hình (bắt phụ đề giữa/trên/chữ nổi)
+        (0.02, 0.65, 0.98, 0.99),
+        (0.0, 0.0, 1.0, 1.0),
     ]
     fps = float(os.environ.get("OCR_FPS", "1.0"))
     chosen_roi = candidate_rois[0]
     ocr_records = []
+    use_contrast = False
 
     try:
         ocr = _init_paddle_ocr_engine()
@@ -551,18 +645,26 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
             if not frames:
                 continue
 
-            # Kiểm tra nhanh 10 khung mẫu rải đều xem ROI này có bắt được chữ không
-            step = max(1, len(frames) // 10)
-            probe_frames = frames[::step][:10]
-            hits = sum(1 for _, p in probe_frames if _ocr_single_image(ocr, p))
-            print(f"[INFO] Thử ROI {roi}: bắt được chữ ở {hits}/{len(probe_frames)} khung mẫu.")
-            if hits > 0 or idx_roi == len(candidate_rois) - 1:
+            step = max(1, len(frames) // 12)
+            probe_frames = frames[::step][:12]
+            hits = sum(1 for _, p in probe_frames if _ocr_single_image(ocr, p, min_conf=0.25))
+            enh_hits = 0
+            if hits == 0:
+                enh_hits = sum(
+                    1 for _, p in probe_frames
+                    if _ocr_single_image(ocr, _enhance_contrast_image(p), min_conf=0.25)
+                )
+
+            print(f"[INFO] Thử ROI {roi}: bắt được {hits} frame gốc, {enh_hits} frame tăng tương phản (trên {len(probe_frames)} mẫu).")
+            if hits > 0 or enh_hits > 0 or idx_roi == len(candidate_rois) - 1:
                 chosen_roi = roi
                 active_frames = frames
+                use_contrast = (hits == 0 and enh_hits > 0)
                 break
 
         for ts, img_path in active_frames:
-            merged = _ocr_single_image(ocr, img_path)
+            target_img = _enhance_contrast_image(img_path) if use_contrast else img_path
+            merged = _ocr_single_image(ocr, target_img, min_conf=0.25)
             if merged:
                 ocr_records.append({"time": ts, "text": merged})
 
@@ -587,7 +689,7 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         matched_ocrs = [
             r["text"].strip()
             for r in ocr_records
-            if (s_t - 1.0) <= float(r["time"]) <= (e_t + 1.0) and r.get("text")
+            if (s_t - 1.2) <= float(r["time"]) <= (e_t + 1.2) and r.get("text")
         ]
         dedup_ocrs = []
         for t in matched_ocrs:
