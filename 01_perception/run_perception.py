@@ -14,6 +14,8 @@ import time
 import traceback
 import requests
 
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+
 
 def get_cfg(key: str, injected: str) -> str:
     env_val = os.environ.get(key, "").strip()
@@ -350,7 +352,7 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
             )
             audio_np, sr = sf.read(rs_wav, dtype="float32")
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
         savedir = os.path.join(work_dir, "ecapa_model")
         classifier = EncoderClassifier.from_hparams(
             source="speechbrain/spkrec-ecapa-voxceleb",
@@ -364,7 +366,7 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
             s_idx = max(0, int(float(seg.get("start", 0.0)) * sr))
             e_idx = min(len(audio_np), int(float(seg.get("end", 0.0)) * sr))
             clip = audio_np[s_idx:e_idx]
-            if len(clip) < int(0.4 * sr):
+            if len(clip) < int(0.45 * sr):
                 continue
             wav_tensor = torch.from_numpy(clip).unsqueeze(0).to(device)
             with torch.inference_mode():
@@ -380,8 +382,8 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
 
         if len(embeddings) >= 2:
             emb_mat = np.vstack(embeddings)
-            dist_thresh = float(os.environ.get("DIAR_DIST_THRESHOLD", "0.52"))
-            max_spk = max(2, int(os.environ.get("MAX_SPEAKERS", "6")))
+            dist_thresh = float(os.environ.get("DIAR_DIST_THRESHOLD", "0.65"))
+            max_spk = max(2, int(os.environ.get("MAX_SPEAKERS", "4")))
             clustering = AgglomerativeClustering(
                 n_clusters=None,
                 metric="cosine",
@@ -398,7 +400,6 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
                     linkage="average",
                 )
                 raw_labels = clustering_fixed.fit_predict(emb_mat)
-                unique_labels = list(dict.fromkeys(int(x) for x in raw_labels))
 
             order_map = {}
             for lbl in raw_labels:
@@ -433,109 +434,92 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
     return segments
 
 
-def detect_subtitle_roi(video_path: str, probe_dir: str) -> tuple[float, float, float, float]:
-    import numpy as np
-    from PIL import Image
+def _init_paddle_ocr_engine():
+    from paddleocr import PaddleOCR
 
-    default_roi = (0.08, 0.70, 0.92, 0.95)
-    os.makedirs(probe_dir, exist_ok=True)
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-vf", "fps=0.4,scale=640:-1", os.path.join(probe_dir, "p_%04d.jpg")],
-        capture_output=True,
-        text=True,
-    )
-    imgs = sorted(f for f in os.listdir(probe_dir) if f.endswith(".jpg"))[:24]
-    if not imgs:
-        return default_roi
+    lang = os.environ.get("PADDLE_OCR_LANG", "ch")
+    use_gpu = os.environ.get("PADDLE_OCR_GPU", "0").strip() == "1"
 
-    y_accum = None
-    x_accum = None
-    valid_frames = 0
+    # PaddleOCR 3.x: tắt xoay tài liệu/uốn trang để chạy nhanh và không làm méo phụ đề ngang
+    try:
+        return PaddleOCR(
+            lang=lang,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        )
+    except Exception:
+        try:
+            return PaddleOCR(lang=lang)
+        except Exception:
+            return PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=use_gpu)
 
-    for fname in imgs:
-        arr = np.asarray(Image.open(os.path.join(probe_dir, fname)).convert("L"), dtype=np.float32)
-        h, w = arr.shape
-        if h < 40 or w < 40:
+
+def _ocr_single_image(ocr, img_path: str) -> str:
+    line_texts = []
+    try:
+        if hasattr(ocr, "predict"):
+            res = list(ocr.predict(img_path))
+        else:
+            res = ocr.ocr(img_path)
+    except Exception:
+        return ""
+
+    if not res:
+        return ""
+
+    for item in res:
+        rec_texts = None
+        rec_scores = None
+        if isinstance(item, dict):
+            rec_texts = item.get("rec_texts")
+            rec_scores = item.get("rec_scores")
+        elif hasattr(item, "get"):
+            rec_texts = item.get("rec_texts")
+            rec_scores = item.get("rec_scores")
+        elif hasattr(item, "rec_texts"):
+            rec_texts = getattr(item, "rec_texts", None)
+            rec_scores = getattr(item, "rec_scores", None)
+
+        if rec_texts is not None:
+            scores = list(rec_scores) if rec_scores is not None else [1.0] * len(rec_texts)
+            for txt_raw, conf in zip(rec_texts, scores):
+                txt = str(txt_raw).strip()
+                if txt and float(conf) >= 0.45:
+                    line_texts.append(txt)
             continue
 
-        y_min_px = int(h * 0.08)
-        y_max_px = int(h * 0.96)
-        x_min_px = int(w * 0.05)
-        x_max_px = int(w * 0.95)
-        crop = arr[y_min_px:y_max_px, x_min_px:x_max_px]
-        if crop.size == 0:
-            continue
+        if isinstance(item, (list, tuple)):
+            for det in item:
+                if isinstance(det, (list, tuple)) and len(det) >= 2:
+                    info = det[1]
+                    if isinstance(info, (list, tuple)) and info:
+                        txt = str(info[0]).strip()
+                        conf = float(info[1]) if len(info) > 1 else 1.0
+                        if txt and conf >= 0.45:
+                            line_texts.append(txt)
 
-        dx = np.abs(np.diff(crop, axis=1))
-        active_pixels = (dx > 24.0).astype(np.float32)
-
-        row_sig = np.mean(active_pixels, axis=1)
-        col_sig = np.mean(active_pixels, axis=0)
-
-        if y_accum is None:
-            y_accum = row_sig
-            x_accum = col_sig
-        elif len(row_sig) == len(y_accum) and len(col_sig) == len(x_accum):
-            y_accum += row_sig
-            x_accum += col_sig
-        valid_frames += 1
-
-    if valid_frames == 0 or y_accum is None or x_accum is None or len(y_accum) < 10:
-        return default_roi
-
-    win_y = max(3, min(16, len(y_accum) // 14))
-    y_smooth = np.convolve(y_accum, np.ones(win_y, dtype=np.float32) / win_y, mode="same")
-    peak_y = int(np.argmax(y_smooth))
-    if float(y_smooth[peak_y]) <= 0.015 * valid_frames:
-        return default_roi
-
-    h_total = float(len(y_accum)) / 0.88
-    y_start_offset = h_total * 0.08
-    band_h_px = max(16.0, h_total * 0.14)
-
-    top_rel = max(0.0, (peak_y - band_h_px * 0.5) / float(len(y_accum)))
-    bot_rel = min(1.0, (peak_y + band_h_px * 0.5) / float(len(y_accum)))
-
-    y1 = round(max(0.05, min(0.88, (y_start_offset + top_rel * len(y_accum)) / h_total)), 3)
-    y2 = round(max(y1 + 0.08, min(0.98, (y_start_offset + bot_rel * len(y_accum)) / h_total)), 3)
-
-    win_x = max(5, min(32, len(x_accum) // 12))
-    x_smooth = np.convolve(x_accum, np.ones(win_x, dtype=np.float32) / win_x, mode="same")
-    x_thresh = float(np.max(x_smooth)) * 0.35
-    active_cols = np.where(x_smooth >= x_thresh)[0]
-
-    if len(active_cols) >= 4:
-        w_total = float(len(x_accum)) / 0.90
-        x_start_offset = w_total * 0.05
-        c_left = max(0.0, float(active_cols[0]) - win_x * 0.5)
-        c_right = min(float(len(x_accum)), float(active_cols[-1]) + win_x * 0.5)
-        x1 = round(max(0.03, min(0.70, (x_start_offset + c_left) / w_total)), 3)
-        x2 = round(max(x1 + 0.25, min(0.97, (x_start_offset + c_right) / w_total)), 3)
-    else:
-        x1, x2 = 0.08, 0.92
-
-    return (x1, y1, x2, y2)
+    return " ".join(line_texts).strip()
 
 
-def extract_ocr_frames(video_path: str, work_dir: str) -> tuple[list[tuple[float, str]], tuple[float, float, float, float]]:
-    roi = detect_subtitle_roi(video_path, os.path.join(work_dir, "roi_probe"))
+def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, float, float, float], fps: float) -> list[tuple[float, str]]:
+    os.makedirs(out_dir, exist_ok=True)
     x1, y1, x2, y2 = roi
     crop_w = max(0.2, x2 - x1)
-    crop_h = max(0.06, y2 - y1)
-
-    ocr_dir = os.path.join(work_dir, "ocr_frames")
-    os.makedirs(ocr_dir, exist_ok=True)
-    fps = os.environ.get("OCR_FPS", "1.0")
-    vf_expr = f"fps={fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale=1280:-1"
+    crop_h = max(0.10, y2 - y1)
+    if crop_w >= 0.98 and crop_h >= 0.98:
+        vf_expr = f"fps={fps},scale=1280:-1"
+    else:
+        vf_expr = f"fps={fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale=1280:-1"
 
     subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-vf", vf_expr, os.path.join(ocr_dir, "f_%04d.jpg")],
+        ["ffmpeg", "-y", "-i", video_path, "-vf", vf_expr, os.path.join(out_dir, "f_%04d.jpg")],
         capture_output=True,
         text=True,
     )
     interval = 1.0 / max(0.1, float(fps))
     frames = []
-    for fname in sorted(os.listdir(ocr_dir)):
+    for fname in sorted(os.listdir(out_dir)):
         if not fname.endswith(".jpg"):
             continue
         try:
@@ -543,77 +527,42 @@ def extract_ocr_frames(video_path: str, work_dir: str) -> tuple[list[tuple[float
         except Exception:
             idx = len(frames) + 1
         ts = round((idx - 1) * interval, 2)
-        frames.append((ts, os.path.join(ocr_dir, fname)))
-
-    print(f"[INFO] Khoanh vùng phụ đề ROI: x={x1}..{x2}, y={y1}..{y2} ({len(frames)} khung hình)")
-    return frames[:120], roi
+        frames.append((ts, os.path.join(out_dir, fname)))
+    return frames[:150]
 
 
 def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[float, float, float, float]]:
-    frames, roi = extract_ocr_frames(video_path, work_dir)
-    if not frames:
-        return [], roi
-
+    """Dò đa vùng thông minh: thử dải dưới rộng trước, nếu không thấy chữ tự động quét toàn khung hình."""
+    candidate_rois = [
+        (0.04, 0.68, 0.96, 0.98),  # Dải phụ đề đáy rộng (không cắt cụt chữ)
+        (0.0, 0.0, 1.0, 1.0),      # Toàn khung hình (bắt phụ đề giữa/trên/chữ nổi)
+    ]
+    fps = float(os.environ.get("OCR_FPS", "1.0"))
+    chosen_roi = candidate_rois[0]
     ocr_records = []
+
     try:
-        from paddleocr import PaddleOCR
+        ocr = _init_paddle_ocr_engine()
+        active_frames = []
 
-        lang = os.environ.get("PADDLE_OCR_LANG", "ch")
-        use_gpu = os.environ.get("PADDLE_OCR_GPU", "0").strip() == "1"
-
-        try:
-            ocr = PaddleOCR(lang=lang, use_textline_orientation=True)
-        except Exception:
-            try:
-                ocr = PaddleOCR(lang=lang)
-            except Exception:
-                ocr = PaddleOCR(use_angle_cls=True, lang=lang, use_gpu=use_gpu)
-
-        for ts, img_path in frames:
-            line_texts = []
-            try:
-                if hasattr(ocr, "predict"):
-                    res = list(ocr.predict(img_path))
-                else:
-                    res = ocr.ocr(img_path)
-            except Exception:
+        for idx_roi, roi in enumerate(candidate_rois):
+            roi_dir = os.path.join(work_dir, f"ocr_frames_r{idx_roi}")
+            frames = _extract_frames_for_roi(video_path, roi_dir, roi, fps)
+            if not frames:
                 continue
 
-            if not res:
-                continue
+            # Kiểm tra nhanh 10 khung mẫu rải đều xem ROI này có bắt được chữ không
+            step = max(1, len(frames) // 10)
+            probe_frames = frames[::step][:10]
+            hits = sum(1 for _, p in probe_frames if _ocr_single_image(ocr, p))
+            print(f"[INFO] Thử ROI {roi}: bắt được chữ ở {hits}/{len(probe_frames)} khung mẫu.")
+            if hits > 0 or idx_roi == len(candidate_rois) - 1:
+                chosen_roi = roi
+                active_frames = frames
+                break
 
-            for item in res:
-                rec_texts = None
-                rec_scores = None
-                if isinstance(item, dict):
-                    rec_texts = item.get("rec_texts")
-                    rec_scores = item.get("rec_scores")
-                elif hasattr(item, "get"):
-                    rec_texts = item.get("rec_texts")
-                    rec_scores = item.get("rec_scores")
-                elif hasattr(item, "rec_texts"):
-                    rec_texts = getattr(item, "rec_texts", None)
-                    rec_scores = getattr(item, "rec_scores", None)
-
-                if rec_texts is not None:
-                    scores = list(rec_scores) if rec_scores is not None else [1.0] * len(rec_texts)
-                    for txt_raw, conf in zip(rec_texts, scores):
-                        txt = str(txt_raw).strip()
-                        if txt and float(conf) >= 0.50:
-                            line_texts.append(txt)
-                    continue
-
-                if isinstance(item, (list, tuple)):
-                    for det in item:
-                        if isinstance(det, (list, tuple)) and len(det) >= 2:
-                            info = det[1]
-                            if isinstance(info, (list, tuple)) and info:
-                                txt = str(info[0]).strip()
-                                conf = float(info[1]) if len(info) > 1 else 1.0
-                                if txt and conf >= 0.50:
-                                    line_texts.append(txt)
-
-            merged = " ".join(line_texts).strip()
+        for ts, img_path in active_frames:
+            merged = _ocr_single_image(ocr, img_path)
             if merged:
                 ocr_records.append({"time": ts, "text": merged})
 
@@ -623,8 +572,8 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         print(f"[WARN] PaddleOCR lỗi: {ocr_err}")
         free_gpu()
 
-    print(f"[INFO] PaddleOCR thu được {len(ocr_records)} mốc phụ đề trong vùng ROI.")
-    return ocr_records, roi
+    print(f"[INFO] Khoanh vùng phụ đề ROI chọn: {chosen_roi} → {len(ocr_records)} mốc phụ đề.")
+    return ocr_records, chosen_roi
 
 
 def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> list[dict]:
@@ -650,7 +599,7 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         source_mode = "asr_only"
         if asr_txt and ocr_txt:
             ratio = SequenceMatcher(None, asr_txt.lower(), ocr_txt.lower()).ratio()
-            if ratio >= 0.50 or (len(ocr_txt) >= len(asr_txt) * 0.75 and len(ocr_txt) >= 3):
+            if ratio >= 0.45 or (len(ocr_txt) >= len(asr_txt) * 0.70 and len(ocr_txt) >= 3):
                 best_txt = ocr_txt
                 source_mode = "ocr_verified"
                 verified_cnt += 1
@@ -673,7 +622,6 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
 
 
 def run_demucs_and_ref_voices(audio_44k: str, segments: list[dict], work_dir: str) -> tuple[str, dict]:
-    """Tách nhạc nền & vocal sạch hơn bằng htdemucs_ft trên audio 44.1kHz, lấy vocal sạch làm mẫu clone."""
     import numpy as np
     import soundfile as sf
     import torch
