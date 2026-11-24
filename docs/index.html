@@ -31,7 +31,7 @@
     }
     .card h2 { font-size: 1rem; margin: 0 0 12px; color: var(--accent); }
     label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
-    input[type="text"], input[type="password"], input[type="file"] {
+    input[type="text"], input[type="password"], input[type="url"], input[type="file"] {
       width: 100%;
       padding: 10px 12px;
       border-radius: 8px;
@@ -92,7 +92,7 @@
 <body>
   <div class="container">
     <h1>🎬 Video Dubbing Pipeline</h1>
-    <div class="subtitle">Tải video trực tiếp lên GitHub Release &amp; điều khiển pipeline 3 giai đoạn</div>
+    <div class="subtitle">Hỗ trợ cả link tải trực tiếp (khuyên dùng cho file lớn) &amp; tải file từ thiết bị</div>
 
     <div class="card">
       <h2>1. Kết nối Repository</h2>
@@ -111,15 +111,18 @@
     </div>
 
     <div class="card">
-      <h2>2. Tải video lên &amp; Khởi chạy Job (Stage 1)</h2>
+      <h2>2. Khởi chạy Job (Stage 1)</h2>
       <label for="jobIdInput">Job ID</label>
       <input id="jobIdInput" type="text" placeholder="vd: ep02" />
 
-      <label for="videoFileInput">Chọn file video (.mp4 / .mkv / .mov)</label>
+      <label for="videoUrlInput">Option A — Link tải trực tiếp (.mp4) (khuyên dùng cho file lớn)</label>
+      <input id="videoUrlInput" type="url" placeholder="https://.../video.mp4" />
+
+      <label for="videoFileInput">Option B — Chọn file video từ thiết bị (tự chia mảnh nếu &gt; 25MB)</label>
       <input id="videoFileInput" type="file" accept="video/*" />
 
       <div class="row">
-        <button id="uploadStartBtn" onclick="uploadAndStartJob()">⬆️ Tải video &amp; Chạy Stage 1</button>
+        <button id="uploadStartBtn" onclick="startJobSmart()">🚀 Chạy Stage 1</button>
         <button class="secondary" onclick="dispatchStage('stage1_completed')">⏩ Trigger Stage 2</button>
         <button class="secondary" onclick="dispatchStage('stage2_completed')">🎙️ Trigger Stage 3</button>
       </div>
@@ -135,6 +138,8 @@
   <script>
     const WORKFLOW_FILE = "pipeline_orchestrator.yml";
     const STATE_BRANCH = "pipeline-state";
+    const SINGLE_UPLOAD_LIMIT = 25 * 1024 * 1024; // 25 MB
+    const CHUNK_SIZE = 12 * 1024 * 1024; // 12 MB mỗi mảnh
 
     function showBox(id, text, isErr = false) {
       const el = document.getElementById(id);
@@ -168,120 +173,116 @@
       showBox("cfgMsg", "Đã xóa GitHub Token khỏi trình duyệt.");
     }
 
-    function ghHeaders(token, extra = {}) {
+    function ghHeaders(token) {
       return {
         "Authorization": `Bearer ${token}`,
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        ...extra
+        "Content-Type": "application/json"
       };
     }
 
-    function xhrUpload(url, token, buffer, onProgress) {
-      return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", url, true);
-        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-        xhr.setRequestHeader("Accept", "application/vnd.github+json");
-        xhr.setRequestHeader("Content-Type", "application/octet-stream");
-        xhr.timeout = 300000;
-
-        if (xhr.upload && onProgress) {
-          xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-              onProgress(Math.round((e.loaded / e.total) * 100));
-            }
-          };
-        }
-
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve(xhr.responseText);
-          } else {
-            reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`));
-          }
-        };
-        xhr.onerror = () => reject(new Error(`XHR network error tới ${url}`));
-        xhr.ontimeout = () => reject(new Error("XHR timeout khi upload"));
-        xhr.send(buffer);
-      });
+    function bufferToBase64(buffer) {
+      const bytes = new Uint8Array(buffer);
+      const step = 0x4000;
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += step) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+      }
+      return btoa(binary);
     }
 
-    async function ensureRelease(repo, token, tag) {
-      const checkRes = await fetch(`https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, {
-        headers: ghHeaders(token)
-      });
-      if (checkRes.status === 200) return await checkRes.json();
-
-      const createRes = await fetch(`https://api.github.com/repos/${repo}/releases`, {
-        method: "POST",
-        headers: ghHeaders(token, { "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          tag_name: tag,
-          name: `Media - ${tag}`,
-          draft: false,
-          prerelease: false
-        })
-      });
-      if (!createRes.ok) throw new Error(`Tạo Release thất bại (${createRes.status}): ${await createRes.text()}`);
-      return await createRes.json();
-    }
-
-    async function uploadVideoToRelease(repo, token, tag, file) {
-      showBox("actionMsg", `1/3 Đang kiểm tra/tạo Release "${tag}"...`);
-      const release = await ensureRelease(repo, token, tag);
-      const assetName = "source_input.mp4";
-
-      for (const asset of (release.assets || [])) {
-        if (asset.name === assetName) {
-          await fetch(`https://api.github.com/repos/${repo}/releases/assets/${asset.id}`, {
-            method: "DELETE",
-            headers: ghHeaders(token)
-          });
-        }
+    async function putFileToState(repo, token, path, contentB64, message) {
+      let sha = null;
+      const checkRes = await fetch(
+        `https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path)}?ref=${STATE_BRANCH}`,
+        { headers: ghHeaders(token) }
+      );
+      if (checkRes.status === 200) {
+        const d = await checkRes.json();
+        sha = d.sha || null;
+      } else if (checkRes.status !== 404) {
+        throw new Error(`Kiểm tra ${path} lỗi (${checkRes.status}): ${await checkRes.text()}`);
       }
 
-      const buffer = await file.arrayBuffer();
-      const uploadUrlBase = release.upload_url.split("{")[0];
-      const fullUploadUrl = `${uploadUrlBase}?name=${encodeURIComponent(assetName)}`;
+      const body = { message, content: contentB64, branch: STATE_BRANCH };
+      if (sha) body.sha = sha;
 
-      await xhrUpload(fullUploadUrl, token, buffer, (pct) => {
-        showBox("actionMsg", `2/3 Đang tải "${assetName}" (${(file.size / 1048576).toFixed(1)} MB): ${pct}%...`);
-      });
-
-      return assetName;
+      const putRes = await fetch(
+        `https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path)}`,
+        { method: "PUT", headers: ghHeaders(token), body: JSON.stringify(body) }
+      );
+      if (!putRes.ok) {
+        throw new Error(`Ghi ${path} thất bại (${putRes.status}): ${await putRes.text()}`);
+      }
     }
 
-    async function uploadAndStartJob() {
+    async function uploadLargeFileChunked(repo, token, jobId, file) {
+      const totalParts = Math.ceil(file.size / CHUNK_SIZE);
+      const parts = [];
+
+      for (let i = 0; i < totalParts; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(file.size, start + CHUNK_SIZE);
+        showBox("actionMsg", `📦 File lớn (${(file.size / 1048576).toFixed(1)} MB) — Đang tải mảnh ${i + 1}/${totalParts}...`);
+        const chunkBuf = await file.slice(start, end).arrayBuffer();
+        const partPath = `uploads_tmp/${jobId}/part_${String(i).padStart(4, "0")}.bin`;
+        await putFileToState(repo, token, partPath, bufferToBase64(chunkBuf), `chunk ${i + 1}/${totalParts} for ${jobId}`);
+        parts.push(partPath);
+      }
+
+      const manifestPath = `uploads_tmp/${jobId}/manifest.json`;
+      const manifestB64 = btoa(JSON.stringify({ job_id: jobId, total_parts: totalParts, parts }, null, 2));
+      await putFileToState(repo, token, manifestPath, manifestB64, `manifest for ${jobId}`);
+      return manifestPath;
+    }
+
+    async function triggerWorkflow(repo, token, jobId, videoAsset) {
+      const wfRes = await fetch(
+        `https://api.github.com/repos/${repo}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
+        {
+          method: "POST",
+          headers: ghHeaders(token),
+          body: JSON.stringify({
+            ref: "main",
+            inputs: { job_id: jobId, video_asset: videoAsset }
+          })
+        }
+      );
+      if (!wfRes.ok) throw new Error(`Kích hoạt workflow thất bại (${wfRes.status}): ${await wfRes.text()}`);
+    }
+
+    async function startJobSmart() {
       const { repo, token } = getConfig();
       const jobId = document.getElementById("jobIdInput").value.trim();
-      const fileInput = document.getElementById("videoFileInput");
-      const file = fileInput.files && fileInput.files[0];
+      const videoUrl = document.getElementById("videoUrlInput").value.trim();
+      const file = document.getElementById("videoFileInput").files?.[0];
 
       if (!repo || !token) return showBox("actionMsg", "Thiếu Repository hoặc Token.", true);
       if (!jobId) return showBox("actionMsg", "Vui lòng nhập Job ID.", true);
-      if (!file) return showBox("actionMsg", "Vui lòng chọn file video trước khi tải lên.", true);
+      if (!videoUrl && !file) {
+        return showBox("actionMsg", "Vui lòng nhập Link tải trực tiếp (.mp4) hoặc chọn file video.", true);
+      }
 
       const btn = document.getElementById("uploadStartBtn");
       btn.disabled = true;
       try {
-        const uploadedAsset = await uploadVideoToRelease(repo, token, jobId, file);
+        let assetRef = "";
+        if (videoUrl) {
+          showBox("actionMsg", `🚀 Đang kích hoạt Stage 1 với link trực tiếp...`);
+          assetRef = videoUrl;
+        } else if (file.size <= SINGLE_UPLOAD_LIMIT) {
+          showBox("actionMsg", `⬆️ Đang tải file (${(file.size / 1048576).toFixed(1)} MB)...`);
+          const tmpPath = `uploads_tmp/${jobId}_source.mp4`;
+          const buf = await file.arrayBuffer();
+          await putFileToState(repo, token, tmpPath, bufferToBase64(buf), `upload video for ${jobId}`);
+          assetRef = tmpPath;
+        } else {
+          assetRef = await uploadLargeFileChunked(repo, token, jobId, file);
+        }
 
-        showBox("actionMsg", `3/3 Đã tải xong "${uploadedAsset}". Đang kích hoạt workflow Stage 1...`);
-        const wfRes = await fetch(
-          `https://api.github.com/repos/${repo}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
-          {
-            method: "POST",
-            headers: ghHeaders(token, { "Content-Type": "application/json" }),
-            body: JSON.stringify({
-              ref: "main",
-              inputs: { job_id: jobId, video_asset: uploadedAsset }
-            })
-          }
-        );
-        if (!wfRes.ok) throw new Error(`Kích hoạt workflow thất bại (${wfRes.status}): ${await wfRes.text()}`);
-
-        showBox("actionMsg", `✅ Đã khởi chạy job "${jobId}" với file "${uploadedAsset}" (Stage 1).`);
+        await triggerWorkflow(repo, token, jobId, assetRef);
+        showBox("actionMsg", `✅ Đã khởi chạy job "${jobId}" (${assetRef}).`);
         setTimeout(loadJobs, 2000);
       } catch (err) {
         showBox("actionMsg", `❌ Lỗi: ${err.message}`, true);
@@ -301,11 +302,8 @@
           `https://api.github.com/repos/${repo}/dispatches`,
           {
             method: "POST",
-            headers: ghHeaders(token, { "Content-Type": "application/json" }),
-            body: JSON.stringify({
-              event_type: eventType,
-              client_payload: { job_id: jobId }
-            })
+            headers: ghHeaders(token),
+            body: JSON.stringify({ event_type: eventType, client_payload: { job_id: jobId } })
           }
         );
         if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
