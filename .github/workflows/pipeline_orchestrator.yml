@@ -56,8 +56,6 @@ jobs:
             fi
           fi
 
-          python -c "import six, kaggle; print('OK six:', six.__file__)"
-
       - name: Register initial job in pipeline-state branch (Stage 1 only)
         if: steps.meta.outputs.stage == 'perception'
         env:
@@ -126,21 +124,34 @@ jobs:
           KAGGLE_USERNAME: ${{ secrets.PERCEPTION_KAGGLE_USER }}
           KAGGLE_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
           KAGGLE_API_TOKEN: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
+          JOB_ID: ${{ steps.meta.outputs.job_id }}
+          GH_REPO: ${{ github.repository }}
+          GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           mkdir -p ~/.kaggle
           printf "%s" "$KAGGLE_API_TOKEN" > ~/.kaggle/access_token
           chmod 600 ~/.kaggle/access_token
-          cat <<EOF > 01_perception/job_config.json
-          {
-            "JOB_ID": "${{ steps.meta.outputs.job_id }}",
-            "GH_REPO": "${{ github.repository }}",
-            "GH_PAT_TOKEN": "${{ secrets.GH_PAT_TOKEN }}",
-            "TELEGRAM_BOT_TOKEN": "${{ secrets.TELEGRAM_BOT_TOKEN }}",
-            "TELEGRAM_CHAT_ID": "${{ secrets.TELEGRAM_CHAT_ID }}"
+          python - <<'EOF'
+          import os
+          p = "01_perception/run_perception.py"
+          with open(p, "r", encoding="utf-8") as f:
+              code = f.read()
+          replacements = {
+              "__INJECT_JOB_ID__": os.environ["JOB_ID"],
+              "__INJECT_GH_REPO__": os.environ["GH_REPO"],
+              "__INJECT_GH_PAT_TOKEN__": os.environ["GH_PAT_TOKEN"],
+              "__INJECT_TELEGRAM_BOT_TOKEN__": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+              "__INJECT_TELEGRAM_CHAT_ID__": os.environ.get("TELEGRAM_CHAT_ID", ""),
           }
+          for k, v in replacements.items():
+              code = code.replace(k, v)
+          with open(p, "w", encoding="utf-8") as f:
+              f.write(code)
           EOF
           kaggle kernels push -p 01_perception
-          rm -f 01_perception/job_config.json
+          git checkout -- 01_perception/run_perception.py
 
       - name: Push Stage 2 Kernel (Translation)
         if: steps.meta.outputs.stage == 'translation'
@@ -148,21 +159,34 @@ jobs:
           KAGGLE_USERNAME: ${{ secrets.TRANSLATION_KAGGLE_USER }}
           KAGGLE_KEY: ${{ secrets.TRANSLATION_KAGGLE_KEY }}
           KAGGLE_API_TOKEN: ${{ secrets.TRANSLATION_KAGGLE_KEY }}
+          JOB_ID: ${{ steps.meta.outputs.job_id }}
+          GH_REPO: ${{ github.repository }}
+          GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           mkdir -p ~/.kaggle
           printf "%s" "$KAGGLE_API_TOKEN" > ~/.kaggle/access_token
           chmod 600 ~/.kaggle/access_token
-          cat <<EOF > 02_translation/job_config.json
-          {
-            "JOB_ID": "${{ steps.meta.outputs.job_id }}",
-            "GH_REPO": "${{ github.repository }}",
-            "GH_PAT_TOKEN": "${{ secrets.GH_PAT_TOKEN }}",
-            "TELEGRAM_BOT_TOKEN": "${{ secrets.TELEGRAM_BOT_TOKEN }}",
-            "TELEGRAM_CHAT_ID": "${{ secrets.TELEGRAM_CHAT_ID }}"
+          python - <<'EOF'
+          import os
+          p = "02_translation/run_translation.py"
+          with open(p, "r", encoding="utf-8") as f:
+              code = f.read()
+          replacements = {
+              "__INJECT_JOB_ID__": os.environ["JOB_ID"],
+              "__INJECT_GH_REPO__": os.environ["GH_REPO"],
+              "__INJECT_GH_PAT_TOKEN__": os.environ["GH_PAT_TOKEN"],
+              "__INJECT_TELEGRAM_BOT_TOKEN__": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+              "__INJECT_TELEGRAM_CHAT_ID__": os.environ.get("TELEGRAM_CHAT_ID", ""),
           }
+          for k, v in replacements.items():
+              code = code.replace(k, v)
+          with open(p, "w", encoding="utf-8") as f:
+              f.write(code)
           EOF
           kaggle kernels push -p 02_translation
-          rm -f 02_translation/job_config.json
+          git checkout -- 02_translation/run_translation.py
 
       - name: Push Stage 3 Kernel (Synthesis)
         if: steps.meta.outputs.stage == 'synthesis'
@@ -170,18 +194,31 @@ jobs:
           KAGGLE_USERNAME: ${{ secrets.SYNTHESIS_KAGGLE_USER }}
           KAGGLE_KEY: ${{ secrets.SYNTHESIS_KAGGLE_KEY }}
           KAGGLE_API_TOKEN: ${{ secrets.SYNTHESIS_KAGGLE_KEY }}
+          JOB_ID: ${{ steps.meta.outputs.job_id }}
+          GH_REPO: ${{ github.repository }}
+          GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           mkdir -p ~/.kaggle
           printf "%s" "$KAGGLE_API_TOKEN" > ~/.kaggle/access_token
           chmod 600 ~/.kaggle/access_token
-          cat <<EOF > 03_synthesis/job_config.json
-          {
-            "JOB_ID": "${{ steps.meta.outputs.job_id }}",
-            "GH_REPO": "${{ github.repository }}",
-            "GH_PAT_TOKEN": "${{ secrets.GH_PAT_TOKEN }}",
-            "TELEGRAM_BOT_TOKEN": "${{ secrets.TELEGRAM_BOT_TOKEN }}",
-            "TELEGRAM_CHAT_ID": "${{ secrets.TELEGRAM_CHAT_ID }}"
+          python - <<'EOF'
+          import os
+          p = "03_synthesis/run_synthesis.py"
+          with open(p, "r", encoding="utf-8") as f:
+              code = f.read()
+          replacements = {
+              "__INJECT_JOB_ID__": os.environ["JOB_ID"],
+              "__INJECT_GH_REPO__": os.environ["GH_REPO"],
+              "__INJECT_GH_PAT_TOKEN__": os.environ["GH_PAT_TOKEN"],
+              "__INJECT_TELEGRAM_BOT_TOKEN__": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+              "__INJECT_TELEGRAM_CHAT_ID__": os.environ.get("TELEGRAM_CHAT_ID", ""),
           }
+          for k, v in replacements.items():
+              code = code.replace(k, v)
+          with open(p, "w", encoding="utf-8") as f:
+              f.write(code)
           EOF
           kaggle kernels push -p 03_synthesis
-          rm -f 03_synthesis/job_config.json
+          git checkout -- 03_synthesis/run_synthesis.py
