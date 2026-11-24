@@ -1,4 +1,5 @@
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import gc
 import glob
@@ -143,6 +144,7 @@ def ensure_deps():
             sys.executable, "-m", "pip", "install", "-q", "--upgrade",
             "faster-whisper", "nvidia-cublas-cu12", "nvidia-cudnn-cu12",
             "demucs", "soundfile", "gdown", "transformers", "accelerate",
+            "paddlepaddle", "paddleocr",
         ],
         check=True,
     )
@@ -275,6 +277,80 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
     return segments
 
 
+def extract_ocr_frames(video_path: str, work_dir: str) -> list[tuple[float, str]]:
+    ocr_dir = os.path.join(work_dir, "ocr_frames")
+    os.makedirs(ocr_dir, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path, "-vf", "fps=0.5,scale=960:-1", os.path.join(ocr_dir, "f_%04d.jpg")],
+        capture_output=True,
+        text=True,
+    )
+    frames = []
+    for fname in sorted(os.listdir(ocr_dir)):
+        if not fname.endswith(".jpg"):
+            continue
+        try:
+            idx = int(fname.split("_")[1].split(".")[0])
+        except Exception:
+            idx = len(frames)
+        ts = round((idx - 1) * 2.0 if idx >= 1 else 0.0, 2)
+        frames.append((ts, os.path.join(ocr_dir, fname)))
+    return frames[:45]
+
+
+def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
+    frames = extract_ocr_frames(video_path, work_dir)
+    if not frames:
+        return []
+
+    ocr_records = []
+    seen_texts = set()
+    try:
+        from paddleocr import PaddleOCR
+
+        lang = os.environ.get("PADDLE_OCR_LANG", "ch")
+        use_gpu = os.environ.get("PADDLE_OCR_GPU", "0").strip() == "1"
+        try:
+            ocr = PaddleOCR(use_angle_cls=True, lang=lang, use_gpu=use_gpu, show_log=False)
+        except TypeError:
+            ocr = PaddleOCR(lang=lang)
+
+        for ts, img_path in frames:
+            try:
+                res = ocr.ocr(img_path)
+            except TypeError:
+                res = ocr.ocr(img_path, cls=True)
+            except Exception:
+                continue
+
+            line_texts = []
+            if res and isinstance(res, list):
+                for page in res:
+                    if not page:
+                        continue
+                    for item in page:
+                        if isinstance(item, (list, tuple)) and len(item) >= 2:
+                            info = item[1]
+                            if isinstance(info, (list, tuple)) and info:
+                                txt = str(info[0]).strip()
+                                conf = float(info[1]) if len(info) > 1 else 1.0
+                                if txt and conf >= 0.5:
+                                    line_texts.append(txt)
+
+            merged = " | ".join(line_texts).strip()
+            if merged and merged not in seen_texts:
+                seen_texts.add(merged)
+                ocr_records.append({"time": ts, "text": merged})
+
+        del ocr
+        free_gpu()
+    except Exception as ocr_err:
+        print(f"[WARN] PaddleOCR bỏ qua do lỗi môi trường: {ocr_err}")
+        free_gpu()
+
+    return ocr_records
+
+
 def run_demucs_and_ref_voice(audio_16k: str, segments: list[dict], work_dir: str) -> str:
     import soundfile as sf
     import torch
@@ -328,58 +404,6 @@ def run_demucs_and_ref_voice(audio_16k: str, segments: list[dict], work_dir: str
     return no_vocals_out
 
 
-def optional_qwen_vl_context(video_path: str, work_dir: str) -> str:
-    if os.environ.get("ENABLE_QWEN_VL", "0").strip() != "1":
-        return ""
-    try:
-        import torch
-        from PIL import Image
-        from transformers import AutoModelForVision2Seq, AutoProcessor
-
-        frame_path = os.path.join(work_dir, "keyframe.jpg")
-        subprocess.run(
-            ["ffmpeg", "-y", "-ss", "00:00:05", "-i", video_path, "-frames:v", "1", frame_path],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if not os.path.exists(frame_path):
-            return ""
-
-        model_id = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
-        processor = AutoProcessor.from_pretrained(model_id)
-        model = AutoModelForVision2Seq.from_pretrained(
-            model_id,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto" if torch.cuda.is_available() else None,
-        )
-        image = Image.open(frame_path).convert("RGB")
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": "Mô tả ngắn gọn bối cảnh phim, nhân vật và sắc thái cảnh này trong 2 câu."},
-                ],
-            }
-        ]
-        prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = processor(text=[prompt], images=[image], return_tensors="pt")
-        if torch.cuda.is_available():
-            inputs = {k: v.to(model.device) for k, v in inputs.items()}
-        with torch.no_grad():
-            out_ids = model.generate(**inputs, max_new_tokens=120)
-        trimmed = [out[len(inp):] for inp, out in zip(inputs["input_ids"], out_ids)]
-        desc = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
-
-        del model, processor
-        free_gpu()
-        return desc
-    except Exception:
-        free_gpu()
-        return ""
-
-
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
@@ -410,9 +434,15 @@ def main():
         raise RuntimeError(f"FFmpeg lỗi (code {ff_res.returncode}):\n{ff_res.stderr[-1500:]}")
 
     ensure_deps()
-    segments = run_whisper_asr(audio_16k)
+
+    # Chạy song song ASR (Whisper) và PaddleOCR
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_asr = pool.submit(run_whisper_asr, audio_16k)
+        fut_ocr = pool.submit(run_paddle_ocr, video_path, work_dir)
+        segments = fut_asr.result()
+        screen_texts = fut_ocr.result()
+
     no_vocals_path = run_demucs_and_ref_voice(audio_16k, segments, work_dir)
-    scene_context = optional_qwen_vl_context(video_path, work_dir)
 
     if os.path.exists(no_vocals_path):
         sync.upload_asset(JOB_ID, no_vocals_path)
@@ -421,9 +451,13 @@ def main():
         if fname.startswith("ref_speaker_") and fname.endswith(".wav"):
             sync.upload_asset(JOB_ID, os.path.join(work_dir, fname))
 
+    ocr_summary = "; ".join(f"[{r['time']}s] {r['text']}" for r in screen_texts[:12])
+    scene_context = f"Chữ/phụ đề màn hình (PaddleOCR): {ocr_summary}" if ocr_summary else ""
+
     stage1_payload = {
         "job_id": JOB_ID,
         "video_asset": video_asset,
+        "screen_texts": screen_texts,
         "scene_context": scene_context,
         "segments": segments,
     }
@@ -437,7 +471,7 @@ def main():
     send_telegram(
         TG_TOKEN,
         TG_CHAT,
-        f"✅ <b>[Stage 1]</b> Hoàn tất <code>{JOB_ID}</code> ({len(segments)} câu thoại) → chuyển sang Stage 2.",
+        f"✅ <b>[Stage 1]</b> Hoàn tất <code>{JOB_ID}</code> ({len(segments)} câu thoại, {len(screen_texts)} dòng OCR) → chuyển sang Stage 2.",
     )
 
 
