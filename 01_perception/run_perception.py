@@ -322,7 +322,6 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
         del asr_pipe
         free_gpu()
 
-    # Phân tách nhân vật theo cao độ (F0) để hỗ trợ đa giọng nam/nữ khi có sự chênh lệch rõ
     for s in segments:
         f0 = float(s.get("pitch_hz") or 0.0)
         if f0 > 0 and f0 < 155.0:
@@ -337,12 +336,104 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
     return segments
 
 
-def extract_ocr_frames(video_path: str, work_dir: str) -> list[tuple[float, str]]:
+def detect_subtitle_roi(video_path: str, probe_dir: str) -> tuple[float, float, float, float]:
+    """Tự động dò vùng phụ đề (x1, y1, x2, y2 theo tỷ lệ 0..1) linh hoạt trên toàn khung hình."""
+    import numpy as np
+    from PIL import Image
+
+    default_roi = (0.08, 0.70, 0.92, 0.95)
+    os.makedirs(probe_dir, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path, "-vf", "fps=0.4,scale=640:-1", os.path.join(probe_dir, "p_%04d.jpg")],
+        capture_output=True,
+        text=True,
+    )
+    imgs = sorted(f for f in os.listdir(probe_dir) if f.endswith(".jpg"))[:24]
+    if not imgs:
+        return default_roi
+
+    y_accum = None
+    x_accum = None
+    valid_frames = 0
+
+    for fname in imgs:
+        arr = np.asarray(Image.open(os.path.join(probe_dir, fname)).convert("L"), dtype=np.float32)
+        h, w = arr.shape
+        if h < 40 or w < 40:
+            continue
+
+        y_min_px = int(h * 0.08)
+        y_max_px = int(h * 0.96)
+        x_min_px = int(w * 0.05)
+        x_max_px = int(w * 0.95)
+        crop = arr[y_min_px:y_max_px, x_min_px:x_max_px]
+        if crop.size == 0:
+            continue
+
+        dx = np.abs(np.diff(crop, axis=1))
+        active_pixels = (dx > 24.0).astype(np.float32)
+
+        row_sig = np.mean(active_pixels, axis=1)
+        col_sig = np.mean(active_pixels, axis=0)
+
+        if y_accum is None:
+            y_accum = row_sig
+            x_accum = col_sig
+        elif len(row_sig) == len(y_accum) and len(col_sig) == len(x_accum):
+            y_accum += row_sig
+            x_accum += col_sig
+        valid_frames += 1
+
+    if valid_frames == 0 or y_accum is None or x_accum is None or len(y_accum) < 10:
+        return default_roi
+
+    win_y = max(3, min(16, len(y_accum) // 14))
+    y_smooth = np.convolve(y_accum, np.ones(win_y, dtype=np.float32) / win_y, mode="same")
+    peak_y = int(np.argmax(y_smooth))
+    if float(y_smooth[peak_y]) <= 0.015 * valid_frames:
+        return default_roi
+
+    h_total = float(len(y_accum)) / 0.88
+    y_start_offset = h_total * 0.08
+    band_h_px = max(16.0, h_total * 0.14)
+
+    top_rel = max(0.0, (peak_y - band_h_px * 0.5) / float(len(y_accum)))
+    bot_rel = min(1.0, (peak_y + band_h_px * 0.5) / float(len(y_accum)))
+
+    y1 = round(max(0.05, min(0.88, (y_start_offset + top_rel * len(y_accum)) / h_total)), 3)
+    y2 = round(max(y1 + 0.08, min(0.98, (y_start_offset + bot_rel * len(y_accum)) / h_total)), 3)
+
+    win_x = max(5, min(32, len(x_accum) // 12))
+    x_smooth = np.convolve(x_accum, np.ones(win_x, dtype=np.float32) / win_x, mode="same")
+    x_thresh = float(np.max(x_smooth)) * 0.35
+    active_cols = np.where(x_smooth >= x_thresh)[0]
+
+    if len(active_cols) >= 4:
+        w_total = float(len(x_accum)) / 0.90
+        x_start_offset = w_total * 0.05
+        c_left = max(0.0, float(active_cols[0]) - win_x * 0.5)
+        c_right = min(float(len(x_accum)), float(active_cols[-1]) + win_x * 0.5)
+        x1 = round(max(0.03, min(0.70, (x_start_offset + c_left) / w_total)), 3)
+        x2 = round(max(x1 + 0.25, min(0.97, (x_start_offset + c_right) / w_total)), 3)
+    else:
+        x1, x2 = 0.08, 0.92
+
+    return (x1, y1, x2, y2)
+
+
+def extract_ocr_frames(video_path: str, work_dir: str) -> tuple[list[tuple[float, str]], tuple[float, float, float, float]]:
+    roi = detect_subtitle_roi(video_path, os.path.join(work_dir, "roi_probe"))
+    x1, y1, x2, y2 = roi
+    crop_w = max(0.2, x2 - x1)
+    crop_h = max(0.06, y2 - y1)
+
     ocr_dir = os.path.join(work_dir, "ocr_frames")
     os.makedirs(ocr_dir, exist_ok=True)
     fps = os.environ.get("OCR_FPS", "1.0")
+    vf_expr = f"fps={fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale=1280:-1"
+
     subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-vf", f"fps={fps},scale=1280:-1", os.path.join(ocr_dir, "f_%04d.jpg")],
+        ["ffmpeg", "-y", "-i", video_path, "-vf", vf_expr, os.path.join(ocr_dir, "f_%04d.jpg")],
         capture_output=True,
         text=True,
     )
@@ -357,13 +448,15 @@ def extract_ocr_frames(video_path: str, work_dir: str) -> list[tuple[float, str]
             idx = len(frames) + 1
         ts = round((idx - 1) * interval, 2)
         frames.append((ts, os.path.join(ocr_dir, fname)))
-    return frames[:120]
+
+    print(f"[INFO] Khoanh vùng phụ đề ROI: x={x1}..{x2}, y={y1}..{y2} ({len(frames)} khung hình)")
+    return frames[:120], roi
 
 
-def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
-    frames = extract_ocr_frames(video_path, work_dir)
+def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[float, float, float, float]]:
+    frames, roi = extract_ocr_frames(video_path, work_dir)
     if not frames:
-        return []
+        return [], roi
 
     ocr_records = []
     try:
@@ -410,7 +503,7 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
                     scores = list(rec_scores) if rec_scores is not None else [1.0] * len(rec_texts)
                     for txt_raw, conf in zip(rec_texts, scores):
                         txt = str(txt_raw).strip()
-                        if txt and float(conf) >= 0.55:
+                        if txt and float(conf) >= 0.50:
                             line_texts.append(txt)
                     continue
 
@@ -421,7 +514,7 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
                             if isinstance(info, (list, tuple)) and info:
                                 txt = str(info[0]).strip()
                                 conf = float(info[1]) if len(info) > 1 else 1.0
-                                if txt and conf >= 0.55:
+                                if txt and conf >= 0.50:
                                     line_texts.append(txt)
 
             merged = " ".join(line_texts).strip()
@@ -434,8 +527,8 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
         print(f"[WARN] PaddleOCR lỗi: {ocr_err}")
         free_gpu()
 
-    print(f"[INFO] PaddleOCR thu được {len(ocr_records)} mốc có chữ/phụ đề.")
-    return ocr_records
+    print(f"[INFO] PaddleOCR thu được {len(ocr_records)} mốc phụ đề trong vùng ROI.")
+    return ocr_records, roi
 
 
 def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> list[dict]:
@@ -449,7 +542,7 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         matched_ocrs = [
             r["text"].strip()
             for r in ocr_records
-            if (s_t - 0.8) <= float(r["time"]) <= (e_t + 0.8) and r.get("text")
+            if (s_t - 1.0) <= float(r["time"]) <= (e_t + 1.0) and r.get("text")
         ]
         dedup_ocrs = []
         for t in matched_ocrs:
@@ -461,7 +554,7 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         source_mode = "asr_only"
         if asr_txt and ocr_txt:
             ratio = SequenceMatcher(None, asr_txt.lower(), ocr_txt.lower()).ratio()
-            if ratio >= 0.55 or (len(ocr_txt) >= len(asr_txt) * 0.8 and len(ocr_txt) >= 3):
+            if ratio >= 0.50 or (len(ocr_txt) >= len(asr_txt) * 0.75 and len(ocr_txt) >= 3):
                 best_txt = ocr_txt
                 source_mode = "ocr_verified"
                 verified_cnt += 1
@@ -529,7 +622,6 @@ def run_demucs_and_ref_voices(audio_16k: str, segments: list[dict], work_dir: st
             by_speaker.setdefault(spk, []).append(seg)
 
         for spk, spk_segs in by_speaker.items():
-            # Chọn đoạn dài >= 2.5s và có RMS cao nhất (rõ tiếng nhất)
             candidates = [s for s in spk_segs if (float(s["end"]) - float(s["start"])) >= 2.5] or spk_segs
             best_seg = max(
                 candidates,
@@ -543,7 +635,6 @@ def run_demucs_and_ref_voices(audio_16k: str, segments: list[dict], work_dir: st
             end_s = min(len(data) / float(sr), max(start_s + 2.5, min(float(best_seg["end"]) - 0.15, start_s + 6.5)))
             if end_s > start_s:
                 clip = data[int(start_s * sr): int(end_s * sr)].astype(np.float32)
-                # Chuẩn hóa biên độ mẫu giọng clone về mức RMS ~0.08
                 rms = float(np.sqrt(np.mean(clip ** 2)))
                 if rms > 1e-5:
                     clip = np.clip(clip * (0.08 / rms), -0.95, 0.95)
@@ -598,7 +689,7 @@ def main():
         fut_asr = pool.submit(run_whisper_asr, audio_16k)
         fut_ocr = pool.submit(run_paddle_ocr, video_path, work_dir)
         raw_segments = fut_asr.result()
-        screen_texts = fut_ocr.result()
+        screen_texts, roi = fut_ocr.result()
 
     segments = align_and_refine_segments(raw_segments, screen_texts)
     no_vocals_path, speaker_refs = run_demucs_and_ref_voices(audio_16k, segments, work_dir)
@@ -616,6 +707,7 @@ def main():
     stage1_payload = {
         "job_id": JOB_ID,
         "video_asset": video_asset,
+        "subtitle_roi": {"x1": roi[0], "y1": roi[1], "x2": roi[2], "y2": roi[3]},
         "screen_texts": screen_texts,
         "scene_context": scene_context,
         "speaker_refs": speaker_refs,
