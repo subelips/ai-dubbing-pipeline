@@ -1,4 +1,5 @@
 import base64
+import gc
 import json
 import os
 import subprocess
@@ -133,6 +134,24 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
     )
 
 
+def ensure_deps():
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q", "faster-whisper", "demucs", "soundfile", "gdown"],
+        check=True,
+    )
+
+
+def free_gpu():
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+
 def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
     ref = (source_ref or "source_input.mp4").strip()
     if ref.startswith(("http://", "https://")):
@@ -143,6 +162,141 @@ def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path
             subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
     else:
         sync.download_asset(tag, ref, dest_path)
+
+
+def run_whisper_asr(audio_16k: str) -> list[dict]:
+    import torch
+    from faster_whisper import WhisperModel
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    compute_type = "float16" if device == "cuda" else "int8"
+    model_size = os.environ.get("WHISPER_MODEL", "large-v3")
+
+    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+    raw_segments, _ = model.transcribe(audio_16k, beam_size=5, vad_filter=True)
+
+    segments = []
+    for idx, seg in enumerate(raw_segments):
+        txt = (seg.text or "").strip()
+        if not txt:
+            continue
+        segments.append({
+            "id": idx,
+            "start": round(float(seg.start), 2),
+            "end": round(float(seg.end), 2),
+            "speaker_id": "SPEAKER_00",
+            "asr_text": txt,
+        })
+
+    del model
+    free_gpu()
+    return segments
+
+
+def run_demucs_and_ref_voice(audio_16k: str, segments: list[dict], work_dir: str) -> str:
+    import soundfile as sf
+    import torch
+
+    no_vocals_out = os.path.join(work_dir, "no_vocals.wav")
+    demucs_out_dir = os.path.join(work_dir, "demucs_out")
+    os.makedirs(demucs_out_dir, exist_ok=True)
+
+    cmd = ["demucs", "-n", "htdemucs", "--two-stems", "vocals", "-o", demucs_out_dir, audio_16k]
+    if not torch.cuda.is_available():
+        cmd.extend(["-d", "cpu"])
+
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode == 0:
+        for root, _, files in os.walk(demucs_out_dir):
+            if "no_vocals.wav" in files:
+                src_nv = os.path.join(root, "no_vocals.wav")
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", src_nv, "-ac", "2", "-ar", "44100", no_vocals_out],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                break
+
+    if not os.path.exists(no_vocals_out):
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", audio_16k, "-ac", "2", "-ar", "44100", no_vocals_out],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    # Cắt file giọng tham chiếu đầu tiên (dài ~6-10s) cho Stage 3 clone giọng
+    try:
+        data, sr = sf.read(audio_16k)
+        start_s, end_s = 0.0, min(8.0, len(data) / float(sr))
+        for seg in segments:
+            dur = float(seg["end"]) - float(seg["start"])
+            if dur >= 3.0:
+                start_s = float(seg["start"])
+                end_s = min(float(seg["end"]), start_s + 8.0)
+                break
+        if end_s > start_s:
+            clip = data[int(start_s * sr): int(end_s * sr)]
+            ref_path = os.path.join(work_dir, "ref_speaker_SPEAKER_00.wav")
+            sf.write(ref_path, clip, sr)
+    except Exception:
+        pass
+
+    free_gpu()
+    return no_vocals_out
+
+
+def optional_qwen_vl_context(video_path: str, work_dir: str) -> str:
+    if os.environ.get("ENABLE_QWEN_VL", "0").strip() != "1":
+        return ""
+    try:
+        import torch
+        from PIL import Image
+        from transformers import AutoModelForVision2Seq, AutoProcessor
+
+        frame_path = os.path.join(work_dir, "keyframe.jpg")
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", "00:00:05", "-i", video_path, "-frames:v", "1", frame_path],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if not os.path.exists(frame_path):
+            return ""
+
+        model_id = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+        processor = AutoProcessor.from_pretrained(model_id)
+        model = AutoModelForVision2Seq.from_pretrained(
+            model_id,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto" if torch.cuda.is_available() else None,
+        )
+        image = Image.open(frame_path).convert("RGB")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": "Mô tả ngắn gọn bối cảnh phim, nhân vật và sắc thái cảnh này trong 2 câu."},
+                ],
+            }
+        ]
+        prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = processor(text=[prompt], images=[image], return_tensors="pt")
+        if torch.cuda.is_available():
+            inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        with torch.no_grad():
+            out_ids = model.generate(**inputs, max_new_tokens=120)
+        trimmed = [out[len(inp):] for inp, out in zip(inputs["input_ids"], out_ids)]
+        desc = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
+
+        del model, processor
+        free_gpu()
+        return desc
+    except Exception:
+        free_gpu()
+        return ""
 
 
 sync = GitHubSync(GH_REPO, GH_TOKEN)
@@ -174,9 +328,11 @@ def main():
     if ff_res.returncode != 0:
         raise RuntimeError(f"FFmpeg lỗi (code {ff_res.returncode}):\n{ff_res.stderr[-1500:]}")
 
-    # Xử lý Whisper-large-v3 + Demucs (cuda:0) & PaddleOCR + Qwen2.5-VL-7B (cuda:1)
+    ensure_deps()
+    segments = run_whisper_asr(audio_16k)
+    no_vocals_path = run_demucs_and_ref_voice(audio_16k, segments, work_dir)
+    scene_context = optional_qwen_vl_context(video_path, work_dir)
 
-    no_vocals_path = os.path.join(work_dir, "no_vocals.wav")
     if os.path.exists(no_vocals_path):
         sync.upload_asset(JOB_ID, no_vocals_path)
 
@@ -187,7 +343,8 @@ def main():
     stage1_payload = {
         "job_id": JOB_ID,
         "video_asset": video_asset,
-        "segments": [],
+        "scene_context": scene_context,
+        "segments": segments,
     }
     sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done: {JOB_ID}")
 
@@ -196,7 +353,11 @@ def main():
     sync.write_json("state/jobs.json", updated_jobs, f"update status STAGE1_DONE: {JOB_ID}")
 
     sync.trigger_dispatch("stage1_completed", {"job_id": JOB_ID})
-    send_telegram(TG_TOKEN, TG_CHAT, f"✅ <b>[Stage 1]</b> Hoàn tất <code>{JOB_ID}</code> → chuyển sang Stage 2.")
+    send_telegram(
+        TG_TOKEN,
+        TG_CHAT,
+        f"✅ <b>[Stage 1]</b> Hoàn tất <code>{JOB_ID}</code> ({len(segments)} câu thoại) → chuyển sang Stage 2.",
+    )
 
 
 if __name__ == "__main__":
