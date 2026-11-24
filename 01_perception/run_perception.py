@@ -1,7 +1,10 @@
 import base64
+import ctypes
 import gc
+import glob
 import json
 import os
+import site
 import subprocess
 import sys
 import time
@@ -136,10 +139,13 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
 
 def ensure_deps():
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "faster-whisper", "demucs", "soundfile", "gdown"],
+        [
+            sys.executable, "-m", "pip", "install", "-q", "--upgrade",
+            "faster-whisper", "nvidia-cublas-cu12", "nvidia-cudnn-cu12",
+            "demucs", "soundfile", "gdown", "transformers", "accelerate",
+        ],
         check=True,
     )
-
 
 
 def free_gpu():
@@ -165,40 +171,108 @@ def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path
         sync.download_asset(tag, ref, dest_path)
 
 
+def _preload_cuda12_libs():
+    search_roots = list(site.getsitepackages())
+    if site.getusersitepackages():
+        search_roots.append(site.getusersitepackages())
+
+    extra_dirs = []
+    for root in search_roots:
+        for pattern in [
+            os.path.join(root, "nvidia", "cublas", "lib", "libcublas.so.12*"),
+            os.path.join(root, "nvidia", "cublas", "lib", "libcublasLt.so.12*"),
+            os.path.join(root, "nvidia", "cudnn", "lib", "libcudnn*.so.9*"),
+            os.path.join(root, "nvidia", "cudnn", "lib", "libcudnn*.so.8*"),
+        ]:
+            for so_path in sorted(glob.glob(pattern)):
+                lib_dir = os.path.dirname(so_path)
+                if lib_dir not in extra_dirs:
+                    extra_dirs.append(lib_dir)
+                try:
+                    ctypes.CDLL(so_path, mode=ctypes.RTLD_GLOBAL)
+                except Exception:
+                    pass
+
+    if extra_dirs:
+        current_ld = os.environ.get("LD_LIBRARY_PATH", "")
+        os.environ["LD_LIBRARY_PATH"] = ":".join(extra_dirs + ([current_ld] if current_ld else []))
+
+
 def run_whisper_asr(audio_16k: str) -> list[dict]:
     import numpy as np
     import soundfile as sf
     import torch
-    from faster_whisper import WhisperModel
 
     audio_np, sr = sf.read(audio_16k, dtype="float32")
     if audio_np.ndim > 1:
         audio_np = audio_np.mean(axis=-1)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    compute_type = "float16" if device == "cuda" else "int8"
     model_size = os.environ.get("WHISPER_MODEL", "large-v3")
 
-    model = WhisperModel(model_size, device=device, compute_type=compute_type)
-    raw_segments, _ = model.transcribe(audio_np, beam_size=5, vad_filter=True)
+    try:
+        _preload_cuda12_libs()
+        from faster_whisper import WhisperModel
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        compute_type = "float16" if device == "cuda" else "int8"
+        model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        raw_segments, _ = model.transcribe(audio_np, beam_size=5, vad_filter=True)
+
+        segments = []
+        for idx, seg in enumerate(raw_segments):
+            txt = (seg.text or "").strip()
+            if not txt:
+                continue
+            segments.append({
+                "id": idx,
+                "start": round(float(seg.start), 2),
+                "end": round(float(seg.end), 2),
+                "speaker_id": "SPEAKER_00",
+                "asr_text": txt,
+            })
+
+        del model
+        free_gpu()
+        return segments
+    except Exception as fw_err:
+        print(f"[WARN] faster-whisper fallback sang PyTorch Whisper do: {fw_err}")
+        free_gpu()
+
+    from transformers import pipeline
+
+    hf_model = f"openai/whisper-{model_size}" if "/" not in model_size else model_size
+    asr_pipe = pipeline(
+        "automatic-speech-recognition",
+        model=hf_model,
+        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+        device=0 if torch.cuda.is_available() else -1,
+    )
+    result = asr_pipe(
+        {"array": audio_np, "sampling_rate": sr},
+        chunk_length_s=30,
+        batch_size=8,
+        return_timestamps=True,
+    )
 
     segments = []
-    for idx, seg in enumerate(raw_segments):
-        txt = (seg.text or "").strip()
+    for idx, chunk in enumerate(result.get("chunks", [])):
+        txt = (chunk.get("text") or "").strip()
+        ts = chunk.get("timestamp") or (0.0, 0.0)
+        start_t = float(ts[0]) if ts[0] is not None else 0.0
+        end_t = float(ts[1]) if ts[1] is not None else start_t + 2.0
         if not txt:
             continue
         segments.append({
             "id": idx,
-            "start": round(float(seg.start), 2),
-            "end": round(float(seg.end), 2),
+            "start": round(start_t, 2),
+            "end": round(max(end_t, start_t + 0.5), 2),
             "speaker_id": "SPEAKER_00",
             "asr_text": txt,
         })
 
-    del model
+    del asr_pipe
     free_gpu()
     return segments
-
 
 
 def run_demucs_and_ref_voice(audio_16k: str, segments: list[dict], work_dir: str) -> str:
@@ -234,7 +308,6 @@ def run_demucs_and_ref_voice(audio_16k: str, segments: list[dict], work_dir: str
             stderr=subprocess.DEVNULL,
         )
 
-    # Cắt file giọng tham chiếu đầu tiên (dài ~6-10s) cho Stage 3 clone giọng
     try:
         data, sr = sf.read(audio_16k)
         start_s, end_s = 0.0, min(8.0, len(data) / float(sr))
