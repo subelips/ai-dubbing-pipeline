@@ -6,6 +6,7 @@ import gc
 import glob
 import json
 import os
+import re
 import site
 import subprocess
 import sys
@@ -167,12 +168,20 @@ def free_gpu():
         pass
 
 
+def _normalize_gdrive_url(url: str) -> str:
+    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url) or re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
+    if m:
+        return f"https://drive.google.com/uc?id={m.group(1)}"
+    return url
+
+
 def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
     ref = (source_ref or "source_input.mp4").strip()
     if ref.startswith(("http://", "https://")):
         if "drive.google.com" in ref:
             subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=True)
-            subprocess.run([sys.executable, "-m", "gdown", "--fuzzy", ref, "-O", dest_path], check=True)
+            direct_url = _normalize_gdrive_url(ref)
+            subprocess.run([sys.executable, "-m", "gdown", direct_url, "-O", dest_path], check=True)
         else:
             subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
     else:
