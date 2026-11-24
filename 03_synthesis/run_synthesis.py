@@ -1,9 +1,11 @@
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import gc
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import requests
@@ -120,20 +122,23 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
         return
     clean_token = str(bot_token).strip()
     clean_chat = str(chat_id).strip()
-    url = f"https://api.telegram.org/bot{clean_token}/sendMessage"
     try:
         requests.post(
-            url,
-            json={
-                "chat_id": clean_chat,
-                "text": text[:4000],
-                "parse_mode": "HTML",
-                "disable_web_page_preview": False,
-            },
+            f"https://api.telegram.org/bot{clean_token}/sendMessage",
+            json={"chat_id": clean_chat, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": False},
             timeout=20,
         )
     except Exception as e:
         print(f"[WARN] Gửi Telegram thất bại: {e}")
+
+
+def ensure_deps():
+    subprocess.run(["apt-get", "-qq", "update"], check=False)
+    subprocess.run(["apt-get", "-qq", "install", "-y", "espeak-ng"], check=False)
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "vieneu", "numpy", "soundfile", "gdown"],
+        check=True,
+    )
 
 
 def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
@@ -159,76 +164,108 @@ def free_gpu():
         pass
 
 
-def try_load_vieneu_tts():
-    repo_url = os.environ.get("VIENEU_TTS_REPO", "").strip()
-    local_dir = "/kaggle/working/VieNeu-TTS"
-    if repo_url and not os.path.isdir(local_dir):
-        subprocess.run(["git", "clone", "--depth", "1", repo_url, local_dir], check=False)
-
-    for candidate_dir in [local_dir, "/kaggle/working/vieneu-tts", "."]:
-        if os.path.isdir(candidate_dir) and candidate_dir not in sys.path:
-            sys.path.insert(0, candidate_dir)
+def init_vieneu_engine():
+    from vieneu import Vieneu  # type: ignore
 
     try:
-        import vieneu_tts  # type: ignore
-        return ("module", vieneu_tts)
+        return Vieneu(mode="v3turbo")
     except Exception:
-        pass
-
-    for entry in [os.path.join(local_dir, "infer.py"), os.path.join(local_dir, "tts.py")]:
-        if os.path.isfile(entry):
-            return ("script", entry)
-
-    return None
+        return Vieneu()
 
 
-async def _edge_tts_save(text: str, out_wav: str, voice: str = "vi-VN-HoaiMyNeural"):
-    import edge_tts
-    tmp_mp3 = out_wav + ".mp3"
-    comm = edge_tts.Communicate(text, voice)
-    await comm.save(tmp_mp3)
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", tmp_mp3, "-ac", "2", "-ar", "44100", out_wav],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    if os.path.exists(tmp_mp3):
-        os.remove(tmp_mp3)
-
-
-def synth_line_audio(text_vi: str, ref_wav: str | None, out_wav: str, vieneu_handle):
-    import asyncio
-
-    if not text_vi.strip():
-        return False
-
-    if vieneu_handle is not None:
-        kind, obj = vieneu_handle
-        try:
-            if kind == "module" and hasattr(obj, "synthesize"):
-                obj.synthesize(text=text_vi, ref_audio=ref_wav, output_path=out_wav)
-                if os.path.exists(out_wav) and os.path.getsize(out_wav) > 512:
-                    return True
-            elif kind == "script":
-                cmd = [sys.executable, obj, "--text", text_vi, "--out", out_wav]
-                if ref_wav and os.path.exists(ref_wav):
-                    cmd.extend(["--ref", ref_wav])
-                r = subprocess.run(cmd, capture_output=True, text=True)
-                if r.returncode == 0 and os.path.exists(out_wav) and os.path.getsize(out_wav) > 512:
-                    return True
-        except Exception:
-            pass
+def pick_voice_for_gender(tts_engine, gender: str) -> str | None:
+    male_default = os.environ.get("VIENEU_MALE_VOICE", "Hải Đăng")
+    female_default = os.environ.get("VIENEU_FEMALE_VOICE", "Ngọc Lan")
+    target_gender = "male" if str(gender).lower() in ("male", "nam") else "female"
 
     try:
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "edge-tts"], check=True)
-        asyncio.run(_edge_tts_save(text_vi, out_wav))
-        return os.path.exists(out_wav) and os.path.getsize(out_wav) > 512
+        voices = tts_engine.list_preset_voices() or []
+        names = [v[1] if isinstance(v, (list, tuple)) and len(v) > 1 else str(v) for v in voices]
+        if target_gender == "male":
+            if male_default in names:
+                return male_default
+            for n in names:
+                if any(k in n.lower() for k in ["nam", "minh", "hải", "đăng", "quân", "adam", "vĩnh"]):
+                    return n
+        else:
+            if female_default in names:
+                return female_default
+            for n in names:
+                if any(k in n.lower() for k in ["nữ", "nu", "lan", "mai", "anh", "my", "huyền"]):
+                    return n
+        return names[0] if names else None
     except Exception:
-        return False
+        return male_default if target_gender == "male" else female_default
 
 
-def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], work_dir: str, final_mp4: str):
+def synth_single_line(
+    tts_engine,
+    lock: threading.Lock,
+    line: dict,
+    idx: int,
+    work_dir: str,
+    target_sr: int,
+    speaker_ref_map: dict,
+) -> tuple[int, float, str | None]:
+    import numpy as np
+    import soundfile as sf
+
+    text_vi = (line.get("text_vi") or "").strip()
+    start_t = max(0.0, float(line.get("start", 0.0)))
+    end_t = max(start_t + 0.5, float(line.get("end", start_t + 1.0)))
+    slot_dur = max(0.5, end_t - start_t)
+
+    if not text_vi:
+        return idx, start_t, None
+
+    spk_id = line.get("speaker_id", "SPEAKER_00")
+    gender = (line.get("gender") or speaker_ref_map.get(spk_id, {}).get("gender") or "female").lower()
+    ref_wav = speaker_ref_map.get(spk_id, {}).get("ref_path")
+
+    raw_wav = os.path.join(work_dir, f"raw_{idx:04d}.wav")
+    aligned_wav = os.path.join(work_dir, f"aligned_{idx:04d}.wav")
+
+    with lock:
+        if ref_wav and os.path.exists(ref_wav) and os.path.getsize(ref_wav) > 1024:
+            audio_arr = tts_engine.infer(text_vi, ref_audio=ref_wav, denoise=True)
+        else:
+            preset_voice = pick_voice_for_gender(tts_engine, gender)
+            audio_arr = tts_engine.infer(text_vi, voice=preset_voice)
+
+        if hasattr(tts_engine, "save"):
+            tts_engine.save(audio_arr, raw_wav)
+        else:
+            arr_np = np.asarray(audio_arr, dtype=np.float32)
+            sf.write(raw_wav, arr_np, 48000)
+
+    if not os.path.exists(raw_wav) or os.path.getsize(raw_wav) < 512:
+        return idx, start_t, None
+
+    # Đo thời lượng audio sinh ra và căn tempo khớp khung thời gian slot_dur
+    probe_data, src_sr = sf.read(raw_wav)
+    if probe_data.ndim > 1:
+        probe_data = probe_data.mean(axis=-1)
+    actual_dur = max(0.1, len(probe_data) / float(src_sr or 48000))
+
+    # Nếu dài hơn slot_dur thì tăng nhẹ tempo (tối đa 1.35x); nếu ngắn hơn nhiều (>1.25x) thì giảm nhẹ tempo (tối thiểu 0.85x)
+    tempo = 1.0
+    if actual_dur > slot_dur * 1.03:
+        tempo = min(1.35, actual_dur / slot_dur)
+    elif actual_dur < slot_dur * 0.78:
+        tempo = max(0.85, actual_dur / slot_dur)
+
+    ff_cmd = ["ffmpeg", "-y", "-i", raw_wav]
+    if abs(tempo - 1.0) > 0.02:
+        ff_cmd.extend(["-filter:a", f"atempo={tempo:.3f}"])
+    ff_cmd.extend(["-ac", "2", "-ar", str(target_sr), aligned_wav])
+
+    res = subprocess.run(ff_cmd, capture_output=True, text=True)
+    if res.returncode != 0 or not os.path.exists(aligned_wav):
+        return idx, start_t, raw_wav
+    return idx, start_t, aligned_wav
+
+
+def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_map: dict, work_dir: str, final_mp4: str):
     import numpy as np
     import soundfile as sf
 
@@ -238,37 +275,49 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], work_dir: str
     total_samples = len(bgm_data)
     voice_track = np.zeros_like(bgm_data, dtype=np.float32)
 
-    vieneu_handle = try_load_vieneu_tts()
-    default_ref = os.path.join(work_dir, "ref_speaker_SPEAKER_00.wav")
-    if not os.path.exists(default_ref):
-        default_ref = None
+    tts_engine = init_vieneu_engine()
+    lock = threading.Lock()
+    workers = max(1, min(4, int(os.environ.get("TTS_WORKERS", "2"))))
 
-    for idx, line in enumerate(lines):
-        text_vi = (line.get("text_vi") or "").strip()
-        if not text_vi:
-            continue
-        start_t = max(0.0, float(line.get("start", 0.0)))
-        line_wav = os.path.join(work_dir, f"line_{idx:04d}.wav")
-        ok = synth_line_audio(text_vi, default_ref, line_wav, vieneu_handle)
-        if not ok or not os.path.exists(line_wav):
-            continue
+    results = []
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(synth_single_line, tts_engine, lock, line, i, work_dir, sr, speaker_ref_map)
+                for i, line in enumerate(lines)
+            ]
+            for fut in futures:
+                results.append(fut.result())
+    finally:
+        try:
+            if hasattr(tts_engine, "close"):
+                tts_engine.close()
+        except Exception:
+            pass
+        del tts_engine
+        free_gpu()
 
-        seg_audio, seg_sr = sf.read(line_wav)
+    results.sort(key=lambda x: x[0])
+
+    for _, start_t, wav_path in results:
+        if not wav_path or not os.path.exists(wav_path):
+            continue
+        seg_audio, seg_sr = sf.read(wav_path)
         if seg_audio.ndim == 1:
             seg_audio = np.stack([seg_audio, seg_audio], axis=-1)
         if seg_sr != sr:
-            resampled_wav = os.path.join(work_dir, f"line_{idx:04d}_rs.wav")
+            rs_path = wav_path + "_rs.wav"
             subprocess.run(
-                ["ffmpeg", "-y", "-i", line_wav, "-ac", "2", "-ar", str(sr), resampled_wav],
+                ["ffmpeg", "-y", "-i", wav_path, "-ac", "2", "-ar", str(sr), rs_path],
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            seg_audio, _ = sf.read(resampled_wav)
+            seg_audio, _ = sf.read(rs_path)
             if seg_audio.ndim == 1:
                 seg_audio = np.stack([seg_audio, seg_audio], axis=-1)
 
-        start_sample = int(start_t * sr)
+        start_sample = int(round(start_t * sr))
         if start_sample >= total_samples:
             continue
         end_sample = min(total_samples, start_sample + len(seg_audio))
@@ -278,12 +327,11 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], work_dir: str
 
     has_voice = np.abs(voice_track).max(axis=-1) > 1e-3
     ducked_bgm = bgm_data.astype(np.float32).copy()
-    ducked_bgm[has_voice] *= 0.35
+    ducked_bgm[has_voice] *= 0.32
 
     mixed_audio = np.clip(ducked_bgm + voice_track, -1.0, 1.0)
     mixed_wav = os.path.join(work_dir, "final_dub_mix.wav")
     sf.write(mixed_wav, mixed_audio, sr)
-    free_gpu()
 
     ff_res = subprocess.run(
         [
@@ -309,7 +357,7 @@ sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
 def main():
-    send_telegram(TG_TOKEN, TG_CHAT, f"🎙️ <b>[Stage 3 - Synthesis]</b> Bắt đầu job <code>{JOB_ID}</code>")
+    send_telegram(TG_TOKEN, TG_CHAT, f"🎙️ <b>[Stage 3 - VieNeu-TTS]</b> Bắt đầu job <code>{JOB_ID}</code>")
     stage2_data, _ = sync.read_json(f"state/{JOB_ID}_stage2.json")
 
     out_dir = "/kaggle/working/out"
@@ -325,13 +373,24 @@ def main():
 
     sync.download_asset(JOB_ID, "no_vocals.wav", bgm_in)
 
+    speaker_ref_map = {}
+    speakers_meta = stage2_data.get("speakers") or {}
+    for spk_id, meta in speakers_meta.items():
+        if isinstance(meta, dict):
+            speaker_ref_map[spk_id] = dict(meta)
+
     release = sync.ensure_release(JOB_ID)
     for asset in release.get("assets", []):
-        if asset["name"].startswith("ref_speaker_") and asset["name"].endswith(".wav"):
-            sync.download_asset(JOB_ID, asset["name"], os.path.join(out_dir, asset["name"]))
+        name = asset["name"]
+        if name.startswith("ref_speaker_") and name.endswith(".wav"):
+            local_ref = os.path.join(out_dir, name)
+            sync.download_asset(JOB_ID, name, local_ref)
+            spk_id = name[len("ref_speaker_"):-len(".wav")]
+            speaker_ref_map.setdefault(spk_id, {})["ref_path"] = local_ref
 
+    ensure_deps()
     lines = stage2_data.get("lines", [])
-    mix_dub_and_mux(video_in, bgm_in, lines, out_dir, final_mp4)
+    mix_dub_and_mux(video_in, bgm_in, lines, speaker_ref_map, out_dir, final_mp4)
 
     download_url = sync.upload_asset(JOB_ID, final_mp4)
 
