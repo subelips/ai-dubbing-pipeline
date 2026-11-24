@@ -43,11 +43,22 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Python dependencies
+      - name: Install dependencies into target Python
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --no-cache-dir --force-reinstall six requests kaggle
-          python -c "import six, kaggle; print('six:', six.__file__)"
+          python -m pip install --no-cache-dir --upgrade six requests kaggle
+
+          KAGGLE_BIN="$(command -v kaggle || true)"
+          echo "KAGGLE_BIN=$KAGGLE_BIN"
+          if [ -n "$KAGGLE_BIN" ] && [ -f "$KAGGLE_BIN" ]; then
+            SHEBANG_PY="$(head -n 1 "$KAGGLE_BIN" | sed 's/^#!//')"
+            echo "SHEBANG_PY=$SHEBANG_PY"
+            if [ -n "$SHEBANG_PY" ] && [ -x "$SHEBANG_PY" ]; then
+              "$SHEBANG_PY" -m pip install --no-cache-dir --upgrade six requests kaggle
+            fi
+          fi
+
+          python -c "import six, kaggle; print('OK six:', six.__file__)"
 
       - name: Register initial job in pipeline-state branch (Stage 1 only)
         if: steps.meta.outputs.stage == 'perception'
