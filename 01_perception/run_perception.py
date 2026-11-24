@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import subprocess
+import sys
 import time
 import traceback
 import requests
@@ -132,6 +133,18 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
     )
 
 
+def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
+    ref = (source_ref or "source_input.mp4").strip()
+    if ref.startswith(("http://", "https://")):
+        if "drive.google.com" in ref:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=True)
+            subprocess.run([sys.executable, "-m", "gdown", "--fuzzy", ref, "-O", dest_path], check=True)
+        else:
+            subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
+    else:
+        sync.download_asset(tag, ref, dest_path)
+
+
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
@@ -141,17 +154,17 @@ def main():
     if not job:
         raise KeyError(f"Không tìm thấy job_id '{JOB_ID}' trong state/jobs.json")
 
-    video_asset = job.get("video_asset") or "source_input.mp4"
-    send_telegram(TG_TOKEN, TG_CHAT, f"🎬 <b>[Stage 1 - Perception]</b> Bắt đầu job <code>{JOB_ID}</code> ({video_asset})")
+    video_asset = (job.get("video_asset") or job.get("video_url") or "source_input.mp4").strip()
+    send_telegram(TG_TOKEN, TG_CHAT, f"🎬 <b>[Stage 1 - Perception]</b> Bắt đầu job <code>{JOB_ID}</code>")
 
     work_dir = "/kaggle/working/work"
     os.makedirs(work_dir, exist_ok=True)
     video_path = os.path.join(work_dir, "input.mp4")
     audio_16k = os.path.join(work_dir, "audio_16k.wav")
 
-    sync.download_asset(JOB_ID, video_asset, video_path)
+    download_video_source(sync, JOB_ID, video_asset, video_path)
     if not os.path.exists(video_path) or os.path.getsize(video_path) < 1024:
-        raise RuntimeError(f"File video tải từ Release '{video_asset}' không hợp lệ hoặc rỗng.")
+        raise RuntimeError(f"File video tải về không hợp lệ hoặc rỗng từ nguồn: {video_asset}")
 
     ff_res = subprocess.run(
         ["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", audio_16k],
