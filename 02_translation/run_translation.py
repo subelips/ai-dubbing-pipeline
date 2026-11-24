@@ -6,23 +6,23 @@ import traceback
 import requests
 
 
-def load_pipeline_env():
-    for cfg_path in [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "job_config.json"),
-        "/kaggle/src/job_config.json",
-        "/kaggle/working/job_config.json",
-        "job_config.json",
-    ]:
-        if os.path.isfile(cfg_path):
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            for k, v in cfg.items():
-                if v is not None and str(v) != "" and k not in os.environ:
-                    os.environ[k] = str(v)
-            break
+def get_cfg(key: str, injected: str) -> str:
+    env_val = os.environ.get(key, "").strip()
+    if env_val:
+        return env_val
+    if not injected.startswith("__INJECT_"):
+        return injected
+    return ""
 
 
-load_pipeline_env()
+JOB_ID = get_cfg("JOB_ID", "__INJECT_JOB_ID__")
+GH_REPO = get_cfg("GH_REPO", "__INJECT_GH_REPO__")
+GH_TOKEN = get_cfg("GH_PAT_TOKEN", "__INJECT_GH_PAT_TOKEN__")
+TG_TOKEN = get_cfg("TELEGRAM_BOT_TOKEN", "__INJECT_TELEGRAM_BOT_TOKEN__")
+TG_CHAT = get_cfg("TELEGRAM_CHAT_ID", "__INJECT_TELEGRAM_CHAT_ID__")
+
+if not JOB_ID:
+    raise RuntimeError("Thiếu JOB_ID khi khởi chạy kernel.")
 
 
 class GitHubSync:
@@ -90,20 +90,12 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
     )
 
 
-JOB_ID = os.environ["JOB_ID"]
-GH_REPO = os.environ["GH_REPO"]
-GH_TOKEN = os.environ["GH_PAT_TOKEN"]
-TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
-
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
 def main():
     send_telegram(TG_TOKEN, TG_CHAT, f"🌐 <b>[Stage 2 - Translation]</b> Bắt đầu job <code>{JOB_ID}</code>")
     stage1_data, _ = sync.read_json(f"state/{JOB_ID}_stage1.json")
-
-    # Xử lý Qwen2.5-14B-Instruct dịch thuật, gán speaker_id & căn thời lượng
 
     dub_lines = []
     for idx, seg in enumerate(stage1_data.get("segments", [])):
