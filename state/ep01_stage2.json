@@ -1,5 +1,385 @@
 {
   "job_id": "ep01",
-  "video_asset": "source_input.mp4",
-  "lines": []
+  "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
+  "scene_context": "",
+  "lines": [
+    {
+      "id": 0,
+      "start": 1.26,
+      "end": 1.94,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Vợ ơi"
+    },
+    {
+      "id": 1,
+      "start": 1.94,
+      "end": 4.06,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Món cơm của mày đã bị chó ăn mất rồi"
+    },
+    {
+      "id": 2,
+      "start": 4.06,
+      "end": 5.24,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Mày nên ăn cơm của chó"
+    },
+    {
+      "id": 3,
+      "start": 5.24,
+      "end": 6.44,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Chó đã ăn xong rồi"
+    },
+    {
+      "id": 4,
+      "start": 6.44,
+      "end": 7.94,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Lúc này đến lượt mày ăn"
+    },
+    {
+      "id": 5,
+      "start": 7.94,
+      "end": 8.76,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Ăn đi"
+    },
+    {
+      "id": 6,
+      "start": 8.76,
+      "end": 22.87,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Đây là bữa trưa hôm nay."
+    },
+    {
+      "id": 7,
+      "start": 22.87,
+      "end": 24.77,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Đã kết hôn ba năm."
+    },
+    {
+      "id": 8,
+      "start": 24.77,
+      "end": 28.25,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Vợ tôi khắt khe đến mức cực độ với đồ ăn."
+    },
+    {
+      "id": 9,
+      "start": 28.25,
+      "end": 29.49,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Không bao giờ ăn đồ ăn vặt."
+    },
+    {
+      "id": 10,
+      "start": 29.49,
+      "end": 30.67,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Không dám động đến đồ ăn kém chất lượng."
+    },
+    {
+      "id": 11,
+      "start": 30.67,
+      "end": 32.47,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Vì vậy tôi phải thức dậy lúc bốn giờ mỗi ngày."
+    },
+    {
+      "id": 12,
+      "start": 32.47,
+      "end": 35.27,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Tui nấu cho cô ấy những bữa ăn lành mạnh, sạch sẽ nhất."
+    },
+    {
+      "id": 13,
+      "start": 35.27,
+      "end": 36.91,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Hôm nay nguyên liệu có tươi không?"
+    },
+    {
+      "id": 14,
+      "start": 36.91,
+      "end": 37.99,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Tất cả đều mua từ sáng 4 giờ."
+    },
+    {
+      "id": 15,
+      "start": 37.99,
+      "end": 39.79,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Mua nguyên liệu tươi nhất từ chợ."
+    },
+    {
+      "id": 16,
+      "start": 39.79,
+      "end": 40.75,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Ở chợ, đã rửa lại vài lần rồi."
+    },
+    {
+      "id": 17,
+      "start": 40.75,
+      "end": 41.31,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Ba lần."
+    },
+    {
+      "id": 18,
+      "start": 41.31,
+      "end": 42.61,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Còn dùng nước rửa rau quả nữa."
+    },
+    {
+      "id": 19,
+      "start": 42.61,
+      "end": 43.57,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Ngâm trong mười lăm phút."
+    },
+    {
+      "id": 20,
+      "start": 43.57,
+      "end": 44.23,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Được rồi."
+    },
+    {
+      "id": 21,
+      "start": 44.23,
+      "end": 45.37,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Mày đi đi."
+    },
+    {
+      "id": 22,
+      "start": 45.37,
+      "end": 47.31,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Mày chỉ là một nhân viên văn phòng nhỏ."
+    },
+    {
+      "id": 23,
+      "start": 47.31,
+      "end": 48.59,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Ở đây lâu một chút đi."
+    },
+    {
+      "id": 24,
+      "start": 48.59,
+      "end": 50.69,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Sẽ khiến người khác phải thở dốc không cần thiết."
+    },
+    {
+      "id": 25,
+      "start": 50.69,
+      "end": 55.22,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Được."
+    },
+    {
+      "id": 26,
+      "start": 55.22,
+      "end": 56.92,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Hãy ăn ngay kẻo nguội."
+    },
+    {
+      "id": 27,
+      "start": 56.92,
+      "end": 58.78,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Ăn nguội sẽ không tốt cho dạ dày."
+    },
+    {
+      "id": 28,
+      "start": 58.78,
+      "end": 63.21,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Nguyễn Thần."
+    },
+    {
+      "id": 29,
+      "start": 63.21,
+      "end": 64.95,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Lại đi mang cơm cho瑶瑶 rồi sao?"
+    },
+    {
+      "id": 30,
+      "start": 64.95,
+      "end": 66.09,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Cảm ơn cậu đã cố gắng."
+    },
+    {
+      "id": 31,
+      "start": 66.09,
+      "end": 66.85,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Chăm sóc vợ."
+    },
+    {
+      "id": 32,
+      "start": 66.85,
+      "end": 69.11,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Chỉ là trách nhiệm của một người chồng."
+    },
+    {
+      "id": 33,
+      "start": 69.11,
+      "end": 70.99,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Nếu không nhờ cậu."
+    },
+    {
+      "id": 34,
+      "start": 70.99,
+      "end": 73.05,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Và hôn ước gia đình Hạ."
+    },
+    {
+      "id": 35,
+      "start": 73.05,
+      "end": 74.31,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Nhóm công ty Hạ."
+    },
+    {
+      "id": 36,
+      "start": 74.31,
+      "end": 76.01,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Đã phá sản từ ba năm trước rồi."
+    },
+    {
+      "id": 37,
+      "start": 76.01,
+      "end": 77.81,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Nói đi, con trai kế thừa tập đoàn Lục."
+    },
+    {
+      "id": 38,
+      "start": 77.81,
+      "end": 79.01,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Thà chịu thua, chịu mất danh dự."
+    },
+    {
+      "id": 39,
+      "start": 79.01,
+      "end": 79.73,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Đến công ty chúng tôi."
+    },
+    {
+      "id": 40,
+      "start": 79.73,
+      "end": 80.57,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Làm một nhân viên nhỏ."
+    },
+    {
+      "id": 41,
+      "start": 80.57,
+      "end": 82.81,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Mỗi lần đều giúp công ty bù đắp lỗ hổng."
+    },
+    {
+      "id": 42,
+      "start": 82.81,
+      "end": 83.79,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Tôi che giấu danh tính"
+    },
+    {
+      "id": 43,
+      "start": 83.79,
+      "end": 85.75,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Để tránh khiến toàn công ty biết"
+    },
+    {
+      "id": 44,
+      "start": 85.75,
+      "end": 87.39,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Nhà Hạ dựa vào nhà Lục mới đứng vững"
+    },
+    {
+      "id": 45,
+      "start": 87.39,
+      "end": 88.75,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Để tránh khiến mọi người lo lắng"
+    },
+    {
+      "id": 46,
+      "start": 88.75,
+      "end": 90.97,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Cũng là một cách thử thách Minh Nhu"
+    },
+    {
+      "id": 47,
+      "start": 90.97,
+      "end": 92.13,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Minh Nhu chẳng biết suy nghĩ"
+    },
+    {
+      "id": 48,
+      "start": 92.13,
+      "end": 93.93,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Tôi biết ơn cậu rất nhiều."
+    },
+    {
+      "id": 49,
+      "start": 93.93,
+      "end": 95.39,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Là một người cha, tôi..."
+    },
+    {
+      "id": 50,
+      "start": 95.39,
+      "end": 97.45,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Thật sự rất biết ơn cậu."
+    },
+    {
+      "id": 51,
+      "start": 97.45,
+      "end": 97.69,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Không cần."
+    },
+    {
+      "id": 52,
+      "start": 97.69,
+      "end": 102.36,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Chìa khóa xe của tôi để quên ở nhà hàng."
+    },
+    {
+      "id": 53,
+      "start": 102.36,
+      "end": 103.84,
+      "speaker_id": "SPEAKER_00",
+      "text_vi": "Tôi phải quay lại lấy."
+    }
+  ]
 }
