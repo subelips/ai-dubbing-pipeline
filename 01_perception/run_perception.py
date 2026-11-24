@@ -136,9 +136,10 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
 
 def ensure_deps():
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "faster-whisper", "demucs", "soundfile", "gdown"],
+        [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "faster-whisper", "demucs", "soundfile", "gdown"],
         check=True,
     )
+
 
 
 def free_gpu():
