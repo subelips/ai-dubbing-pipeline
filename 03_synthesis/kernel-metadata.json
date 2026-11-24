@@ -1,0 +1,15 @@
+{
+  "id": "dangminhphuc/dubbing-03-synthesis",
+  "title": "dubbing-03-synthesis",
+  "code_file": "run_synthesis.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}
