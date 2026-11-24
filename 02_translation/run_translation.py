@@ -5,6 +5,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import base64
 import gc
 import json
+import re
 import subprocess
 import sys
 import time
@@ -138,6 +139,13 @@ def free_gpu():
         pass
 
 
+def _normalize_gdrive_url(url: str) -> str:
+    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url) or re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
+    if m:
+        return f"https://drive.google.com/uc?id={m.group(1)}"
+    return url
+
+
 def fetch_video_for_labeling(sync: GitHubSync, tag: str, source_ref: str, dest_path: str) -> str:
     ref = (source_ref or "").strip()
     if not ref:
@@ -146,7 +154,8 @@ def fetch_video_for_labeling(sync: GitHubSync, tag: str, source_ref: str, dest_p
     try:
         if ref.startswith(("http://", "https://")):
             if "drive.google.com" in ref:
-                subprocess.run([sys.executable, "-m", "gdown", "--fuzzy", ref, "-O", dest_path], check=True)
+                direct_url = _normalize_gdrive_url(ref)
+                subprocess.run([sys.executable, "-m", "gdown", direct_url, "-O", dest_path], check=True)
             else:
                 subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
         else:
@@ -270,7 +279,6 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
 
 
 def fit_text_to_duration(text_vi: str, duration_sec: float) -> str:
-    """Giữ độ dài câu dịch vừa vặn tốc độ đọc tiếng Việt (~13-14 ký tự/giây) để khớp timecode."""
     max_chars = max(12, int(round(duration_sec * 13.5)))
     txt = " ".join(text_vi.split()).strip()
     if len(txt) <= max_chars:
