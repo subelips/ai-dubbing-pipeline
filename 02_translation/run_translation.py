@@ -279,14 +279,15 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
 
 
 def fit_text_to_duration(text_vi: str, duration_sec: float) -> str:
-    max_chars = max(12, int(round(duration_sec * 13.5)))
+    # Cho phép ~15.5 ký tự/giây và chỉ cắt khi thực sự vượt quá nhiều để tránh mất nghĩa
+    max_chars = max(18, int(round(duration_sec * 15.5)))
     txt = " ".join(text_vi.split()).strip()
     if len(txt) <= max_chars:
         return txt
     cut = txt[:max_chars]
     for sep in ["。", "！", "？", ".", "!", "?", ",", "，", ";", " "]:
         pos = cut.rfind(sep)
-        if pos >= int(max_chars * 0.65):
+        if pos >= int(max_chars * 0.75):
             return cut[:pos].strip()
     return cut.strip()
 
@@ -312,7 +313,6 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
             items_for_prompt.append({
                 "id": line_id,
                 "duration_sec": dur,
-                "max_vi_chars": max(12, int(round(dur * 13.5))),
                 "speaker_id": spk_id,
                 "gender": gender,
                 "src_text": src_txt,
@@ -323,10 +323,10 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
             {
                 "role": "system",
                 "content": (
-                    "Bạn là dịch giả lồng tiếng phim chuyên nghiệp sang tiếng Việt tự nhiên, "
-                    "đúng xưng hô theo giới tính & bối cảnh, súc tích vừa khớp duration_sec và max_vi_chars "
-                    "để khi đọc không bị trễ nhịp. Chỉ trả về đúng một mảng JSON các object có khóa: "
-                    "id, speaker_id, gender, text_vi. Không dùng markdown."
+                    "Bạn là biên kịch & dịch giả lồng tiếng phim tiếng Việt tự nhiên, giàu cảm xúc. "
+                    "Hãy dịch sát nghĩa và tự nhiên như người Việt nói chuyện đời thường, chọn đại từ xưng hô phù hợp ngữ cảnh & giới tính, "
+                    "giữ câu gọn gàng vừa nhịp nói (~duration_sec) mà không làm mất ý chính. "
+                    "Chỉ trả về đúng một mảng JSON các object có khóa: id, speaker_id, gender, text_vi. Không dùng markdown."
                 ),
             },
             {
@@ -344,7 +344,7 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
             model_inputs = {k: v.to(model.device) for k, v in model_inputs.items()}
 
         with torch.inference_mode():
-            generated_ids = model.generate(**model_inputs, max_new_tokens=750, do_sample=False)
+            generated_ids = model.generate(**model_inputs, max_new_tokens=800, do_sample=False)
         gen_trimmed = [out[len(inp):] for inp, out in zip(model_inputs["input_ids"], generated_ids)]
         raw_reply = processor.batch_decode(gen_trimmed, skip_special_tokens=True)[0].strip()
 
@@ -382,6 +382,7 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
                 "end": end_t,
                 "speaker_id": spk_id,
                 "gender": g_out,
+                "src_text": fallback_src,
                 "text_vi": fitted_vi,
             })
 
