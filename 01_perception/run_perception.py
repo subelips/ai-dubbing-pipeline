@@ -85,6 +85,19 @@ class GitHubSync:
         cr.raise_for_status()
         return cr.json()
 
+    def upload_asset(self, tag: str, file_path: str):
+        release = self.ensure_release(tag)
+        upload_url = release["upload_url"].split("{")[0]
+        filename = os.path.basename(file_path)
+        for asset in release.get("assets", []):
+            if asset["name"] == filename:
+                requests.delete(f"{self.api_base}/releases/assets/{asset['id']}", headers=self.headers, timeout=30)
+        up_headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/octet-stream"}
+        with open(file_path, "rb") as f:
+            r = requests.post(f"{upload_url}?name={filename}", headers=up_headers, data=f.read(), timeout=300)
+        r.raise_for_status()
+        return r.json().get("browser_download_url")
+
     def download_asset(self, tag: str, filename: str, dest_path: str):
         release = self.ensure_release(tag)
         for asset in release.get("assets", []):
@@ -128,21 +141,27 @@ def main():
     if not job:
         raise KeyError(f"Không tìm thấy job_id '{JOB_ID}' trong state/jobs.json")
 
-    video_url = job["video_url"]
-    send_telegram(TG_TOKEN, TG_CHAT, f"🎬 <b>[Stage 1 - Perception]</b> Bắt đầu job <code>{JOB_ID}</code>")
+    video_asset = job.get("video_asset") or "source_input.mp4"
+    send_telegram(TG_TOKEN, TG_CHAT, f"🎬 <b>[Stage 1 - Perception]</b> Bắt đầu job <code>{JOB_ID}</code> ({video_asset})")
 
     work_dir = "/kaggle/working/work"
     os.makedirs(work_dir, exist_ok=True)
     video_path = os.path.join(work_dir, "input.mp4")
     audio_16k = os.path.join(work_dir, "audio_16k.wav")
 
-    subprocess.run(["curl", "-L", "-s", video_url, "-o", video_path], check=True)
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-ac", "1", "-ar", "16000", audio_16k],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    sync.download_asset(JOB_ID, video_asset, video_path)
+    if not os.path.exists(video_path) or os.path.getsize(video_path) < 1024:
+        raise RuntimeError(f"File video tải từ Release '{video_asset}' không hợp lệ hoặc rỗng.")
+
+    ff_res = subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", audio_16k],
+        capture_output=True,
+        text=True,
     )
+    if ff_res.returncode != 0:
+        raise RuntimeError(f"FFmpeg lỗi (code {ff_res.returncode}):\n{ff_res.stderr[-1500:]}")
+
+    # Xử lý Whisper-large-v3 + Demucs (cuda:0) & PaddleOCR + Qwen2.5-VL-7B (cuda:1)
 
     no_vocals_path = os.path.join(work_dir, "no_vocals.wav")
     if os.path.exists(no_vocals_path):
@@ -154,7 +173,7 @@ def main():
 
     stage1_payload = {
         "job_id": JOB_ID,
-        "video_url": video_url,
+        "video_asset": video_asset,
         "segments": [],
     }
     sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done: {JOB_ID}")
