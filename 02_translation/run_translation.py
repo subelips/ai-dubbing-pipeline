@@ -168,10 +168,11 @@ def fetch_video_for_labeling(sync: GitHubSync, tag: str, source_ref: str, dest_p
 
 def extract_keyframes(video_path: str, work_dir: str) -> list[str]:
     frames = []
-    for idx, ts in enumerate(["00:00:03", "00:00:12", "00:00:25", "00:00:40"]):
+    # Thu nhỏ ảnh (scale=480:-1) và lấy 2 khung hình đại diện để tránh tràn VRAM vision encoder
+    for idx, ts in enumerate(["00:00:04", "00:00:20"]):
         out_img = os.path.join(work_dir, f"frame_{idx}.jpg")
         res = subprocess.run(
-            ["ffmpeg", "-y", "-ss", ts, "-i", video_path, "-frames:v", "1", "-q:v", "3", out_img],
+            ["ffmpeg", "-y", "-ss", ts, "-i", video_path, "-vf", "scale=480:-1", "-frames:v", "1", "-q:v", "4", out_img],
             capture_output=True,
             text=True,
         )
@@ -185,17 +186,22 @@ def load_qwen3_vl():
     from transformers import AutoProcessor, BitsAndBytesConfig, Qwen3VLForConditionalGeneration
 
     model_id = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen3-VL-8B-Instruct")
-    processor = AutoProcessor.from_pretrained(model_id)
+    # Giới hạn max_pixels để vision attention không ăn quá nhiều VRAM trên T4
+    processor = AutoProcessor.from_pretrained(
+        model_id,
+        min_pixels=128 * 28 * 28,
+        max_pixels=256 * 28 * 28,
+    )
 
     load_kwargs = {
         "device_map": "auto" if torch.cuda.is_available() else None,
         "low_cpu_mem_usage": True,
     }
     if torch.cuda.is_available():
-        vram_gb = sum(
+        min_gpu_gb = min(
             torch.cuda.get_device_properties(i).total_memory for i in range(torch.cuda.device_count())
         ) / (1024 ** 3)
-        if vram_gb < 24:
+        if min_gpu_gb < 22:
             load_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
@@ -239,7 +245,7 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.inference_mode():
-        out_ids = model.generate(**inputs, max_new_tokens=220, do_sample=False)
+        out_ids = model.generate(**inputs, max_new_tokens=200, do_sample=False)
     trimmed = [out[len(inp):] for inp, out in zip(inputs["input_ids"], out_ids)]
     raw_out = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
 
@@ -279,7 +285,6 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
 
 
 def fit_text_to_duration(text_vi: str, duration_sec: float) -> str:
-    # Cho phép ~15.5 ký tự/giây và chỉ cắt khi thực sự vượt quá nhiều để tránh mất nghĩa
     max_chars = max(18, int(round(duration_sec * 15.5)))
     txt = " ".join(text_vi.split()).strip()
     if len(txt) <= max_chars:
@@ -344,7 +349,7 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
             model_inputs = {k: v.to(model.device) for k, v in model_inputs.items()}
 
         with torch.inference_mode():
-            generated_ids = model.generate(**model_inputs, max_new_tokens=800, do_sample=False)
+            generated_ids = model.generate(**model_inputs, max_new_tokens=750, do_sample=False)
         gen_trimmed = [out[len(inp):] for inp, out in zip(model_inputs["input_ids"], generated_ids)]
         raw_reply = processor.batch_decode(gen_trimmed, skip_special_tokens=True)[0].strip()
 
