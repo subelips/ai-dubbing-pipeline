@@ -1,0 +1,125 @@
+name: Video Dubbing Pipeline Orchestrator
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Mã định danh job (vd: ep01)"
+        required: true
+        type: string
+      video_url:
+        description: "Link trực tiếp tới file video MP4 đầu vào"
+        required: true
+        type: string
+  repository_dispatch:
+    types: [stage1_completed, stage2_completed]
+
+jobs:
+  run_stage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine active stage & job payload
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "stage=perception" >> $GITHUB_OUTPUT
+            echo "job_id=${{ inputs.job_id }}" >> $GITHUB_OUTPUT
+            echo "video_url=${{ inputs.video_url }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.action }}" = "stage1_completed" ]; then
+            echo "stage=translation" >> $GITHUB_OUTPUT
+            echo "job_id=${{ github.event.client_payload.job_id }}" >> $GITHUB_OUTPUT
+            echo "video_url=" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.action }}" = "stage2_completed" ]; then
+            echo "stage=synthesis" >> $GITHUB_OUTPUT
+            echo "job_id=${{ github.event.client_payload.job_id }}" >> $GITHUB_OUTPUT
+            echo "video_url=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Python & Kaggle CLI
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --no-cache-dir kaggle requests
+
+      - name: Register initial job in pipeline-state branch (Stage 1 only)
+        if: steps.meta.outputs.stage == 'perception'
+        env:
+          GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          JOB_ID: ${{ steps.meta.outputs.job_id }}
+          VIDEO_URL: ${{ steps.meta.outputs.video_url }}
+        run: |
+          python - <<'EOF'
+          import os
+          from core.github_sync import GitHubSync
+
+          sync = GitHubSync(os.environ["GH_REPO"], os.environ["GH_PAT_TOKEN"])
+          data, _ = sync.read_json("state/jobs.json")
+          if "jobs" not in data:
+              data["jobs"] = {}
+          data["jobs"][os.environ["JOB_ID"]] = {
+              "video_url": os.environ["VIDEO_URL"],
+              "status": "QUEUED_STAGE1"
+          }
+          sync.write_json("state/jobs.json", data, f"queue job {os.environ['JOB_ID']}")
+          EOF
+
+      - name: Push Stage 1 Kernel (Perception)
+        if: steps.meta.outputs.stage == 'perception'
+        env:
+          KAGGLE_USERNAME: ${{ secrets.PERCEPTION_KAGGLE_USER }}
+          KAGGLE_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
+        run: |
+          mkdir -p 01_perception/core
+          cp core/*.py 01_perception/core/
+          cat <<EOF > 01_perception/.env
+          JOB_ID=${{ steps.meta.outputs.job_id }}
+          GH_REPO=${{ github.repository }}
+          GH_PAT_TOKEN=${{ secrets.GH_PAT_TOKEN }}
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          EOF
+          kaggle kernels push -p 01_perception
+          rm -f 01_perception/.env
+          rm -rf 01_perception/core
+
+      - name: Push Stage 2 Kernel (Translation)
+        if: steps.meta.outputs.stage == 'translation'
+        env:
+          KAGGLE_USERNAME: ${{ secrets.TRANSLATION_KAGGLE_USER }}
+          KAGGLE_KEY: ${{ secrets.TRANSLATION_KAGGLE_KEY }}
+        run: |
+          mkdir -p 02_translation/core
+          cp core/*.py 02_translation/core/
+          cat <<EOF > 02_translation/.env
+          JOB_ID=${{ steps.meta.outputs.job_id }}
+          GH_REPO=${{ github.repository }}
+          GH_PAT_TOKEN=${{ secrets.GH_PAT_TOKEN }}
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          EOF
+          kaggle kernels push -p 02_translation
+          rm -f 02_translation/.env
+          rm -rf 02_translation/core
+
+      - name: Push Stage 3 Kernel (Synthesis)
+        if: steps.meta.outputs.stage == 'synthesis'
+        env:
+          KAGGLE_USERNAME: ${{ secrets.SYNTHESIS_KAGGLE_USER }}
+          KAGGLE_KEY: ${{ secrets.SYNTHESIS_KAGGLE_KEY }}
+        run: |
+          mkdir -p 03_synthesis/core
+          cp core/*.py 03_synthesis/core/
+          cat <<EOF > 03_synthesis/.env
+          JOB_ID=${{ steps.meta.outputs.job_id }}
+          GH_REPO=${{ github.repository }}
+          GH_PAT_TOKEN=${{ secrets.GH_PAT_TOKEN }}
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          EOF
+          kaggle kernels push -p 03_synthesis
+          rm -f 03_synthesis/.env
+          rm -rf 03_synthesis/core
