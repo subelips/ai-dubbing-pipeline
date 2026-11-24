@@ -151,7 +151,7 @@ def ensure_deps():
             sys.executable, "-m", "pip", "install", "-q", "--upgrade",
             "faster-whisper", "nvidia-cublas-cu12", "nvidia-cudnn-cu12",
             "demucs", "soundfile", "numpy", "gdown", "transformers", "accelerate",
-            "paddlepaddle", "paddleocr",
+            "paddlepaddle", "paddleocr", "speechbrain", "scikit-learn",
         ],
         check=True,
     )
@@ -322,22 +322,118 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
         del asr_pipe
         free_gpu()
 
-    for s in segments:
-        f0 = float(s.get("pitch_hz") or 0.0)
-        if f0 > 0 and f0 < 155.0:
-            s["speaker_id"] = "SPEAKER_MALE"
-            s["gender_hint"] = "male"
-        elif f0 >= 165.0:
-            s["speaker_id"] = "SPEAKER_FEMALE"
-            s["gender_hint"] = "female"
+    return segments
+
+
+def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: str) -> list[dict]:
+    if not segments:
+        return segments
+
+    import numpy as np
+    import soundfile as sf
+    import torch
+
+    try:
+        from sklearn.cluster import AgglomerativeClustering
+        from speechbrain.inference.speaker import EncoderClassifier
+
+        audio_np, sr = sf.read(audio_16k, dtype="float32")
+        if audio_np.ndim > 1:
+            audio_np = audio_np.mean(axis=-1)
+        if sr != 16000:
+            rs_wav = os.path.join(work_dir, "diar_16k.wav")
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", audio_16k, "-ac", "1", "-ar", "16000", rs_wav],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            audio_np, sr = sf.read(rs_wav, dtype="float32")
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        savedir = os.path.join(work_dir, "ecapa_model")
+        classifier = EncoderClassifier.from_hparams(
+            source="speechbrain/spkrec-ecapa-voxceleb",
+            savedir=savedir,
+            run_opts={"device": device},
+        )
+
+        embeddings = []
+        valid_indices = []
+        for idx, seg in enumerate(segments):
+            s_idx = max(0, int(float(seg.get("start", 0.0)) * sr))
+            e_idx = min(len(audio_np), int(float(seg.get("end", 0.0)) * sr))
+            clip = audio_np[s_idx:e_idx]
+            if len(clip) < int(0.4 * sr):
+                continue
+            wav_tensor = torch.from_numpy(clip).unsqueeze(0).to(device)
+            with torch.inference_mode():
+                emb = classifier.encode_batch(wav_tensor).squeeze().detach().cpu().numpy()
+            norm = float(np.linalg.norm(emb))
+            if norm > 1e-8:
+                emb = emb / norm
+            embeddings.append(emb)
+            valid_indices.append(idx)
+
+        del classifier
+        free_gpu()
+
+        if len(embeddings) >= 2:
+            emb_mat = np.vstack(embeddings)
+            dist_thresh = float(os.environ.get("DIAR_DIST_THRESHOLD", "0.52"))
+            max_spk = max(2, int(os.environ.get("MAX_SPEAKERS", "6")))
+            clustering = AgglomerativeClustering(
+                n_clusters=None,
+                metric="cosine",
+                linkage="average",
+                distance_threshold=dist_thresh,
+            )
+            raw_labels = clustering.fit_predict(emb_mat)
+
+            unique_labels = list(dict.fromkeys(int(x) for x in raw_labels))
+            if len(unique_labels) > max_spk:
+                clustering_fixed = AgglomerativeClustering(
+                    n_clusters=max_spk,
+                    metric="cosine",
+                    linkage="average",
+                )
+                raw_labels = clustering_fixed.fit_predict(emb_mat)
+                unique_labels = list(dict.fromkeys(int(x) for x in raw_labels))
+
+            order_map = {}
+            for lbl in raw_labels:
+                ilbl = int(lbl)
+                if ilbl not in order_map:
+                    order_map[ilbl] = f"SPEAKER_{len(order_map):02d}"
+
+            assigned_speakers = {}
+            for seg_i, lbl in zip(valid_indices, raw_labels):
+                spk_name = order_map[int(lbl)]
+                segments[seg_i]["speaker_id"] = spk_name
+                assigned_speakers[seg_i] = spk_name
+
+            last_spk = "SPEAKER_00"
+            for idx, seg in enumerate(segments):
+                if idx in assigned_speakers:
+                    last_spk = assigned_speakers[idx]
+                else:
+                    seg["speaker_id"] = last_spk
+
+            print(f"[INFO] SpeechBrain diarization phát hiện {len(order_map)} người nói: {list(order_map.values())}")
         else:
-            s["speaker_id"] = "SPEAKER_00"
+            for seg in segments:
+                seg["speaker_id"] = "SPEAKER_00"
+
+    except Exception as diar_err:
+        print(f"[WARN] SpeechBrain diarization fallback sang SPEAKER_00 do: {diar_err}")
+        free_gpu()
+        for seg in segments:
+            seg["speaker_id"] = "SPEAKER_00"
 
     return segments
 
 
 def detect_subtitle_roi(video_path: str, probe_dir: str) -> tuple[float, float, float, float]:
-    """Tự động dò vùng phụ đề (x1, y1, x2, y2 theo tỷ lệ 0..1) linh hoạt trên toàn khung hình."""
     import numpy as np
     from PIL import Image
 
@@ -576,23 +672,37 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
     return refined
 
 
-def run_demucs_and_ref_voices(audio_16k: str, segments: list[dict], work_dir: str) -> tuple[str, dict]:
+def run_demucs_and_ref_voices(audio_44k: str, segments: list[dict], work_dir: str) -> tuple[str, dict]:
+    """Tách nhạc nền & vocal sạch hơn bằng htdemucs_ft trên audio 44.1kHz, lấy vocal sạch làm mẫu clone."""
     import numpy as np
     import soundfile as sf
     import torch
 
     no_vocals_out = os.path.join(work_dir, "no_vocals.wav")
+    clean_vocals_out = os.path.join(work_dir, "clean_vocals.wav")
     demucs_out_dir = os.path.join(work_dir, "demucs_out")
     os.makedirs(demucs_out_dir, exist_ok=True)
 
-    cmd = ["demucs", "-n", "htdemucs", "--two-stems", "vocals", "-o", demucs_out_dir, audio_16k]
+    model_name = os.environ.get("DEMUCS_MODEL", "htdemucs_ft").strip() or "htdemucs_ft"
+    shifts = max(1, min(5, int(os.environ.get("DEMUCS_SHIFTS", "2"))))
+
+    cmd = [
+        "demucs",
+        "-n", model_name,
+        "--two-stems", "vocals",
+        "--shifts", str(shifts),
+        "-o", demucs_out_dir,
+        audio_44k,
+    ]
     if not torch.cuda.is_available():
         cmd.extend(["-d", "cpu"])
 
     res = subprocess.run(cmd, capture_output=True, text=True)
+    found_nv = False
+    found_voc = False
     if res.returncode == 0:
         for root, _, files in os.walk(demucs_out_dir):
-            if "no_vocals.wav" in files:
+            if "no_vocals.wav" in files and not found_nv:
                 src_nv = os.path.join(root, "no_vocals.wav")
                 subprocess.run(
                     ["ffmpeg", "-y", "-i", src_nv, "-ac", "2", "-ar", "44100", no_vocals_out],
@@ -600,19 +710,52 @@ def run_demucs_and_ref_voices(audio_16k: str, segments: list[dict], work_dir: st
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                break
+                found_nv = True
+            if "vocals.wav" in files and not found_voc:
+                src_voc = os.path.join(root, "vocals.wav")
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", src_voc, "-ac", "1", "-ar", "24000", clean_vocals_out],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                found_voc = True
+    else:
+        print(f"[WARN] Demucs ({model_name}) gặp lỗi, fallback sang htdemucs: {res.stderr[-400:]}")
+        fb_cmd = ["demucs", "-n", "htdemucs", "--two-stems", "vocals", "-o", demucs_out_dir, audio_44k]
+        if not torch.cuda.is_available():
+            fb_cmd.extend(["-d", "cpu"])
+        subprocess.run(fb_cmd, capture_output=True, text=True)
+        for root, _, files in os.walk(demucs_out_dir):
+            if "no_vocals.wav" in files and not found_nv:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", os.path.join(root, "no_vocals.wav"), "-ac", "2", "-ar", "44100", no_vocals_out],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                found_nv = True
+            if "vocals.wav" in files and not found_voc:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", os.path.join(root, "vocals.wav"), "-ac", "1", "-ar", "24000", clean_vocals_out],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                found_voc = True
 
     if not os.path.exists(no_vocals_out):
         subprocess.run(
-            ["ffmpeg", "-y", "-i", audio_16k, "-ac", "2", "-ar", "44100", no_vocals_out],
+            ["ffmpeg", "-y", "-i", audio_44k, "-ac", "2", "-ar", "44100", no_vocals_out],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
 
+    ref_source_wav = clean_vocals_out if os.path.exists(clean_vocals_out) else audio_44k
     speaker_refs = {}
     try:
-        data, sr = sf.read(audio_16k)
+        data, sr = sf.read(ref_source_wav)
         if data.ndim > 1:
             data = data.mean(axis=-1)
 
@@ -622,7 +765,7 @@ def run_demucs_and_ref_voices(audio_16k: str, segments: list[dict], work_dir: st
             by_speaker.setdefault(spk, []).append(seg)
 
         for spk, spk_segs in by_speaker.items():
-            candidates = [s for s in spk_segs if (float(s["end"]) - float(s["start"])) >= 2.5] or spk_segs
+            candidates = [s for s in spk_segs if (float(s["end"]) - float(s["start"])) >= 2.0] or spk_segs
             best_seg = max(
                 candidates,
                 key=lambda x: float(np.sqrt(np.mean(data[int(float(x["start"]) * sr): max(int(float(x["start"]) * sr) + 1, int(float(x["end"]) * sr))] ** 2)))
@@ -632,7 +775,7 @@ def run_demucs_and_ref_voices(audio_16k: str, segments: list[dict], work_dir: st
             if not best_seg:
                 continue
             start_s = max(0.0, float(best_seg["start"]) + 0.15)
-            end_s = min(len(data) / float(sr), max(start_s + 2.5, min(float(best_seg["end"]) - 0.15, start_s + 6.5)))
+            end_s = min(len(data) / float(sr), max(start_s + 2.0, min(float(best_seg["end"]) - 0.15, start_s + 6.5)))
             if end_s > start_s:
                 clip = data[int(start_s * sr): int(end_s * sr)].astype(np.float32)
                 rms = float(np.sqrt(np.mean(clip ** 2)))
@@ -670,6 +813,7 @@ def main():
     os.makedirs(work_dir, exist_ok=True)
     video_path = os.path.join(work_dir, "input.mp4")
     audio_16k = os.path.join(work_dir, "audio_16k.wav")
+    audio_44k = os.path.join(work_dir, "audio_44k.wav")
 
     download_video_source(sync, JOB_ID, video_asset, video_path)
     if not os.path.exists(video_path) or os.path.getsize(video_path) < 1024:
@@ -683,6 +827,13 @@ def main():
     if ff_res.returncode != 0:
         raise RuntimeError(f"FFmpeg lỗi (code {ff_res.returncode}):\n{ff_res.stderr[-1500:]}")
 
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "2", "-ar", "44100", audio_44k],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
     ensure_deps()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -691,8 +842,9 @@ def main():
         raw_segments = fut_asr.result()
         screen_texts, roi = fut_ocr.result()
 
-    segments = align_and_refine_segments(raw_segments, screen_texts)
-    no_vocals_path, speaker_refs = run_demucs_and_ref_voices(audio_16k, segments, work_dir)
+    diarized_segments = apply_speaker_diarization(audio_16k, raw_segments, work_dir)
+    segments = align_and_refine_segments(diarized_segments, screen_texts)
+    no_vocals_path, speaker_refs = run_demucs_and_ref_voices(audio_44k, segments, work_dir)
 
     if os.path.exists(no_vocals_path):
         sync.upload_asset(JOB_ID, no_vocals_path)
@@ -723,7 +875,7 @@ def main():
     send_telegram(
         TG_TOKEN,
         TG_CHAT,
-        f"✅ <b>[Stage 1]</b> Hoàn tất <code>{JOB_ID}</code> ({len(segments)} câu, {len(screen_texts)} OCR) → chuyển sang Stage 2.",
+        f"✅ <b>[Stage 1]</b> Hoàn tất <code>{JOB_ID}</code> ({len(segments)} câu, {len(screen_texts)} OCR, {len(speaker_refs)} người nói) → chuyển sang Stage 2.",
     )
 
 
