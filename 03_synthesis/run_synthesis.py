@@ -174,12 +174,10 @@ def free_gpu():
 
 
 def clean_bgm_residual_vocals(bgm_in: str, work_dir: str) -> str:
-    """Giảm vocal dư còn sót trong no_vocals.wav bằng lọc dải + giảm nhẹ mid-channel."""
     if os.environ.get("BGM_VOCAL_BLEED_REDUCE", "1").strip() == "0":
         return bgm_in
 
     cleaned_bgm = os.path.join(work_dir, "no_vocals_cleaned.wav")
-    # Giảm nhẹ kênh giữa (nơi vocal thường tập trung) và lọc tần số cực thấp/cực cao dư thừa
     af_chain = "highpass=f=80,lowpass=f=14000,stereotools=mlev=0.45:slev=1.05"
     res = subprocess.run(
         [
@@ -246,6 +244,20 @@ def _smooth_envelope(mask: "np.ndarray", win_samples: int) -> "np.ndarray":
     return np.convolve(padded, kernel, mode="valid")[: len(mask)]
 
 
+def _build_atempo_chain(ratio: float) -> str:
+    """Xây dựng chuỗi bộ lọc atempo an toàn trong ffmpeg (mỗi atempo nằm trong [0.5, 2.0])."""
+    r = max(0.5, min(2.5, float(ratio)))
+    parts = []
+    while r > 2.0:
+        parts.append("atempo=2.0")
+        r /= 2.0
+    while r < 0.5:
+        parts.append("atempo=0.5")
+        r /= 0.5
+    parts.append(f"atempo={r:.4f}")
+    return ",".join(parts)
+
+
 def synth_single_line(
     tts_engine,
     lock: threading.Lock,
@@ -258,30 +270,44 @@ def synth_single_line(
     import numpy as np
     import soundfile as sf
 
-    text_vi = (line.get("text_vi") or "").strip()
+    text_vi = (line.get("text_vi") or line.get("src_text") or "").strip()
     start_t = max(0.0, float(line.get("start", 0.0)))
-    end_t = max(start_t + 0.5, float(line.get("end", start_t + 1.0)))
-    slot_dur = max(0.5, end_t - start_t)
+    end_t = max(start_t + 0.4, float(line.get("end", start_t + 1.0)))
+    slot_dur = max(0.4, end_t - start_t)
 
     if not text_vi:
-        return idx, start_t, None
+        text_vi = f"Câu số {idx + 1}"
 
     spk_id = line.get("speaker_id", "SPEAKER_00")
     gender = (line.get("gender") or speaker_ref_map.get(spk_id, {}).get("gender") or "female").lower()
     ref_wav = speaker_ref_map.get(spk_id, {}).get("ref_path")
+    preset_voice = pick_voice_for_gender(tts_engine, gender)
 
     raw_wav = os.path.join(work_dir, f"raw_{idx:04d}.wav")
     aligned_wav = os.path.join(work_dir, f"aligned_{idx:04d}.wav")
 
-    with lock:
-        if ref_wav and os.path.exists(ref_wav) and os.path.getsize(ref_wav) > 1024:
+    def _run_infer(use_ref: bool):
+        if use_ref and ref_wav and os.path.exists(ref_wav) and os.path.getsize(ref_wav) > 1024:
             try:
-                audio_arr = tts_engine.infer(text_vi, ref_audio=ref_wav, denoise=True)
+                return tts_engine.infer(text_vi, ref_audio=ref_wav, denoise=True)
             except TypeError:
-                audio_arr = tts_engine.infer(text_vi, ref_audio=ref_wav)
-        else:
-            preset_voice = pick_voice_for_gender(tts_engine, gender)
-            audio_arr = tts_engine.infer(text_vi, voice=preset_voice)
+                return tts_engine.infer(text_vi, ref_audio=ref_wav)
+        return tts_engine.infer(text_vi, voice=preset_voice)
+
+    with lock:
+        audio_arr = None
+        try:
+            audio_arr = _run_infer(use_ref=True)
+        except Exception as ref_err:
+            print(f"[WARN] Câu {idx} clone ref_audio lỗi ({ref_err}), thử giọng preset {preset_voice}.")
+            try:
+                audio_arr = _run_infer(use_ref=False)
+            except Exception as p_err:
+                print(f"[WARN] Câu {idx} TTS lỗi hoàn toàn: {p_err}")
+                return idx, start_t, None
+
+        if audio_arr is None:
+            return idx, start_t, None
 
         if hasattr(tts_engine, "save"):
             tts_engine.save(audio_arr, raw_wav)
@@ -297,16 +323,28 @@ def synth_single_line(
         probe_data = probe_data.mean(axis=-1)
     actual_dur = max(0.1, len(probe_data) / float(src_sr or 48000))
 
+    # Căn tốc độ sát khung thời gian [start_t, end_t] để tránh tràn câu sau
     tempo = 1.0
-    if actual_dur > slot_dur * 1.08:
-        tempo = min(1.20, actual_dur / slot_dur)
-    elif actual_dur < slot_dur * 0.85:
-        tempo = max(0.90, actual_dur / slot_dur)
+    if actual_dur > slot_dur * 1.04:
+        tempo = min(1.45, actual_dur / slot_dur)
+    elif actual_dur < slot_dur * 0.80:
+        tempo = max(0.85, actual_dur / slot_dur)
 
-    ff_cmd = ["ffmpeg", "-y", "-i", raw_wav]
+    af_parts = []
     if abs(tempo - 1.0) > 0.02:
-        ff_cmd.extend(["-filter:a", f"atempo={tempo:.3f}"])
-    ff_cmd.extend(["-ac", "2", "-ar", str(target_sr), aligned_wav])
+        af_parts.append(_build_atempo_chain(tempo))
+    # Giới hạn tối đa độ dài đoạn không vượt quá 1.15x slot_dur để hạn chế đè lên câu kế tiếp
+    max_allowed_dur = round(slot_dur * 1.15, 3)
+    af_parts.append(f"atrim=0:{max_allowed_dur},asetpts=PTS-STARTPTS")
+
+    ff_cmd = [
+        "ffmpeg", "-y",
+        "-i", raw_wav,
+        "-af", ",".join(af_parts),
+        "-ac", "2",
+        "-ar", str(target_sr),
+        aligned_wav,
+    ]
 
     res = subprocess.run(ff_cmd, capture_output=True, text=True)
     if res.returncode != 0 or not os.path.exists(aligned_wav):
@@ -327,7 +365,8 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
 
     tts_engine = init_vieneu_engine()
     lock = threading.Lock()
-    workers = max(1, min(3, int(os.environ.get("TTS_WORKERS", "2"))))
+    # Mặc định 1 worker để đảm bảo đủ số câu và ổn định trạng thái model TTS
+    workers = max(1, min(2, int(os.environ.get("TTS_WORKERS", "1"))))
 
     results = []
     try:
@@ -348,6 +387,7 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
         free_gpu()
 
     results.sort(key=lambda x: x[0])
+    ok_count = 0
 
     target_rms = 0.11
     for _, start_t, wav_path in results:
@@ -381,6 +421,9 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
         copy_len = end_sample - start_sample
         if copy_len > 0:
             voice_track[start_sample:end_sample] += seg_f32[:copy_len]
+            ok_count += 1
+
+    print(f"[INFO] VieNeu-TTS đã ghép thành công {ok_count}/{len(lines)} câu thoại theo mốc timing.")
 
     raw_voice_active = (np.abs(voice_track).max(axis=-1) > 1e-3).astype(np.float32)
     smooth_active = _smooth_envelope(raw_voice_active, max(1, int(sr * 0.18)))
