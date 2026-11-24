@@ -1,8 +1,0 @@
-git fetch origin
-git checkout -b pipeline-state
-mkdir -p state
-echo '{"jobs": {}}' > state/jobs.json
-git add state/jobs.json
-git commit -m "init pipeline-state branch with state/jobs.json"
-git push -u origin pipeline-state
-git checkout main
