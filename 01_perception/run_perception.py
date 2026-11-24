@@ -166,15 +166,21 @@ def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path
 
 
 def run_whisper_asr(audio_16k: str) -> list[dict]:
+    import numpy as np
+    import soundfile as sf
     import torch
     from faster_whisper import WhisperModel
+
+    audio_np, sr = sf.read(audio_16k, dtype="float32")
+    if audio_np.ndim > 1:
+        audio_np = audio_np.mean(axis=-1)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     compute_type = "float16" if device == "cuda" else "int8"
     model_size = os.environ.get("WHISPER_MODEL", "large-v3")
 
     model = WhisperModel(model_size, device=device, compute_type=compute_type)
-    raw_segments, _ = model.transcribe(audio_16k, beam_size=5, vad_filter=True)
+    raw_segments, _ = model.transcribe(audio_np, beam_size=5, vad_filter=True)
 
     segments = []
     for idx, seg in enumerate(raw_segments):
@@ -192,6 +198,7 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
     del model
     free_gpu()
     return segments
+
 
 
 def run_demucs_and_ref_voice(audio_16k: str, segments: list[dict], work_dir: str) -> str:
