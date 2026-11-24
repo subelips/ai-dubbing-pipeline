@@ -1,7 +1,9 @@
 import base64
+import gc
 import json
 import os
 import subprocess
+import sys
 import time
 import traceback
 import requests
@@ -31,7 +33,7 @@ class GitHubSync:
         self.repo = repo
         self.token = token
         self.state_branch = state_branch
-        self.api_base = f"https://api.github.com/repos/{repo}"
+        self.api_base = f"[https://api.github.com/repos/](https://api.github.com/repos/){repo}"
         self.headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -117,10 +119,181 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
     if not bot_token or not chat_id:
         return
     requests.post(
-        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+        f"[https://api.telegram.org/bot](https://api.telegram.org/bot){bot_token}/sendMessage",
         json={"chat_id": chat_id, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": False},
         timeout=20,
     )
+
+
+def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
+    ref = (source_ref or "source_input.mp4").strip()
+    if ref.startswith(("http://", "https://")):
+        if "drive.google.com" in ref:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=True)
+            subprocess.run([sys.executable, "-m", "gdown", "--fuzzy", ref, "-O", dest_path], check=True)
+        else:
+            subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
+    else:
+        sync.download_asset(tag, ref, dest_path)
+
+
+def free_gpu():
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+
+def try_load_vieneu_tts():
+    repo_url = os.environ.get("VIENEU_TTS_REPO", "").strip()
+    local_dir = "/kaggle/working/VieNeu-TTS"
+    if repo_url and not os.path.isdir(local_dir):
+        subprocess.run(["git", "clone", "--depth", "1", repo_url, local_dir], check=False)
+
+    for candidate_dir in [local_dir, "/kaggle/working/vieneu-tts", "."]:
+        if os.path.isdir(candidate_dir) and candidate_dir not in sys.path:
+            sys.path.insert(0, candidate_dir)
+
+    try:
+        import vieneu_tts  # type: ignore
+        return ("module", vieneu_tts)
+    except Exception:
+        pass
+
+    for entry in [os.path.join(local_dir, "infer.py"), os.path.join(local_dir, "tts.py")]:
+        if os.path.isfile(entry):
+            return ("script", entry)
+
+    return None
+
+
+async def _edge_tts_save(text: str, out_wav: str, voice: str = "vi-VN-HoaiMyNeural"):
+    import edge_tts
+    tmp_mp3 = out_wav + ".mp3"
+    comm = edge_tts.Communicate(text, voice)
+    await comm.save(tmp_mp3)
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", tmp_mp3, "-ac", "2", "-ar", "44100", out_wav],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if os.path.exists(tmp_mp3):
+        os.remove(tmp_mp3)
+
+
+def synth_line_audio(text_vi: str, ref_wav: str | None, out_wav: str, vieneu_handle):
+    import asyncio
+
+    if not text_vi.strip():
+        return False
+
+    if vieneu_handle is not None:
+        kind, obj = vieneu_handle
+        try:
+            if kind == "module" and hasattr(obj, "synthesize"):
+                obj.synthesize(text=text_vi, ref_audio=ref_wav, output_path=out_wav)
+                if os.path.exists(out_wav) and os.path.getsize(out_wav) > 512:
+                    return True
+            elif kind == "script":
+                cmd = [sys.executable, obj, "--text", text_vi, "--out", out_wav]
+                if ref_wav and os.path.exists(ref_wav):
+                    cmd.extend(["--ref", ref_wav])
+                r = subprocess.run(cmd, capture_output=True, text=True)
+                if r.returncode == 0 and os.path.exists(out_wav) and os.path.getsize(out_wav) > 512:
+                    return True
+        except Exception:
+            pass
+
+    # Fallback tiếng Việt qua edge-tts nếu chưa cấu hình repo VieNeu-TTS
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "edge-tts"], check=True)
+        asyncio.run(_edge_tts_save(text_vi, out_wav))
+        return os.path.exists(out_wav) and os.path.getsize(out_wav) > 512
+    except Exception:
+        return False
+
+
+def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], work_dir: str, final_mp4: str):
+    import numpy as np
+    import soundfile as sf
+
+    bgm_data, sr = sf.read(bgm_in)
+    if bgm_data.ndim == 1:
+        bgm_data = np.stack([bgm_data, bgm_data], axis=-1)
+    total_samples = len(bgm_data)
+    voice_track = np.zeros_like(bgm_data, dtype=np.float32)
+
+    vieneu_handle = try_load_vieneu_tts()
+    default_ref = os.path.join(work_dir, "ref_speaker_SPEAKER_00.wav")
+    if not os.path.exists(default_ref):
+        default_ref = None
+
+    for idx, line in enumerate(lines):
+        text_vi = (line.get("text_vi") or "").strip()
+        if not text_vi:
+            continue
+        start_t = max(0.0, float(line.get("start", 0.0)))
+        line_wav = os.path.join(work_dir, f"line_{idx:04d}.wav")
+        ok = synth_line_audio(text_vi, default_ref, line_wav, vieneu_handle)
+        if not ok or not os.path.exists(line_wav):
+            continue
+
+        seg_audio, seg_sr = sf.read(line_wav)
+        if seg_audio.ndim == 1:
+            seg_audio = np.stack([seg_audio, seg_audio], axis=-1)
+        if seg_sr != sr:
+            resampled_wav = os.path.join(work_dir, f"line_{idx:04d}_rs.wav")
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", line_wav, "-ac", "2", "-ar", str(sr), resampled_wav],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            seg_audio, _ = sf.read(resampled_wav)
+            if seg_audio.ndim == 1:
+                seg_audio = np.stack([seg_audio, seg_audio], axis=-1)
+
+        start_sample = int(start_t * sr)
+        if start_sample >= total_samples:
+            continue
+        end_sample = min(total_samples, start_sample + len(seg_audio))
+        copy_len = end_sample - start_sample
+        if copy_len > 0:
+            voice_track[start_sample:end_sample] += seg_audio[:copy_len].astype(np.float32)
+
+    # Giảm nhẹ nhạc nền khi có lời thoại, sau đó trộn
+    has_voice = np.abs(voice_track).max(axis=-1) > 1e-3
+    ducked_bgm = bgm_data.astype(np.float32).copy()
+    ducked_bgm[has_voice] *= 0.35
+
+    mixed_audio = np.clip(ducked_bgm + voice_track, -1.0, 1.0)
+    mixed_wav = os.path.join(work_dir, "final_dub_mix.wav")
+    sf.write(mixed_wav, mixed_audio, sr)
+    free_gpu()
+
+    ff_res = subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", video_in,
+            "-i", mixed_wav,
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            final_mp4,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if ff_res.returncode != 0:
+        raise RuntimeError(f"FFmpeg mux lỗi (code {ff_res.returncode}):\n{ff_res.stderr[-1500:]}")
 
 
 sync = GitHubSync(GH_REPO, GH_TOKEN)
@@ -136,10 +309,10 @@ def main():
     bgm_in = os.path.join(out_dir, "no_vocals.wav")
     final_mp4 = os.path.join(out_dir, f"final_dubbed_{JOB_ID}.mp4")
 
-    video_asset = stage2_data.get("video_asset") or "source_input.mp4"
-    sync.download_asset(JOB_ID, video_asset, video_in)
+    video_asset = (stage2_data.get("video_asset") or stage2_data.get("video_url") or "source_input.mp4").strip()
+    download_video_source(sync, JOB_ID, video_asset, video_in)
     if not os.path.exists(video_in) or os.path.getsize(video_in) < 1024:
-        raise RuntimeError(f"File video '{video_asset}' tải từ Release không hợp lệ hoặc rỗng.")
+        raise RuntimeError(f"File video '{video_asset}' tải về không hợp lệ hoặc rỗng.")
 
     sync.download_asset(JOB_ID, "no_vocals.wav", bgm_in)
 
@@ -148,25 +321,8 @@ def main():
         if asset["name"].startswith("ref_speaker_") and asset["name"].endswith(".wav"):
             sync.download_asset(JOB_ID, asset["name"], os.path.join(out_dir, asset["name"]))
 
-    # Xử lý VieNeu-TTS v3 Turbo song song 2 GPU + căn timecode + trộn nhạc nền & mux video
-
-    ff_res = subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-i", video_in,
-            "-i", bgm_in,
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            final_mp4,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if ff_res.returncode != 0:
-        raise RuntimeError(f"FFmpeg mux lỗi (code {ff_res.returncode}):\n{ff_res.stderr[-1500:]}")
+    lines = stage2_data.get("lines", [])
+    mix_dub_and_mux(video_in, bgm_in, lines, out_dir, final_mp4)
 
     download_url = sync.upload_asset(JOB_ID, final_mp4)
 
