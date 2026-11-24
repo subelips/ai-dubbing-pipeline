@@ -222,18 +222,19 @@ def estimate_pitch_gender(clip: "np.ndarray", sr: int) -> tuple[float, str]:
         return 0.0, "unknown"
     samples = clip[: min(len(clip), sr * 6)].astype(np.float32)
     samples = samples - np.mean(samples)
-    if np.max(np.abs(samples)) < 1e-4:
+    rms = float(np.sqrt(np.mean(samples ** 2)))
+    if rms < 1e-4:
         return 0.0, "unknown"
 
     corr = np.correlate(samples, samples, mode="full")[len(samples) - 1:]
-    min_lag = max(1, int(sr / 350))
-    max_lag = min(len(corr) - 1, int(sr / 70))
+    min_lag = max(1, int(sr / 340))
+    max_lag = min(len(corr) - 1, int(sr / 75))
     if max_lag <= min_lag:
         return 0.0, "unknown"
 
     best_lag = min_lag + int(np.argmax(corr[min_lag:max_lag]))
     f0 = float(sr) / float(best_lag)
-    if f0 < 165.0:
+    if f0 < 162.0:
         return round(f0, 1), "male"
     return round(f0, 1), "female"
 
@@ -248,6 +249,7 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
         audio_np = audio_np.mean(axis=-1)
 
     model_size = os.environ.get("WHISPER_MODEL", "large-v3")
+    segments = []
 
     try:
         _preload_cuda12_libs()
@@ -258,7 +260,6 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
         model = WhisperModel(model_size, device=device, compute_type=compute_type)
         raw_segments, _ = model.transcribe(audio_np, beam_size=5, vad_filter=True)
 
-        segments = []
         for idx, seg in enumerate(raw_segments):
             txt = (seg.text or "").strip()
             if not txt:
@@ -279,49 +280,60 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
 
         del model
         free_gpu()
-        return segments
     except Exception as fw_err:
         print(f"[WARN] faster-whisper fallback sang PyTorch Whisper do: {fw_err}")
         free_gpu()
 
-    from transformers import pipeline
+        from transformers import pipeline
 
-    hf_model = f"openai/whisper-{model_size}" if "/" not in model_size else model_size
-    asr_pipe = pipeline(
-        "automatic-speech-recognition",
-        model=hf_model,
-        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device=0 if torch.cuda.is_available() else -1,
-    )
-    result = asr_pipe(
-        {"array": audio_np, "sampling_rate": sr},
-        chunk_length_s=30,
-        batch_size=8,
-        return_timestamps=True,
-    )
+        hf_model = f"openai/whisper-{model_size}" if "/" not in model_size else model_size
+        asr_pipe = pipeline(
+            "automatic-speech-recognition",
+            model=hf_model,
+            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            device=0 if torch.cuda.is_available() else -1,
+        )
+        result = asr_pipe(
+            {"array": audio_np, "sampling_rate": sr},
+            chunk_length_s=30,
+            batch_size=8,
+            return_timestamps=True,
+        )
 
-    segments = []
-    for idx, chunk in enumerate(result.get("chunks", [])):
-        txt = (chunk.get("text") or "").strip()
-        ts = chunk.get("timestamp") or (0.0, 0.0)
-        start_t = round(float(ts[0]) if ts[0] is not None else 0.0, 2)
-        end_t = round(max(float(ts[1]) if ts[1] is not None else start_t + 2.0, start_t + 0.5), 2)
-        if not txt:
-            continue
-        clip = audio_np[int(start_t * sr): int(end_t * sr)]
-        f0, gender_hint = estimate_pitch_gender(clip, sr)
-        segments.append({
-            "id": idx,
-            "start": start_t,
-            "end": end_t,
-            "speaker_id": "SPEAKER_00",
-            "gender_hint": gender_hint,
-            "pitch_hz": f0,
-            "asr_text": txt,
-        })
+        for idx, chunk in enumerate(result.get("chunks", [])):
+            txt = (chunk.get("text") or "").strip()
+            ts = chunk.get("timestamp") or (0.0, 0.0)
+            start_t = round(float(ts[0]) if ts[0] is not None else 0.0, 2)
+            end_t = round(max(float(ts[1]) if ts[1] is not None else start_t + 2.0, start_t + 0.5), 2)
+            if not txt:
+                continue
+            clip = audio_np[int(start_t * sr): int(end_t * sr)]
+            f0, gender_hint = estimate_pitch_gender(clip, sr)
+            segments.append({
+                "id": idx,
+                "start": start_t,
+                "end": end_t,
+                "speaker_id": "SPEAKER_00",
+                "gender_hint": gender_hint,
+                "pitch_hz": f0,
+                "asr_text": txt,
+            })
 
-    del asr_pipe
-    free_gpu()
+        del asr_pipe
+        free_gpu()
+
+    # Phân tách nhân vật theo cao độ (F0) để hỗ trợ đa giọng nam/nữ khi có sự chênh lệch rõ
+    for s in segments:
+        f0 = float(s.get("pitch_hz") or 0.0)
+        if f0 > 0 and f0 < 155.0:
+            s["speaker_id"] = "SPEAKER_MALE"
+            s["gender_hint"] = "male"
+        elif f0 >= 165.0:
+            s["speaker_id"] = "SPEAKER_FEMALE"
+            s["gender_hint"] = "female"
+        else:
+            s["speaker_id"] = "SPEAKER_00"
+
     return segments
 
 
@@ -330,7 +342,7 @@ def extract_ocr_frames(video_path: str, work_dir: str) -> list[tuple[float, str]
     os.makedirs(ocr_dir, exist_ok=True)
     fps = os.environ.get("OCR_FPS", "1.0")
     subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-vf", f"fps={fps},scale=1080:-1", os.path.join(ocr_dir, "f_%04d.jpg")],
+        ["ffmpeg", "-y", "-i", video_path, "-vf", f"fps={fps},scale=1280:-1", os.path.join(ocr_dir, "f_%04d.jpg")],
         capture_output=True,
         text=True,
     )
@@ -345,7 +357,7 @@ def extract_ocr_frames(video_path: str, work_dir: str) -> list[tuple[float, str]
             idx = len(frames) + 1
         ts = round((idx - 1) * interval, 2)
         frames.append((ts, os.path.join(ocr_dir, fname)))
-    return frames[:90]
+    return frames[:120]
 
 
 def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
@@ -422,11 +434,13 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
         print(f"[WARN] PaddleOCR lỗi: {ocr_err}")
         free_gpu()
 
+    print(f"[INFO] PaddleOCR thu được {len(ocr_records)} mốc có chữ/phụ đề.")
     return ocr_records
 
 
 def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> list[dict]:
     refined = []
+    verified_cnt = 0
     for seg in segments:
         s_t = float(seg.get("start", 0.0))
         e_t = float(seg.get("end", s_t + 1.0))
@@ -447,25 +461,30 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         source_mode = "asr_only"
         if asr_txt and ocr_txt:
             ratio = SequenceMatcher(None, asr_txt.lower(), ocr_txt.lower()).ratio()
-            if ratio >= 0.65 or (len(ocr_txt) >= len(asr_txt) * 0.85 and len(ocr_txt) >= 4):
+            if ratio >= 0.55 or (len(ocr_txt) >= len(asr_txt) * 0.8 and len(ocr_txt) >= 3):
                 best_txt = ocr_txt
                 source_mode = "ocr_verified"
+                verified_cnt += 1
             else:
                 best_txt = asr_txt
                 source_mode = "asr_with_ocr_hint"
         elif ocr_txt and not asr_txt:
             best_txt = ocr_txt
             source_mode = "ocr_only"
+            verified_cnt += 1
 
         item = dict(seg)
         item["ocr_text"] = ocr_txt
         item["best_text"] = best_txt
         item["subtitle_source"] = source_mode
         refined.append(item)
+
+    print(f"[INFO] Đối chiếu ASR+OCR: {verified_cnt}/{len(refined)} câu đối chiếu OCR.")
     return refined
 
 
 def run_demucs_and_ref_voices(audio_16k: str, segments: list[dict], work_dir: str) -> tuple[str, dict]:
+    import numpy as np
     import soundfile as sf
     import torch
 
@@ -510,13 +529,24 @@ def run_demucs_and_ref_voices(audio_16k: str, segments: list[dict], work_dir: st
             by_speaker.setdefault(spk, []).append(seg)
 
         for spk, spk_segs in by_speaker.items():
-            best_seg = max(spk_segs, key=lambda x: float(x["end"]) - float(x["start"]), default=None)
+            # Chọn đoạn dài >= 2.5s và có RMS cao nhất (rõ tiếng nhất)
+            candidates = [s for s in spk_segs if (float(s["end"]) - float(s["start"])) >= 2.5] or spk_segs
+            best_seg = max(
+                candidates,
+                key=lambda x: float(np.sqrt(np.mean(data[int(float(x["start"]) * sr): max(int(float(x["start"]) * sr) + 1, int(float(x["end"]) * sr))] ** 2)))
+                if len(data) > 0 else 0.0,
+                default=None,
+            )
             if not best_seg:
                 continue
-            start_s = max(0.0, float(best_seg["start"]))
-            end_s = min(len(data) / float(sr), max(start_s + 2.0, min(float(best_seg["end"]), start_s + 8.0)))
+            start_s = max(0.0, float(best_seg["start"]) + 0.15)
+            end_s = min(len(data) / float(sr), max(start_s + 2.5, min(float(best_seg["end"]) - 0.15, start_s + 6.5)))
             if end_s > start_s:
-                clip = data[int(start_s * sr): int(end_s * sr)]
+                clip = data[int(start_s * sr): int(end_s * sr)].astype(np.float32)
+                # Chuẩn hóa biên độ mẫu giọng clone về mức RMS ~0.08
+                rms = float(np.sqrt(np.mean(clip ** 2)))
+                if rms > 1e-5:
+                    clip = np.clip(clip * (0.08 / rms), -0.95, 0.95)
                 ref_name = f"ref_speaker_{spk}.wav"
                 ref_path = os.path.join(work_dir, ref_name)
                 sf.write(ref_path, clip, sr)
