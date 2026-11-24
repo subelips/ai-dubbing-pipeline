@@ -176,10 +176,13 @@ def free_gpu():
 def init_vieneu_engine():
     from vieneu import Vieneu  # type: ignore
 
-    try:
-        return Vieneu(mode="v3turbo")
-    except Exception:
-        return Vieneu()
+    mode = os.environ.get("VIENEU_MODE", "").strip()
+    if mode:
+        try:
+            return Vieneu(mode=mode)
+        except Exception:
+            pass
+    return Vieneu()
 
 
 def pick_voice_for_gender(tts_engine, gender: str) -> str | None:
@@ -205,6 +208,16 @@ def pick_voice_for_gender(tts_engine, gender: str) -> str | None:
         return names[0] if names else None
     except Exception:
         return male_default if target_gender == "male" else female_default
+
+
+def _smooth_envelope(mask: "np.ndarray", win_samples: int) -> "np.ndarray":
+    import numpy as np
+
+    if win_samples <= 1:
+        return mask.astype(np.float32)
+    kernel = np.ones(win_samples, dtype=np.float32) / float(win_samples)
+    padded = np.pad(mask.astype(np.float32), (win_samples // 2, win_samples // 2), mode="edge")
+    return np.convolve(padded, kernel, mode="valid")[: len(mask)]
 
 
 def synth_single_line(
@@ -236,7 +249,10 @@ def synth_single_line(
 
     with lock:
         if ref_wav and os.path.exists(ref_wav) and os.path.getsize(ref_wav) > 1024:
-            audio_arr = tts_engine.infer(text_vi, ref_audio=ref_wav, denoise=True)
+            try:
+                audio_arr = tts_engine.infer(text_vi, ref_audio=ref_wav, denoise=True)
+            except TypeError:
+                audio_arr = tts_engine.infer(text_vi, ref_audio=ref_wav)
         else:
             preset_voice = pick_voice_for_gender(tts_engine, gender)
             audio_arr = tts_engine.infer(text_vi, voice=preset_voice)
@@ -255,11 +271,12 @@ def synth_single_line(
         probe_data = probe_data.mean(axis=-1)
     actual_dur = max(0.1, len(probe_data) / float(src_sr or 48000))
 
+    # Biên độ tempo êm ái hơn (0.90x - 1.20x) để giữ tự nhiên
     tempo = 1.0
-    if actual_dur > slot_dur * 1.03:
-        tempo = min(1.35, actual_dur / slot_dur)
-    elif actual_dur < slot_dur * 0.78:
-        tempo = max(0.85, actual_dur / slot_dur)
+    if actual_dur > slot_dur * 1.08:
+        tempo = min(1.20, actual_dur / slot_dur)
+    elif actual_dur < slot_dur * 0.85:
+        tempo = max(0.90, actual_dur / slot_dur)
 
     ff_cmd = ["ffmpeg", "-y", "-i", raw_wav]
     if abs(tempo - 1.0) > 0.02:
@@ -284,7 +301,7 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
 
     tts_engine = init_vieneu_engine()
     lock = threading.Lock()
-    workers = max(1, min(4, int(os.environ.get("TTS_WORKERS", "2"))))
+    workers = max(1, min(3, int(os.environ.get("TTS_WORKERS", "2"))))
 
     results = []
     try:
@@ -306,6 +323,7 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
 
     results.sort(key=lambda x: x[0])
 
+    target_rms = 0.11
     for _, start_t, wav_path in results:
         if not wav_path or not os.path.exists(wav_path):
             continue
@@ -324,17 +342,25 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
             if seg_audio.ndim == 1:
                 seg_audio = np.stack([seg_audio, seg_audio], axis=-1)
 
+        seg_f32 = seg_audio.astype(np.float32)
+        rms = float(np.sqrt(np.mean(seg_f32 ** 2)))
+        if rms > 1e-4:
+            gain = min(2.5, target_rms / rms)
+            seg_f32 = np.clip(seg_f32 * gain, -0.95, 0.95)
+
         start_sample = int(round(start_t * sr))
         if start_sample >= total_samples:
             continue
-        end_sample = min(total_samples, start_sample + len(seg_audio))
+        end_sample = min(total_samples, start_sample + len(seg_f32))
         copy_len = end_sample - start_sample
         if copy_len > 0:
-            voice_track[start_sample:end_sample] += seg_audio[:copy_len].astype(np.float32)
+            voice_track[start_sample:end_sample] += seg_f32[:copy_len]
 
-    has_voice = np.abs(voice_track).max(axis=-1) > 1e-3
-    ducked_bgm = bgm_data.astype(np.float32).copy()
-    ducked_bgm[has_voice] *= 0.32
+    # Làm mượt ducking nhạc nền ~180ms để không bị giật bật/tắt
+    raw_voice_active = (np.abs(voice_track).max(axis=-1) > 1e-3).astype(np.float32)
+    smooth_active = _smooth_envelope(raw_voice_active, max(1, int(sr * 0.18)))
+    duck_factor = 1.0 - (0.65 * smooth_active)  # hạ xuống ~0.35 khi có thoại, chuyển tiếp mượt
+    ducked_bgm = bgm_data.astype(np.float32) * duck_factor[:, None]
 
     mixed_audio = np.clip(ducked_bgm + voice_track, -1.0, 1.0)
     mixed_wav = os.path.join(work_dir, "final_dub_mix.wav")
