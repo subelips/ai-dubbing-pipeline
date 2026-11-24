@@ -211,7 +211,6 @@ def estimate_pitch_gender(clip: "np.ndarray", sr: int) -> tuple[float, str]:
 
     if clip is None or len(clip) < sr // 2:
         return 0.0, "unknown"
-    # Ước lượng tần số cơ bản (F0) bằng autocorrelation trong dải 70Hz - 350Hz
     samples = clip[: min(len(clip), sr * 6)].astype(np.float32)
     samples = samples - np.mean(samples)
     if np.max(np.abs(samples)) < 1e-4:
@@ -351,27 +350,53 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
 
         lang = os.environ.get("PADDLE_OCR_LANG", "ch")
         use_gpu = os.environ.get("PADDLE_OCR_GPU", "0").strip() == "1"
+
         try:
-            ocr = PaddleOCR(use_angle_cls=True, lang=lang, use_gpu=use_gpu, show_log=False)
-        except TypeError:
-            ocr = PaddleOCR(lang=lang)
+            ocr = PaddleOCR(lang=lang, use_textline_orientation=True)
+        except Exception:
+            try:
+                ocr = PaddleOCR(lang=lang)
+            except Exception:
+                ocr = PaddleOCR(use_angle_cls=True, lang=lang, use_gpu=use_gpu)
 
         for ts, img_path in frames:
+            line_texts = []
             try:
-                res = ocr.ocr(img_path)
-            except TypeError:
-                res = ocr.ocr(img_path, cls=True)
+                if hasattr(ocr, "predict"):
+                    res = list(ocr.predict(img_path))
+                else:
+                    res = ocr.ocr(img_path)
             except Exception:
                 continue
 
-            line_texts = []
-            if res and isinstance(res, list):
-                for page in res:
-                    if not page:
-                        continue
-                    for item in page:
-                        if isinstance(item, (list, tuple)) and len(item) >= 2:
-                            info = item[1]
+            if not res:
+                continue
+
+            for item in res:
+                rec_texts = None
+                rec_scores = None
+                if isinstance(item, dict):
+                    rec_texts = item.get("rec_texts")
+                    rec_scores = item.get("rec_scores")
+                elif hasattr(item, "get"):
+                    rec_texts = item.get("rec_texts")
+                    rec_scores = item.get("rec_scores")
+                elif hasattr(item, "rec_texts"):
+                    rec_texts = getattr(item, "rec_texts", None)
+                    rec_scores = getattr(item, "rec_scores", None)
+
+                if rec_texts is not None:
+                    scores = list(rec_scores) if rec_scores is not None else [1.0] * len(rec_texts)
+                    for txt_raw, conf in zip(rec_texts, scores):
+                        txt = str(txt_raw).strip()
+                        if txt and float(conf) >= 0.55:
+                            line_texts.append(txt)
+                    continue
+
+                if isinstance(item, (list, tuple)):
+                    for det in item:
+                        if isinstance(det, (list, tuple)) and len(det) >= 2:
+                            info = det[1]
                             if isinstance(info, (list, tuple)) and info:
                                 txt = str(info[0]).strip()
                                 conf = float(info[1]) if len(info) > 1 else 1.0
@@ -385,14 +410,13 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> list[dict]:
         del ocr
         free_gpu()
     except Exception as ocr_err:
-        print(f"[WARN] PaddleOCR bỏ qua do lỗi môi trường: {ocr_err}")
+        print(f"[WARN] PaddleOCR lỗi: {ocr_err}")
         free_gpu()
 
     return ocr_records
 
 
 def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> list[dict]:
-    """Đối chiếu ASR và OCR theo thời gian & độ tương đồng để chọn phụ đề chuẩn nhất."""
     refined = []
     for seg in segments:
         s_t = float(seg.get("start", 0.0))
@@ -404,7 +428,6 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
             for r in ocr_records
             if (s_t - 0.8) <= float(r["time"]) <= (e_t + 0.8) and r.get("text")
         ]
-        # Loại trùng liên tiếp
         dedup_ocrs = []
         for t in matched_ocrs:
             if not dedup_ocrs or t != dedup_ocrs[-1]:
@@ -415,12 +438,10 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         source_mode = "asr_only"
         if asr_txt and ocr_txt:
             ratio = SequenceMatcher(None, asr_txt.lower(), ocr_txt.lower()).ratio()
-            # Nếu OCR dài/rõ hơn đáng kể hoặc trùng khớp cao -> ưu tiên OCR cho phần chữ/phụ đề chuẩn
             if ratio >= 0.65 or (len(ocr_txt) >= len(asr_txt) * 0.85 and len(ocr_txt) >= 4):
                 best_txt = ocr_txt
                 source_mode = "ocr_verified"
             else:
-                # Giữ ASR làm chính và đính kèm OCR làm chú thích ngữ cảnh
                 best_txt = asr_txt
                 source_mode = "asr_with_ocr_hint"
         elif ocr_txt and not asr_txt:
@@ -436,7 +457,6 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
 
 
 def run_demucs_and_ref_voices(audio_16k: str, segments: list[dict], work_dir: str) -> tuple[str, dict]:
-    import numpy as np
     import soundfile as sf
     import torch
 
@@ -535,7 +555,6 @@ def main():
 
     ensure_deps()
 
-    # Chạy song song ASR (Whisper) và PaddleOCR
     with ThreadPoolExecutor(max_workers=2) as pool:
         fut_asr = pool.submit(run_whisper_asr, audio_16k)
         fut_ocr = pool.submit(run_paddle_ocr, video_path, work_dir)
