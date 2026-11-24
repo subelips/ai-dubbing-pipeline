@@ -1,4 +1,5 @@
 import base64
+import gc
 import json
 import os
 import subprocess
@@ -72,46 +73,14 @@ class GitHubSync:
             r.raise_for_status()
         raise RuntimeError(f"Không thể ghi {path} sau {max_retries} lần thử.")
 
-    def ensure_release(self, tag: str, name: str | None = None) -> dict:
-        url = f"{self.api_base}/releases/tags/{tag}"
-        r = requests.get(url, headers=self.headers, timeout=30)
-        if r.status_code == 200:
-            return r.json()
-        cr = requests.post(
-            f"{self.api_base}/releases",
+    def trigger_dispatch(self, event_type: str, client_payload: dict):
+        r = requests.post(
+            f"{self.api_base}/dispatches",
             headers=self.headers,
-            json={"tag_name": tag, "name": name or f"Artifacts - {tag}", "draft": False, "prerelease": False},
+            json={"event_type": event_type, "client_payload": client_payload},
             timeout=30,
         )
-        cr.raise_for_status()
-        return cr.json()
-
-    def upload_asset(self, tag: str, file_path: str):
-        release = self.ensure_release(tag)
-        upload_url = release["upload_url"].split("{")[0]
-        filename = os.path.basename(file_path)
-        for asset in release.get("assets", []):
-            if asset["name"] == filename:
-                requests.delete(f"{self.api_base}/releases/assets/{asset['id']}", headers=self.headers, timeout=30)
-        up_headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/octet-stream"}
-        with open(file_path, "rb") as f:
-            r = requests.post(f"{upload_url}?name={filename}", headers=up_headers, data=f.read(), timeout=300)
         r.raise_for_status()
-        return r.json().get("browser_download_url")
-
-    def download_asset(self, tag: str, filename: str, dest_path: str):
-        release = self.ensure_release(tag)
-        for asset in release.get("assets", []):
-            if asset["name"] == filename:
-                dl_headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/octet-stream"}
-                with requests.get(asset["url"], headers=dl_headers, stream=True, timeout=300) as r:
-                    r.raise_for_status()
-                    with open(dest_path, "wb") as out:
-                        for chunk in r.iter_content(chunk_size=1024 * 1024):
-                            if chunk:
-                                out.write(chunk)
-                return dest_path
-        raise FileNotFoundError(f"Không tìm thấy asset {filename} trong release {tag}")
 
 
 def send_telegram(bot_token: str, chat_id: str, text: str):
@@ -124,75 +93,152 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
     )
 
 
-def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
-    ref = (source_ref or "source_input.mp4").strip()
-    if ref.startswith(("http://", "https://")):
-        if "drive.google.com" in ref:
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=True)
-            subprocess.run([sys.executable, "-m", "gdown", "--fuzzy", ref, "-O", dest_path], check=True)
+def ensure_deps():
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q", "transformers", "accelerate", "bitsandbytes"],
+        check=True,
+    )
+
+
+def free_gpu():
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+
+def translate_with_qwen(segments: list[dict], scene_context: str) -> list[dict]:
+    if not segments:
+        return []
+
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+    model_id = os.environ.get("QWEN_TRANSLATE_MODEL", "Qwen/Qwen2.5-14B-Instruct")
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    load_kwargs = {"device_map": "auto" if torch.cuda.is_available() else None}
+    if torch.cuda.is_available():
+        vram_gb = sum(
+            torch.cuda.get_device_properties(i).total_memory for i in range(torch.cuda.device_count())
+        ) / (1024 ** 3)
+        if vram_gb < 22:
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            )
         else:
-            subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
+            load_kwargs["torch_dtype"] = torch.bfloat16
     else:
-        sync.download_asset(tag, ref, dest_path)
+        load_kwargs["torch_dtype"] = torch.float32
+
+    model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
+
+    dub_lines = []
+    batch_size = 10
+    for start_idx in range(0, len(segments), batch_size):
+        chunk = segments[start_idx: start_idx + batch_size]
+        items_for_prompt = [
+            {
+                "id": s.get("id", start_idx + i),
+                "duration_sec": round(max(0.5, float(s.get("end", 1.0)) - float(s.get("start", 0.0))), 2),
+                "speaker_id": s.get("speaker_id", "SPEAKER_00"),
+                "src_text": s.get("asr_text", ""),
+            }
+            for i, s in enumerate(chunk)
+        ]
+
+        system_prompt = (
+            "Bạn là dịch giả lồng tiếng phim chuyên nghiệp sang tiếng Việt tự nhiên, "
+            "súc tích, khớp nhịp đọc theo duration_sec, không thêm giải thích hay markdown. "
+            "Chỉ trả về đúng một mảng JSON các object có khóa: id, speaker_id, text_vi."
+        )
+        user_prompt = (
+            f"Bối cảnh cảnh phim: {scene_context or 'Phim chính kịch/đời thường'}\n"
+            f"Danh sách thoại:\n{json.dumps(items_for_prompt, ensure_ascii=False)}"
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        text_input = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        model_inputs = tokenizer([text_input], return_tensors="pt")
+        if torch.cuda.is_available():
+            model_inputs = {k: v.to(model.device) for k, v in model_inputs.items()}
+
+        with torch.no_grad():
+            generated_ids = model.generate(
+                **model_inputs,
+                max_new_tokens=1500,
+                temperature=0.3,
+                do_sample=True,
+            )
+        gen_trimmed = [out[len(inp):] for inp, out in zip(model_inputs["input_ids"], generated_ids)]
+        raw_reply = tokenizer.batch_decode(gen_trimmed, skip_special_tokens=True)[0].strip()
+
+        translated_map = {}
+        try:
+            clean_json = raw_reply
+            if "```" in clean_json:
+                clean_json = clean_json.split("```json")[-1].split("```")[0].strip()
+            parsed = json.loads(clean_json)
+            if isinstance(parsed, list):
+                for row in parsed:
+                    if isinstance(row, dict) and "id" in row:
+                        translated_map[row["id"]] = str(row.get("text_vi", "")).strip()
+        except Exception:
+            pass
+
+        for i, s in enumerate(chunk):
+            line_id = s.get("id", start_idx + i)
+            vi_txt = translated_map.get(line_id) or s.get("asr_text", "")
+            dub_lines.append({
+                "id": line_id,
+                "start": float(s.get("start", 0.0)),
+                "end": float(s.get("end", 1.0)),
+                "speaker_id": s.get("speaker_id", "SPEAKER_00"),
+                "text_vi": vi_txt,
+            })
+
+    del model, tokenizer
+    free_gpu()
+    return dub_lines
 
 
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
 def main():
-    send_telegram(TG_TOKEN, TG_CHAT, f"🎙️ <b>[Stage 3 - Synthesis]</b> Bắt đầu job <code>{JOB_ID}</code>")
-    stage2_data, _ = sync.read_json(f"state/{JOB_ID}_stage2.json")
+    send_telegram(TG_TOKEN, TG_CHAT, f"🌐 <b>[Stage 2 - Translation]</b> Bắt đầu job <code>{JOB_ID}</code>")
+    stage1_data, _ = sync.read_json(f"state/{JOB_ID}_stage1.json")
+    segments = stage1_data.get("segments", [])
+    scene_context = stage1_data.get("scene_context", "")
 
-    out_dir = "/kaggle/working/out"
-    os.makedirs(out_dir, exist_ok=True)
-    video_in = os.path.join(out_dir, "source.mp4")
-    bgm_in = os.path.join(out_dir, "no_vocals.wav")
-    final_mp4 = os.path.join(out_dir, f"final_dubbed_{JOB_ID}.mp4")
+    ensure_deps()
+    dub_lines = translate_with_qwen(segments, scene_context)
 
-    video_asset = (stage2_data.get("video_asset") or stage2_data.get("video_url") or "source_input.mp4").strip()
-    download_video_source(sync, JOB_ID, video_asset, video_in)
-    if not os.path.exists(video_in) or os.path.getsize(video_in) < 1024:
-        raise RuntimeError(f"File video '{video_asset}' tải về không hợp lệ hoặc rỗng.")
-
-    sync.download_asset(JOB_ID, "no_vocals.wav", bgm_in)
-
-    release = sync.ensure_release(JOB_ID)
-    for asset in release.get("assets", []):
-        if asset["name"].startswith("ref_speaker_") and asset["name"].endswith(".wav"):
-            sync.download_asset(JOB_ID, asset["name"], os.path.join(out_dir, asset["name"]))
-
-    # Xử lý VieNeu-TTS v3 Turbo song song 2 GPU + căn timecode + trộn nhạc nền & mux video
-
-    ff_res = subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-i", video_in,
-            "-i", bgm_in,
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            final_mp4,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if ff_res.returncode != 0:
-        raise RuntimeError(f"FFmpeg mux lỗi (code {ff_res.returncode}):\n{ff_res.stderr[-1500:]}")
-
-    download_url = sync.upload_asset(JOB_ID, final_mp4)
+    stage2_payload = {
+        "job_id": JOB_ID,
+        "video_asset": stage1_data.get("video_asset") or stage1_data.get("video_url") or "source_input.mp4",
+        "lines": dub_lines,
+    }
+    sync.write_json(f"state/{JOB_ID}_stage2.json", stage2_payload, f"stage2 done: {JOB_ID}")
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
     if JOB_ID in updated_jobs.get("jobs", {}):
-        updated_jobs["jobs"][JOB_ID]["status"] = "COMPLETED"
-        updated_jobs["jobs"][JOB_ID]["output_url"] = download_url
-        sync.write_json("state/jobs.json", updated_jobs, f"completed job: {JOB_ID}")
+        updated_jobs["jobs"][JOB_ID]["status"] = "STAGE2_DONE"
+        sync.write_json("state/jobs.json", updated_jobs, f"update status STAGE2_DONE: {JOB_ID}")
 
+    sync.trigger_dispatch("stage2_completed", {"job_id": JOB_ID})
     send_telegram(
         TG_TOKEN,
         TG_CHAT,
-        f"🎉 <b>Hoàn tất lồng tiếng!</b> Job: <code>{JOB_ID}</code>\n🔗 Link tải MP4: {download_url}",
+        f"✅ <b>[Stage 2]</b> Hoàn tất <code>{JOB_ID}</code> ({len(dub_lines)} câu dịch) → chuyển sang Stage 3.",
     )
 
 
@@ -201,5 +247,5 @@ if __name__ == "__main__":
         main()
     except Exception:
         err = traceback.format_exc()[-1200:]
-        send_telegram(TG_TOKEN, TG_CHAT, f"❌ <b>[Stage 3 Lỗi]</b> <code>{JOB_ID}</code>:\n<pre>{err}</pre>")
+        send_telegram(TG_TOKEN, TG_CHAT, f"❌ <b>[Stage 2 Lỗi]</b> <code>{JOB_ID}</code>:\n<pre>{err}</pre>")
         raise
