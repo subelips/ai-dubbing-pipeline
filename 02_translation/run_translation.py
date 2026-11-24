@@ -105,11 +105,16 @@ class GitHubSync:
 def send_telegram(bot_token: str, chat_id: str, text: str):
     if not bot_token or not chat_id:
         return
-    requests.post(
-        f"https://api.telegram.org/bot{bot_token}/sendMessage",
-        json={"chat_id": chat_id, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": False},
-        timeout=20,
-    )
+    clean_token = str(bot_token).strip()
+    clean_chat = str(chat_id).strip()
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{clean_token}/sendMessage",
+            json={"chat_id": clean_chat, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": False},
+            timeout=20,
+        )
+    except Exception as e:
+        print(f"[WARN] Gửi Telegram thất bại: {e}")
 
 
 def ensure_deps():
@@ -154,7 +159,7 @@ def fetch_video_for_labeling(sync: GitHubSync, tag: str, source_ref: str, dest_p
 
 def extract_keyframes(video_path: str, work_dir: str) -> list[str]:
     frames = []
-    for idx, ts in enumerate(["00:00:03", "00:00:15", "00:00:35"]):
+    for idx, ts in enumerate(["00:00:03", "00:00:12", "00:00:25", "00:00:40"]):
         out_img = os.path.join(work_dir, f"frame_{idx}.jpg")
         res = subprocess.run(
             ["ffmpeg", "-y", "-ss", ts, "-i", video_path, "-frames:v", "1", "-q:v", "3", out_img],
@@ -198,9 +203,9 @@ def load_qwen3_vl():
     return model, processor
 
 
-def label_scene_with_qwen3_vl(model, processor, frame_paths: list[str], fallback_context: str) -> str:
+def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_refs: dict, fallback_context: str) -> tuple[str, dict]:
     if not frame_paths:
-        return fallback_context or ""
+        return fallback_context or "", speaker_refs
 
     import torch
     from PIL import Image
@@ -210,8 +215,11 @@ def label_scene_with_qwen3_vl(model, processor, frame_paths: list[str], fallback
     content.append({
         "type": "text",
         "text": (
-            "Hãy gắn nhãn ngắn gọn cho đoạn video này (tối đa 3 câu tiếng Việt): "
-            "bối cảnh/không gian, số lượng và đặc điểm nhân vật/xưng hô, sắc thái cảm xúc hoặc chữ nổi bật trên màn hình."
+            "Hãy gắn nhãn chi tiết cho đoạn video này bằng tiếng Việt ngắn gọn: "
+            "1) Bối cảnh, cảm xúc và xưng hô nhân vật; "
+            "2) Ước lượng giới tính ('male' hoặc 'female') cho từng speaker nếu có thể. "
+            f"Gợi ý thông số âm thanh từ Stage 1: {json.dumps(speaker_refs, ensure_ascii=False)}. "
+            "Trả về JSON thuần dạng: {\"scene_label\": \"...\", \"speakers\": {\"SPEAKER_00\": \"male|female\"}}."
         ),
     })
 
@@ -222,48 +230,101 @@ def label_scene_with_qwen3_vl(model, processor, frame_paths: list[str], fallback
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.inference_mode():
-        out_ids = model.generate(**inputs, max_new_tokens=180, do_sample=False)
+        out_ids = model.generate(**inputs, max_new_tokens=220, do_sample=False)
     trimmed = [out[len(inp):] for inp, out in zip(inputs["input_ids"], out_ids)]
-    desc = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
+    raw_out = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
 
     del inputs, out_ids, trimmed, images
     free_gpu()
-    return desc or fallback_context
+
+    scene_label = fallback_context or ""
+    updated_speakers = {k: dict(v) for k, v in (speaker_refs or {}).items()}
+
+    try:
+        clean_json = raw_out
+        if "```" in clean_json:
+            clean_json = clean_json.split("```json")[-1].split("```")[0].strip()
+        parsed = json.loads(clean_json)
+        if isinstance(parsed, dict):
+            if parsed.get("scene_label"):
+                lbl = str(parsed["scene_label"]).strip()
+                scene_label = f"{lbl} | {fallback_context}".strip(" |") if fallback_context else lbl
+            spk_map = parsed.get("speakers") or {}
+            if isinstance(spk_map, dict):
+                for spk_id, g_val in spk_map.items():
+                    g_norm = str(g_val).lower().strip()
+                    if g_norm in ("male", "nam"):
+                        updated_speakers.setdefault(spk_id, {})["gender"] = "male"
+                    elif g_norm in ("female", "nữ", "nu"):
+                        updated_speakers.setdefault(spk_id, {})["gender"] = "female"
+    except Exception:
+        if raw_out:
+            scene_label = f"{raw_out} | {fallback_context}".strip(" |") if fallback_context else raw_out
+
+    for spk_id, info in updated_speakers.items():
+        if "gender" not in info:
+            hint = info.get("gender_hint", "unknown")
+            info["gender"] = hint if hint in ("male", "female") else "female"
+
+    return scene_label, updated_speakers
 
 
-def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_context: str) -> list[dict]:
+def fit_text_to_duration(text_vi: str, duration_sec: float) -> str:
+    """Giữ độ dài câu dịch vừa vặn tốc độ đọc tiếng Việt (~13-14 ký tự/giây) để khớp timecode."""
+    max_chars = max(12, int(round(duration_sec * 13.5)))
+    txt = " ".join(text_vi.split()).strip()
+    if len(txt) <= max_chars:
+        return txt
+    cut = txt[:max_chars]
+    for sep in ["。", "！", "？", ".", "!", "?", ",", "，", ";", " "]:
+        pos = cut.rfind(sep)
+        if pos >= int(max_chars * 0.65):
+            return cut[:pos].strip()
+    return cut.strip()
+
+
+def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_context: str, speakers_meta: dict) -> list[dict]:
     if not segments:
         return []
 
     import torch
 
     dub_lines = []
-    batch_size = 6
+    batch_size = 5
     for start_idx in range(0, len(segments), batch_size):
         chunk = segments[start_idx: start_idx + batch_size]
-        items_for_prompt = [
-            {
-                "id": s.get("id", start_idx + i),
-                "duration_sec": round(max(0.5, float(s.get("end", 1.0)) - float(s.get("start", 0.0))), 2),
-                "speaker_id": s.get("speaker_id", "SPEAKER_00"),
-                "src_text": s.get("asr_text", ""),
-            }
-            for i, s in enumerate(chunk)
-        ]
+        items_for_prompt = []
+        for i, s in enumerate(chunk):
+            line_id = s.get("id", start_idx + i)
+            spk_id = s.get("speaker_id", "SPEAKER_00")
+            dur = round(max(0.6, float(s.get("end", 1.0)) - float(s.get("start", 0.0))), 2)
+            src_txt = (s.get("best_text") or s.get("asr_text") or "").strip()
+            ocr_txt = (s.get("ocr_text") or "").strip()
+            gender = speakers_meta.get(spk_id, {}).get("gender") or s.get("gender_hint") or "female"
+            items_for_prompt.append({
+                "id": line_id,
+                "duration_sec": dur,
+                "max_vi_chars": max(12, int(round(dur * 13.5))),
+                "speaker_id": spk_id,
+                "gender": gender,
+                "src_text": src_txt,
+                "ocr_text": ocr_txt,
+            })
 
         messages = [
             {
                 "role": "system",
                 "content": (
                     "Bạn là dịch giả lồng tiếng phim chuyên nghiệp sang tiếng Việt tự nhiên, "
-                    "súc tích, đúng xưng hô theo nhãn cảnh và khớp thời lượng duration_sec. "
-                    "Chỉ trả về đúng một mảng JSON các object có khóa: id, speaker_id, text_vi. Không dùng markdown."
+                    "đúng xưng hô theo giới tính & bối cảnh, súc tích vừa khớp duration_sec và max_vi_chars "
+                    "để khi đọc không bị trễ nhịp. Chỉ trả về đúng một mảng JSON các object có khóa: "
+                    "id, speaker_id, gender, text_vi. Không dùng markdown."
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"Nhãn cảnh phim: {scene_context or 'Phim chính kịch/đời thường'}\n"
+                    f"Nhãn cảnh & ngữ cảnh: {scene_context or 'Phim chính kịch/đời thường'}\n"
                     f"Danh sách thoại:\n{json.dumps(items_for_prompt, ensure_ascii=False)}"
                 ),
             },
@@ -275,7 +336,7 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
             model_inputs = {k: v.to(model.device) for k, v in model_inputs.items()}
 
         with torch.inference_mode():
-            generated_ids = model.generate(**model_inputs, max_new_tokens=700, do_sample=False)
+            generated_ids = model.generate(**model_inputs, max_new_tokens=750, do_sample=False)
         gen_trimmed = [out[len(inp):] for inp, out in zip(model_inputs["input_ids"], generated_ids)]
         raw_reply = processor.batch_decode(gen_trimmed, skip_special_tokens=True)[0].strip()
 
@@ -288,19 +349,32 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
             if isinstance(parsed, list):
                 for row in parsed:
                     if isinstance(row, dict) and "id" in row:
-                        translated_map[row["id"]] = str(row.get("text_vi", "")).strip()
+                        translated_map[row["id"]] = row
         except Exception:
             pass
 
         for i, s in enumerate(chunk):
             line_id = s.get("id", start_idx + i)
-            vi_txt = translated_map.get(line_id) or s.get("asr_text", "")
+            spk_id = s.get("speaker_id", "SPEAKER_00")
+            start_t = float(s.get("start", 0.0))
+            end_t = float(s.get("end", start_t + 1.0))
+            dur = max(0.6, end_t - start_t)
+            fallback_src = (s.get("best_text") or s.get("asr_text") or "").strip()
+
+            row_obj = translated_map.get(line_id) or {}
+            raw_vi = str(row_obj.get("text_vi") or fallback_src).strip()
+            fitted_vi = fit_text_to_duration(raw_vi, dur)
+            g_out = str(row_obj.get("gender") or speakers_meta.get(spk_id, {}).get("gender") or s.get("gender_hint") or "female").lower()
+            if g_out not in ("male", "female"):
+                g_out = "female"
+
             dub_lines.append({
                 "id": line_id,
-                "start": float(s.get("start", 0.0)),
-                "end": float(s.get("end", 1.0)),
-                "speaker_id": s.get("speaker_id", "SPEAKER_00"),
-                "text_vi": vi_txt,
+                "start": start_t,
+                "end": end_t,
+                "speaker_id": spk_id,
+                "gender": g_out,
+                "text_vi": fitted_vi,
             })
 
         del model_inputs, generated_ids, gen_trimmed
@@ -317,6 +391,7 @@ def main():
     stage1_data, _ = sync.read_json(f"state/{JOB_ID}_stage1.json")
     segments = stage1_data.get("segments", [])
     prev_context = stage1_data.get("scene_context", "")
+    speaker_refs = stage1_data.get("speaker_refs") or {}
     video_asset = (stage1_data.get("video_asset") or stage1_data.get("video_url") or "source_input.mp4").strip()
 
     work_dir = "/kaggle/working/work_s2"
@@ -329,8 +404,8 @@ def main():
 
     model, processor = load_qwen3_vl()
     try:
-        scene_context = label_scene_with_qwen3_vl(model, processor, frames, prev_context)
-        dub_lines = translate_with_qwen3_vl(model, processor, segments, scene_context)
+        scene_context, speakers_meta = label_scene_and_speakers(model, processor, frames, speaker_refs, prev_context)
+        dub_lines = translate_with_qwen3_vl(model, processor, segments, scene_context, speakers_meta)
     finally:
         del model, processor
         free_gpu()
@@ -339,6 +414,7 @@ def main():
         "job_id": JOB_ID,
         "video_asset": video_asset,
         "scene_context": scene_context,
+        "speakers": speakers_meta,
         "lines": dub_lines,
     }
     sync.write_json(f"state/{JOB_ID}_stage2.json", stage2_payload, f"stage2 done: {JOB_ID}")
