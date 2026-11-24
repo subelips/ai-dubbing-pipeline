@@ -1,6 +1,8 @@
 import base64
 import json
 import os
+import subprocess
+import sys
 import time
 import traceback
 import requests
@@ -70,14 +72,46 @@ class GitHubSync:
             r.raise_for_status()
         raise RuntimeError(f"Không thể ghi {path} sau {max_retries} lần thử.")
 
-    def trigger_dispatch(self, event_type: str, client_payload: dict):
-        r = requests.post(
-            f"{self.api_base}/dispatches",
+    def ensure_release(self, tag: str, name: str | None = None) -> dict:
+        url = f"{self.api_base}/releases/tags/{tag}"
+        r = requests.get(url, headers=self.headers, timeout=30)
+        if r.status_code == 200:
+            return r.json()
+        cr = requests.post(
+            f"{self.api_base}/releases",
             headers=self.headers,
-            json={"event_type": event_type, "client_payload": client_payload},
+            json={"tag_name": tag, "name": name or f"Artifacts - {tag}", "draft": False, "prerelease": False},
             timeout=30,
         )
+        cr.raise_for_status()
+        return cr.json()
+
+    def upload_asset(self, tag: str, file_path: str):
+        release = self.ensure_release(tag)
+        upload_url = release["upload_url"].split("{")[0]
+        filename = os.path.basename(file_path)
+        for asset in release.get("assets", []):
+            if asset["name"] == filename:
+                requests.delete(f"{self.api_base}/releases/assets/{asset['id']}", headers=self.headers, timeout=30)
+        up_headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/octet-stream"}
+        with open(file_path, "rb") as f:
+            r = requests.post(f"{upload_url}?name={filename}", headers=up_headers, data=f.read(), timeout=300)
         r.raise_for_status()
+        return r.json().get("browser_download_url")
+
+    def download_asset(self, tag: str, filename: str, dest_path: str):
+        release = self.ensure_release(tag)
+        for asset in release.get("assets", []):
+            if asset["name"] == filename:
+                dl_headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/octet-stream"}
+                with requests.get(asset["url"], headers=dl_headers, stream=True, timeout=300) as r:
+                    r.raise_for_status()
+                    with open(dest_path, "wb") as out:
+                        for chunk in r.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                out.write(chunk)
+                return dest_path
+        raise FileNotFoundError(f"Không tìm thấy asset {filename} trong release {tag}")
 
 
 def send_telegram(bot_token: str, chat_id: str, text: str):
@@ -90,39 +124,76 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
     )
 
 
+def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
+    ref = (source_ref or "source_input.mp4").strip()
+    if ref.startswith(("http://", "https://")):
+        if "drive.google.com" in ref:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=True)
+            subprocess.run([sys.executable, "-m", "gdown", "--fuzzy", ref, "-O", dest_path], check=True)
+        else:
+            subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
+    else:
+        sync.download_asset(tag, ref, dest_path)
+
+
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
 def main():
-    send_telegram(TG_TOKEN, TG_CHAT, f"🌐 <b>[Stage 2 - Translation]</b> Bắt đầu job <code>{JOB_ID}</code>")
-    stage1_data, _ = sync.read_json(f"state/{JOB_ID}_stage1.json")
+    send_telegram(TG_TOKEN, TG_CHAT, f"🎙️ <b>[Stage 3 - Synthesis]</b> Bắt đầu job <code>{JOB_ID}</code>")
+    stage2_data, _ = sync.read_json(f"state/{JOB_ID}_stage2.json")
 
-    # Xử lý Qwen2.5-14B-Instruct dịch thuật, gán speaker_id & căn thời lượng
+    out_dir = "/kaggle/working/out"
+    os.makedirs(out_dir, exist_ok=True)
+    video_in = os.path.join(out_dir, "source.mp4")
+    bgm_in = os.path.join(out_dir, "no_vocals.wav")
+    final_mp4 = os.path.join(out_dir, f"final_dubbed_{JOB_ID}.mp4")
 
-    dub_lines = []
-    for idx, seg in enumerate(stage1_data.get("segments", [])):
-        dub_lines.append({
-            "id": idx,
-            "start": seg.get("start", 0.0),
-            "end": seg.get("end", 1.0),
-            "speaker_id": seg.get("speaker_id", "SPEAKER_00"),
-            "text_vi": seg.get("asr_text", ""),
-        })
+    video_asset = (stage2_data.get("video_asset") or stage2_data.get("video_url") or "source_input.mp4").strip()
+    download_video_source(sync, JOB_ID, video_asset, video_in)
+    if not os.path.exists(video_in) or os.path.getsize(video_in) < 1024:
+        raise RuntimeError(f"File video '{video_asset}' tải về không hợp lệ hoặc rỗng.")
 
-    stage2_payload = {
-        "job_id": JOB_ID,
-        "video_asset": stage1_data.get("video_asset") or "source_input.mp4",
-        "lines": dub_lines,
-    }
-    sync.write_json(f"state/{JOB_ID}_stage2.json", stage2_payload, f"stage2 done: {JOB_ID}")
+    sync.download_asset(JOB_ID, "no_vocals.wav", bgm_in)
+
+    release = sync.ensure_release(JOB_ID)
+    for asset in release.get("assets", []):
+        if asset["name"].startswith("ref_speaker_") and asset["name"].endswith(".wav"):
+            sync.download_asset(JOB_ID, asset["name"], os.path.join(out_dir, asset["name"]))
+
+    # Xử lý VieNeu-TTS v3 Turbo song song 2 GPU + căn timecode + trộn nhạc nền & mux video
+
+    ff_res = subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", video_in,
+            "-i", bgm_in,
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            final_mp4,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if ff_res.returncode != 0:
+        raise RuntimeError(f"FFmpeg mux lỗi (code {ff_res.returncode}):\n{ff_res.stderr[-1500:]}")
+
+    download_url = sync.upload_asset(JOB_ID, final_mp4)
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
     if JOB_ID in updated_jobs.get("jobs", {}):
-        updated_jobs["jobs"][JOB_ID]["status"] = "STAGE2_DONE"
-        sync.write_json("state/jobs.json", updated_jobs, f"update status STAGE2_DONE: {JOB_ID}")
+        updated_jobs["jobs"][JOB_ID]["status"] = "COMPLETED"
+        updated_jobs["jobs"][JOB_ID]["output_url"] = download_url
+        sync.write_json("state/jobs.json", updated_jobs, f"completed job: {JOB_ID}")
 
-    sync.trigger_dispatch("stage2_completed", {"job_id": JOB_ID})
-    send_telegram(TG_TOKEN, TG_CHAT, f"✅ <b>[Stage 2]</b> Hoàn tất <code>{JOB_ID}</code> → chuyển sang Stage 3.")
+    send_telegram(
+        TG_TOKEN,
+        TG_CHAT,
+        f"🎉 <b>Hoàn tất lồng tiếng!</b> Job: <code>{JOB_ID}</code>\n🔗 Link tải MP4: {download_url}",
+    )
 
 
 if __name__ == "__main__":
@@ -130,5 +201,5 @@ if __name__ == "__main__":
         main()
     except Exception:
         err = traceback.format_exc()[-1200:]
-        send_telegram(TG_TOKEN, TG_CHAT, f"❌ <b>[Stage 2 Lỗi]</b> <code>{JOB_ID}</code>:\n<pre>{err}</pre>")
+        send_telegram(TG_TOKEN, TG_CHAT, f"❌ <b>[Stage 3 Lỗi]</b> <code>{JOB_ID}</code>:\n<pre>{err}</pre>")
         raise
