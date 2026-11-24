@@ -1,4 +1,19 @@
 import os
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+for candidate_dir in [SCRIPT_DIR, "/kaggle/src", "/kaggle/working", os.getcwd()]:
+    if candidate_dir and os.path.isdir(candidate_dir) and candidate_dir not in sys.path:
+        sys.path.insert(0, candidate_dir)
+
+if not os.path.isdir(os.path.join(SCRIPT_DIR, "core")):
+    for root, dirs, _ in os.walk("."):
+        if "core" in dirs:
+            found_dir = os.path.abspath(root)
+            if found_dir not in sys.path:
+                sys.path.insert(0, found_dir)
+            break
+
 import subprocess
 import traceback
 from dotenv import load_dotenv
@@ -20,23 +35,24 @@ def main():
     send_telegram(TG_TOKEN, TG_CHAT, f"🎙️ <b>[Stage 3 - Synthesis]</b> Bắt đầu job <code>{JOB_ID}</code>")
     stage2_data, _ = sync.read_json(f"state/{JOB_ID}_stage2.json")
 
-    os.makedirs("/kaggle/working/out", exist_ok=True)
-    video_in = "/kaggle/working/out/source.mp4"
-    bgm_in = "/kaggle/working/out/no_vocals.wav"
-    final_mp4 = f"/kaggle/working/out/final_dubbed_{JOB_ID}.mp4"
+    out_dir = "/kaggle/working/out"
+    os.makedirs(out_dir, exist_ok=True)
+    video_in = os.path.join(out_dir, "source.mp4")
+    bgm_in = os.path.join(out_dir, "no_vocals.wav")
+    final_mp4 = os.path.join(out_dir, f"final_dubbed_{JOB_ID}.mp4")
 
     subprocess.run(["curl", "-L", "-s", stage2_data["video_url"], "-o", video_in], check=True)
     sync.download_asset(JOB_ID, "no_vocals.wav", bgm_in)
 
-    # Tải các file ref_speaker_*.wav đã lưu ở Stage 1 nếu có
     release = sync.ensure_release(JOB_ID)
     for asset in release.get("assets", []):
         if asset["name"].startswith("ref_speaker_") and asset["name"].endswith(".wav"):
-            sync.download_asset(JOB_ID, asset["name"], os.path.join("/kaggle/working/out", asset["name"]))
+            sync.download_asset(JOB_ID, asset["name"], os.path.join(out_dir, asset["name"]))
 
-    # Chạy 2 tiến trình VieNeu-TTS v3 Turbo trên cuda:0 (câu chẵn) và cuda:1 (câu lẻ),
-    # dùng add_voice() + infer_batch(), căn timecode với atempo, trộn bgm_in và mux với video_in.
-    # Ví dụ fallback mux nhạc nền + video nếu chưa có line thoại:
+    # Khu vực xử lý:
+    # - Chạy VieNeu-TTS v3 Turbo song song trên cuda:0 và cuda:1,
+    #   căn chỉnh timecode, trộn với no_vocals.wav và mux với video_in.
+
     subprocess.run(
         [
             "ffmpeg", "-y",
@@ -56,10 +72,11 @@ def main():
 
     download_url = sync.upload_asset(JOB_ID, final_mp4)
 
-    jobs_data, _ = sync.read_json("state/jobs.json")
-    jobs_data["jobs"][JOB_ID]["status"] = "COMPLETED"
-    jobs_data["jobs"][JOB_ID]["output_url"] = download_url
-    sync.write_json("state/jobs.json", jobs_data, f"completed job: {JOB_ID}")
+    updated_jobs, _ = sync.read_json("state/jobs.json")
+    if JOB_ID in updated_jobs.get("jobs", {}):
+        updated_jobs["jobs"][JOB_ID]["status"] = "COMPLETED"
+        updated_jobs["jobs"][JOB_ID]["output_url"] = download_url
+        sync.write_json("state/jobs.json", updated_jobs, f"completed job: {JOB_ID}")
 
     send_telegram(
         TG_TOKEN,
@@ -71,7 +88,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:
+    except Exception:
         err = traceback.format_exc()[-1200:]
         send_telegram(TG_TOKEN, TG_CHAT, f"❌ <b>[Stage 3 Lỗi]</b> <code>{JOB_ID}</code>:\n<pre>{err}</pre>")
         raise
