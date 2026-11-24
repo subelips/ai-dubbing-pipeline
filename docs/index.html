@@ -97,7 +97,7 @@
     <div class="card">
       <h2>1. Kết nối Repository</h2>
       <label for="repoInput">Repository (owner/repo)</label>
-      <input id="repoInput" type="text" placeholder="vd: subelips/ai-dubbing-pipeline" />
+      <input id="repoInput" type="text" placeholder="vd: subelips/ai-dubbing-studio" />
 
       <label for="tokenInput">GitHub Personal Access Token (lưu trên trình duyệt thiết bị này)</label>
       <input id="tokenInput" type="password" placeholder="ghp_..." />
@@ -113,7 +113,7 @@
     <div class="card">
       <h2>2. Tải video lên &amp; Khởi chạy Job (Stage 1)</h2>
       <label for="jobIdInput">Job ID</label>
-      <input id="jobIdInput" type="text" placeholder="vd: ep01" />
+      <input id="jobIdInput" type="text" placeholder="vd: ep02" />
 
       <label for="videoFileInput">Chọn file video (.mp4 / .mkv / .mov)</label>
       <input id="videoFileInput" type="file" accept="video/*" />
@@ -178,21 +178,30 @@
     }
 
     async function ensureRelease(repo, token, tag) {
-      let res = await fetch(`https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, {
-        headers: ghHeaders(token)
-      });
+      let res;
+      try {
+        res = await fetch(`https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, {
+          headers: ghHeaders(token)
+        });
+      } catch (e) {
+        throw new Error(`Không kết nối được GitHub Releases API khi kiểm tra tag "${tag}": ${e.message}`);
+      }
       if (res.status === 200) return await res.json();
 
-      res = await fetch(`https://api.github.com/repos/${repo}/releases`, {
-        method: "POST",
-        headers: ghHeaders(token, { "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          tag_name: tag,
-          name: `Media - ${tag}`,
-          draft: false,
-          prerelease: false
-        })
-      });
+      try {
+        res = await fetch(`https://api.github.com/repos/${repo}/releases`, {
+          method: "POST",
+          headers: ghHeaders(token, { "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            tag_name: tag,
+            name: `Media - ${tag}`,
+            draft: false,
+            prerelease: false
+          })
+        });
+      } catch (e) {
+        throw new Error(`Không kết nối được GitHub Releases API khi tạo tag "${tag}": ${e.message}`);
+      }
       if (!res.ok) throw new Error(`Tạo Release thất bại (${res.status}): ${await res.text()}`);
       return await res.json();
     }
@@ -210,16 +219,28 @@
         }
       }
 
+      let buffer;
+      try {
+        buffer = await file.arrayBuffer();
+      } catch (e) {
+        throw new Error(`Không đọc được dữ liệu file từ thiết bị (hãy tải file về bộ nhớ máy nếu đang ở iCloud): ${e.message}`);
+      }
+
       const uploadUrlBase = release.upload_url.split("{")[0];
-      const upRes = await fetch(`${uploadUrlBase}?name=${encodeURIComponent(assetName)}`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Accept": "application/vnd.github+json",
-          "Content-Type": "application/octet-stream"
-        },
-        body: file
-      });
+      let upRes;
+      try {
+        upRes = await fetch(`${uploadUrlBase}?name=${encodeURIComponent(assetName)}`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/octet-stream"
+          },
+          body: buffer
+        });
+      } catch (e) {
+        throw new Error(`Tải file lên GitHub thất bại (kiểm tra mạng Wi-Fi/4G và dung lượng file): ${e.message}`);
+      }
       if (!upRes.ok) throw new Error(`Upload video thất bại (${upRes.status}): ${await upRes.text()}`);
       return assetName;
     }
