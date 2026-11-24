@@ -49,10 +49,8 @@ jobs:
           python -m pip install --no-cache-dir --upgrade six requests kaggle
 
           KAGGLE_BIN="$(command -v kaggle || true)"
-          echo "KAGGLE_BIN=$KAGGLE_BIN"
           if [ -n "$KAGGLE_BIN" ] && [ -f "$KAGGLE_BIN" ]; then
             SHEBANG_PY="$(head -n 1 "$KAGGLE_BIN" | sed 's/^#!//')"
-            echo "SHEBANG_PY=$SHEBANG_PY"
             if [ -n "$SHEBANG_PY" ] && [ -x "$SHEBANG_PY" ]; then
               "$SHEBANG_PY" -m pip install --no-cache-dir --upgrade six requests kaggle
             fi
@@ -88,8 +86,11 @@ jobs:
         env:
           KAGGLE_USERNAME: ${{ secrets.PERCEPTION_KAGGLE_USER }}
           KAGGLE_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
+          KAGGLE_API_TOKEN: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
         run: |
-          mkdir -p 01_perception/core
+          mkdir -p ~/.kaggle 01_perception/core
+          printf "%s" "$KAGGLE_API_TOKEN" > ~/.kaggle/access_token
+          chmod 600 ~/.kaggle/access_token
           cp core/*.py 01_perception/core/
           cat <<EOF > 01_perception/.env
           JOB_ID=${{ steps.meta.outputs.job_id }}
@@ -98,7 +99,7 @@ jobs:
           TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
           EOF
-          python -m kaggle kernels push -p 01_perception
+          kaggle kernels push -p 01_perception
           rm -f 01_perception/.env
           rm -rf 01_perception/core
 
@@ -107,8 +108,11 @@ jobs:
         env:
           KAGGLE_USERNAME: ${{ secrets.TRANSLATION_KAGGLE_USER }}
           KAGGLE_KEY: ${{ secrets.TRANSLATION_KAGGLE_KEY }}
+          KAGGLE_API_TOKEN: ${{ secrets.TRANSLATION_KAGGLE_KEY }}
         run: |
-          mkdir -p 02_translation/core
+          mkdir -p ~/.kaggle 02_translation/core
+          printf "%s" "$KAGGLE_API_TOKEN" > ~/.kaggle/access_token
+          chmod 600 ~/.kaggle/access_token
           cp core/*.py 02_translation/core/
           cat <<EOF > 02_translation/.env
           JOB_ID=${{ steps.meta.outputs.job_id }}
@@ -117,7 +121,7 @@ jobs:
           TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
           EOF
-          python -m kaggle kernels push -p 02_translation
+          kaggle kernels push -p 02_translation
           rm -f 02_translation/.env
           rm -rf 02_translation/core
 
@@ -126,8 +130,11 @@ jobs:
         env:
           KAGGLE_USERNAME: ${{ secrets.SYNTHESIS_KAGGLE_USER }}
           KAGGLE_KEY: ${{ secrets.SYNTHESIS_KAGGLE_KEY }}
+          KAGGLE_API_TOKEN: ${{ secrets.SYNTHESIS_KAGGLE_KEY }}
         run: |
-          mkdir -p 03_synthesis/core
+          mkdir -p ~/.kaggle 03_synthesis/core
+          printf "%s" "$KAGGLE_API_TOKEN" > ~/.kaggle/access_token
+          chmod 600 ~/.kaggle/access_token
           cp core/*.py 03_synthesis/core/
           cat <<EOF > 03_synthesis/.env
           JOB_ID=${{ steps.meta.outputs.job_id }}
@@ -136,6 +143,6 @@ jobs:
           TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
           EOF
-          python -m kaggle kernels push -p 03_synthesis
+          kaggle kernels push -p 03_synthesis
           rm -f 03_synthesis/.env
           rm -rf 03_synthesis/core
