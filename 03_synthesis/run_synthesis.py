@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import gc
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -141,12 +142,20 @@ def ensure_deps():
     )
 
 
+def _normalize_gdrive_url(url: str) -> str:
+    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url) or re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
+    if m:
+        return f"https://drive.google.com/uc?id={m.group(1)}"
+    return url
+
+
 def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
     ref = (source_ref or "source_input.mp4").strip()
     if ref.startswith(("http://", "https://")):
         if "drive.google.com" in ref:
             subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=True)
-            subprocess.run([sys.executable, "-m", "gdown", "--fuzzy", ref, "-O", dest_path], check=True)
+            direct_url = _normalize_gdrive_url(ref)
+            subprocess.run([sys.executable, "-m", "gdown", direct_url, "-O", dest_path], check=True)
         else:
             subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
     else:
@@ -241,13 +250,11 @@ def synth_single_line(
     if not os.path.exists(raw_wav) or os.path.getsize(raw_wav) < 512:
         return idx, start_t, None
 
-    # Đo thời lượng audio sinh ra và căn tempo khớp khung thời gian slot_dur
     probe_data, src_sr = sf.read(raw_wav)
     if probe_data.ndim > 1:
         probe_data = probe_data.mean(axis=-1)
     actual_dur = max(0.1, len(probe_data) / float(src_sr or 48000))
 
-    # Nếu dài hơn slot_dur thì tăng nhẹ tempo (tối đa 1.35x); nếu ngắn hơn nhiều (>1.25x) thì giảm nhẹ tempo (tối thiểu 0.85x)
     tempo = 1.0
     if actual_dur > slot_dur * 1.03:
         tempo = min(1.35, actual_dur / slot_dur)
