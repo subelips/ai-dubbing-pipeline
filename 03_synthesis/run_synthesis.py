@@ -33,7 +33,7 @@ class GitHubSync:
         self.repo = repo
         self.token = token
         self.state_branch = state_branch
-        self.api_base = f"[https://api.github.com/repos/](https://api.github.com/repos/){repo}"
+        self.api_base = f"https://api.github.com/repos/{repo}"
         self.headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -118,11 +118,22 @@ class GitHubSync:
 def send_telegram(bot_token: str, chat_id: str, text: str):
     if not bot_token or not chat_id:
         return
-    requests.post(
-        f"[https://api.telegram.org/bot](https://api.telegram.org/bot){bot_token}/sendMessage",
-        json={"chat_id": chat_id, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": False},
-        timeout=20,
-    )
+    clean_token = str(bot_token).strip()
+    clean_chat = str(chat_id).strip()
+    url = f"https://api.telegram.org/bot{clean_token}/sendMessage"
+    try:
+        requests.post(
+            url,
+            json={
+                "chat_id": clean_chat,
+                "text": text[:4000],
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False,
+            },
+            timeout=20,
+        )
+    except Exception as e:
+        print(f"[WARN] Gửi Telegram thất bại: {e}")
 
 
 def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
@@ -209,7 +220,6 @@ def synth_line_audio(text_vi: str, ref_wav: str | None, out_wav: str, vieneu_han
         except Exception:
             pass
 
-    # Fallback tiếng Việt qua edge-tts nếu chưa cấu hình repo VieNeu-TTS
     try:
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "edge-tts"], check=True)
         asyncio.run(_edge_tts_save(text_vi, out_wav))
@@ -266,7 +276,6 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], work_dir: str
         if copy_len > 0:
             voice_track[start_sample:end_sample] += seg_audio[:copy_len].astype(np.float32)
 
-    # Giảm nhẹ nhạc nền khi có lời thoại, sau đó trộn
     has_voice = np.abs(voice_track).max(axis=-1) > 1e-3
     ducked_bgm = bgm_data.astype(np.float32).copy()
     ducked_bgm[has_voice] *= 0.35
