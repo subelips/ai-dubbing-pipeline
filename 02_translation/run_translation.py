@@ -97,6 +97,8 @@ def main():
     send_telegram(TG_TOKEN, TG_CHAT, f"🌐 <b>[Stage 2 - Translation]</b> Bắt đầu job <code>{JOB_ID}</code>")
     stage1_data, _ = sync.read_json(f"state/{JOB_ID}_stage1.json")
 
+    # Xử lý Qwen2.5-14B-Instruct dịch thuật, gán speaker_id & căn thời lượng
+
     dub_lines = []
     for idx, seg in enumerate(stage1_data.get("segments", [])):
         dub_lines.append({
@@ -109,7 +111,7 @@ def main():
 
     stage2_payload = {
         "job_id": JOB_ID,
-        "video_url": stage1_data.get("video_url", ""),
+        "video_asset": stage1_data.get("video_asset") or "source_input.mp4",
         "lines": dub_lines,
     }
     sync.write_json(f"state/{JOB_ID}_stage2.json", stage2_payload, f"stage2 done: {JOB_ID}")
