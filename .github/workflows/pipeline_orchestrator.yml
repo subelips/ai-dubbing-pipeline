@@ -42,12 +42,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install dependencies
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install --no-cache-dir --force-reinstall six requests kaggle
-          which kaggle
-          python -c "import six; print(six.__file__)"
+          python -c "import six, kaggle; print('six:', six.__file__)"
 
       - name: Register initial job in pipeline-state branch (Stage 1 only)
         if: steps.meta.outputs.stage == 'perception'
@@ -87,7 +87,7 @@ jobs:
           TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
           EOF
-          kaggle kernels push -p 01_perception
+          python -m kaggle kernels push -p 01_perception
           rm -f 01_perception/.env
           rm -rf 01_perception/core
 
@@ -106,7 +106,7 @@ jobs:
           TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
           EOF
-          kaggle kernels push -p 02_translation
+          python -m kaggle kernels push -p 02_translation
           rm -f 02_translation/.env
           rm -rf 02_translation/core
 
@@ -125,6 +125,6 @@ jobs:
           TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
           EOF
-          kaggle kernels push -p 03_synthesis
+          python -m kaggle kernels push -p 03_synthesis
           rm -f 03_synthesis/.env
           rm -rf 03_synthesis/core
