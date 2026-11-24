@@ -136,7 +136,11 @@ def main():
     bgm_in = os.path.join(out_dir, "no_vocals.wav")
     final_mp4 = os.path.join(out_dir, f"final_dubbed_{JOB_ID}.mp4")
 
-    subprocess.run(["curl", "-L", "-s", stage2_data["video_url"], "-o", video_in], check=True)
+    video_asset = stage2_data.get("video_asset") or "source_input.mp4"
+    sync.download_asset(JOB_ID, video_asset, video_in)
+    if not os.path.exists(video_in) or os.path.getsize(video_in) < 1024:
+        raise RuntimeError(f"File video '{video_asset}' tải từ Release không hợp lệ hoặc rỗng.")
+
     sync.download_asset(JOB_ID, "no_vocals.wav", bgm_in)
 
     release = sync.ensure_release(JOB_ID)
@@ -144,7 +148,9 @@ def main():
         if asset["name"].startswith("ref_speaker_") and asset["name"].endswith(".wav"):
             sync.download_asset(JOB_ID, asset["name"], os.path.join(out_dir, asset["name"]))
 
-    subprocess.run(
+    # Xử lý VieNeu-TTS v3 Turbo song song 2 GPU + căn timecode + trộn nhạc nền & mux video
+
+    ff_res = subprocess.run(
         [
             "ffmpeg", "-y",
             "-i", video_in,
@@ -156,10 +162,11 @@ def main():
             "-b:a", "192k",
             final_mp4,
         ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
     )
+    if ff_res.returncode != 0:
+        raise RuntimeError(f"FFmpeg mux lỗi (code {ff_res.returncode}):\n{ff_res.stderr[-1500:]}")
 
     download_url = sync.upload_asset(JOB_ID, final_mp4)
 
