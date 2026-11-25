@@ -168,6 +168,51 @@ def _have_module(name: str) -> bool:
         return False
 
 
+def _want_gpu_ocr() -> bool:
+    return os.environ.get("OCR_USE_GPU", "1").strip() == "1"
+
+
+def _paddle_has_cuda() -> bool:
+    try:
+        import paddle
+        return bool(paddle.is_compiled_with_cuda()) and int(paddle.device.cuda.device_count()) > 0
+    except Exception:
+        return False
+
+
+def _ensure_paddle_gpu() -> bool:
+    """Bảo đảm paddle bản GPU. Trả True nếu CUDA dùng được, False để chạy CPU."""
+    if not _want_gpu_ocr():
+        print("[INFO] OCR_USE_GPU=0 → dùng paddle CPU.")
+        return False
+    if _paddle_has_cuda():
+        print("[INFO] Paddle đã có CUDA, OCR sẽ chạy trên GPU.")
+        return True
+
+    print("[INFO] Paddle đang là bản CPU → cài paddlepaddle-gpu cho OCR...")
+    subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "paddlepaddle"], check=False)
+    for index_url in (
+        "https://www.paddlepaddle.org.cn/packages/stable/cu126/",
+        "https://www.paddlepaddle.org.cn/packages/stable/cu118/",
+    ):
+        r = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "paddlepaddle-gpu==3.2.0", "-i", index_url],
+            check=False,
+        )
+        if r.returncode == 0 and _paddle_has_cuda():
+            print(f"[INFO] Cài paddlepaddle-gpu thành công từ {index_url}")
+            return True
+        print(f"[WARN] paddlepaddle-gpu từ {index_url} không dùng được (rc={r.returncode}).")
+
+    print("[WARN] Không cài được paddle GPU → quay lại paddle CPU.")
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q", "paddlepaddle",
+         "-i", "https://www.paddlepaddle.org.cn/packages/stable/cpu/"],
+        check=False,
+    )
+    return False
+
+
 def ensure_deps():
     """Chỉ cài gói còn thiếu; không --upgrade để tránh phá numpy/pillow của image Kaggle.
 
@@ -185,6 +230,9 @@ def ensure_deps():
         ("sklearn", "scikit-learn"),
     ]
     missing = [spec for mod, spec in wanted if not _have_module(mod)]
+    if _want_gpu_ocr():
+        # _ensure_paddle_gpu() sẽ cài đúng bản paddle (gpu/cpu), khỏi cài CPU trước rồi gỡ
+        missing = [m for m in missing if m != "paddlepaddle"]
     if not _have_module("nvidia.cublas"):
         missing.extend(["nvidia-cublas-cu12", "nvidia-cudnn-cu12"])
     if missing:
@@ -192,6 +240,7 @@ def ensure_deps():
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=True)
     else:
         print("[INFO] Đã đủ dependency, bỏ qua pip install.")
+    _ensure_paddle_gpu()
 
 
 def free_gpu():
@@ -679,10 +728,12 @@ def _init_paddle_ocr_engine():
     # (đã thấy "lỗi runtime executor" → rơi xuống EasyOCR, mất gần hết phụ đề).
     # Vì vậy mặc định TẮT, chỉ bật khi đặt PADDLE_OCR_MKLDNN=1.
     use_mkldnn = os.environ.get("PADDLE_OCR_MKLDNN", "0").strip() == "1"
+    device = "gpu:0" if _paddle_has_cuda() else "cpu"
+    print(f"[INFO] PaddleOCR device={device}")
     attempts = [
-        dict(lang=lang, enable_mkldnn=use_mkldnn, use_doc_orientation_classify=False,
+        dict(lang=lang, device=device, enable_mkldnn=use_mkldnn, use_doc_orientation_classify=False,
              use_doc_unwarping=False, use_textline_orientation=False),
-        dict(lang=lang, enable_mkldnn=False, use_doc_orientation_classify=False,
+        dict(lang=lang, device=device, enable_mkldnn=False, use_doc_orientation_classify=False,
              use_doc_unwarping=False, use_textline_orientation=False),
         dict(lang=lang, enable_mkldnn=False),
         dict(use_angle_cls=False, lang=lang, use_gpu=use_gpu, enable_mkldnn=False),
@@ -860,6 +911,40 @@ def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, flo
     return frames[:budget]
 
 
+_NOISE_PATTERNS = [
+    re.compile(r"第\s*\d+\s*号"),
+    re.compile(r"(网|广)[^\s]{0,4}(备|字|审)[^\s]{0,4}号"),
+    re.compile(r"许可证|备案|公映|联合出品|出品方|发行方"),
+    re.compile(r"https?://|www\.|\.(com|cn|net|tv)\b", re.I),
+    re.compile(r"百度|腾讯|爱奇艺|优酷|芒果|抖音|快手|西瓜|微博"),
+]
+
+
+def _clean_ocr_text(text: str) -> str:
+    """Loại chữ rác: watermark, giấy phép phim, dòng 1-2 ký tự, dòng toàn số.
+
+    OCR hardsub hay đọc trúng bản quyền/logo (vd '（百度）网微剧备字（2026）第412924号'
+    hoặc '11', 'Z', '0 o bb') và biến chúng thành phụ đề — lọc trước khi dùng.
+    """
+    t = " ".join(str(text or "").split())
+    if not t:
+        return ""
+    for pat in _NOISE_PATTERNS:
+        if pat.search(t):
+            return ""
+    cjk = re.findall(r"[\u4e00-\u9fff]", t)
+    latin = re.findall(r"[A-Za-z]", t)
+    digits = re.findall(r"[0-9]", t)
+    visible = len(t.replace(" ", ""))
+    if len(cjk) == 0 and len(latin) < 3:
+        return ""
+    if len(cjk) < 2 and len(latin) < 4:
+        return ""
+    if visible and len(digits) / visible > 0.4:
+        return ""
+    return t
+
+
 def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[float, float, float, float]]:
     embedded = extract_embedded_subtitles(video_path, work_dir)
     if embedded:
@@ -921,7 +1006,7 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
                             txt_res = _ocr_single_image(ocr_engine, t_img, is_easyocr=True, min_conf=0.25)
                         else:
                             txt_res = ""
-                    if txt_res:
+                    if txt_res and _clean_ocr_text(txt_res):
                         hits += 1
                 if hits > best_hits:
                     best_hits = hits
@@ -956,9 +1041,10 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
                 merged = _ocr_single_image(ocr_engine, t_img, is_easyocr=is_easyocr, min_conf=0.25, debug=False)
             except Exception:
                 merged = ""
-            if merged:
-                last_text = merged
-                ocr_records.append({"time": ts, "text": merged})
+            cleaned = _clean_ocr_text(merged)
+            if cleaned:
+                last_text = cleaned
+                ocr_records.append({"time": ts, "text": cleaned})
             else:
                 last_text = ""
 
@@ -980,11 +1066,13 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         e_t = float(seg.get("end", s_t + 1.0))
         asr_txt = (seg.get("asr_text") or "").strip()
 
-        matched_ocrs = [
-            r["text"].strip()
-            for r in ocr_records
-            if (s_t - 1.2) <= float(r["time"]) <= (e_t + 1.2) and r.get("text")
-        ]
+        matched_ocrs = []
+        for r in ocr_records:
+            if not ((s_t - 1.2) <= float(r.get("time", 0.0)) <= (e_t + 1.2)):
+                continue
+            cleaned = _clean_ocr_text(r.get("text", ""))
+            if cleaned:
+                matched_ocrs.append(cleaned)
         dedup_ocrs = []
         for t in matched_ocrs:
             if not dedup_ocrs or t != dedup_ocrs[-1]:
@@ -993,9 +1081,16 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
 
         best_txt = asr_txt
         source_mode = "asr_only"
+        ocr_cjk = len(re.findall(r"[\u4e00-\u9fff]", ocr_txt))
         if asr_txt and ocr_txt:
             ratio = SequenceMatcher(None, asr_txt.lower(), ocr_txt.lower()).ratio()
-            if ratio >= 0.45 or (len(ocr_txt) >= len(asr_txt) * 0.70 and len(ocr_txt) >= 3):
+            if ratio >= 0.55:
+                # OCR gần trùng ASR → xác nhận, dùng bản OCR (thường sạch hơn)
+                best_txt = ocr_txt
+                source_mode = "ocr_verified"
+                verified_cnt += 1
+            elif ocr_cjk >= 4 and len(ocr_txt) >= len(asr_txt) * 1.3:
+                # OCR là câu chữ Hán đầy đủ và dài hơn hẳn ASR → tin OCR
                 best_txt = ocr_txt
                 source_mode = "ocr_verified"
                 verified_cnt += 1
