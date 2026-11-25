@@ -675,9 +675,12 @@ def _init_paddle_ocr_engine():
     lang = os.environ.get("PADDLE_OCR_LANG", "ch")
     use_gpu = os.environ.get("PADDLE_OCR_GPU", "0").strip() == "1"
 
-    # oneDNN (mkldnn) tăng tốc CPU 2-3x; nếu image lỗi executor thì fallback như cũ.
+    # oneDNN (mkldnn) tăng tốc CPU nhưng bản paddle trong image Kaggle hay lỗi PIR executor
+    # (đã thấy "lỗi runtime executor" → rơi xuống EasyOCR, mất gần hết phụ đề).
+    # Vì vậy mặc định TẮT, chỉ bật khi đặt PADDLE_OCR_MKLDNN=1.
+    use_mkldnn = os.environ.get("PADDLE_OCR_MKLDNN", "0").strip() == "1"
     attempts = [
-        dict(lang=lang, enable_mkldnn=True, use_doc_orientation_classify=False,
+        dict(lang=lang, enable_mkldnn=use_mkldnn, use_doc_orientation_classify=False,
              use_doc_unwarping=False, use_textline_orientation=False),
         dict(lang=lang, enable_mkldnn=False, use_doc_orientation_classify=False,
              use_doc_unwarping=False, use_textline_orientation=False),
