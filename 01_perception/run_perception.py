@@ -1,3 +1,11 @@
+import os
+
+# Tắt PIR / OneDNN trên PaddlePaddle 3.x để tránh lỗi ConvertPirAttribute2RuntimeAttribute khi chạy CPU
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+os.environ.setdefault("FLAGS_use_mkldnn", "0")
+os.environ.setdefault("FLAGS_enable_pir_api", "0")
+os.environ.setdefault("FLAGS_enable_pir_in_executor", "0")
+
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
@@ -5,7 +13,6 @@ from difflib import SequenceMatcher
 import gc
 import glob
 import json
-import os
 import re
 import site
 import subprocess
@@ -13,8 +20,6 @@ import sys
 import time
 import traceback
 import requests
-
-os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 
 def get_cfg(key: str, injected: str) -> str:
@@ -332,7 +337,6 @@ def _split_segments_on_speaker_turns(
     turns: list[tuple[float, float, str]],
     order_map: dict,
 ) -> list[dict]:
-    """Khớp speaker theo vùng lõi câu; tách câu nếu có >= 2 lượt nói dài >= 0.45s thuộc 2 người khác nhau."""
     out_segs = []
     next_id = 0
 
@@ -445,6 +449,8 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
         except Exception as py_err:
             print(f"[WARN] pyannote.audio chưa chạy được ({py_err}), chuyển sang SpeechBrain.")
             free_gpu()
+    else:
+        print("[INFO] Không tìm thấy HF_TOKEN trong môi trường, dùng SpeechBrain diarization.")
 
     try:
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "speechbrain", "scikit-learn"], check=True)
@@ -600,15 +606,28 @@ def _init_paddle_ocr_engine():
     try:
         return PaddleOCR(
             lang=lang,
+            enable_mkldnn=False,
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
         )
     except Exception:
         try:
-            return PaddleOCR(lang=lang)
+            return PaddleOCR(lang=lang, enable_mkldnn=False)
         except Exception:
-            return PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=use_gpu)
+            return PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=use_gpu, enable_mkldnn=False)
+
+
+def _init_easyocr_fallback():
+    import torch
+
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "easyocr"], check=True)
+    import easyocr
+
+    lang_env = os.environ.get("PADDLE_OCR_LANG", "ch").strip().lower()
+    lang_map = {"ch": ["ch_sim", "en"], "vi": ["vi", "en"], "en": ["en"], "korean": ["ko", "en"], "japan": ["ja", "en"]}
+    langs = lang_map.get(lang_env, ["ch_sim", "en"])
+    return easyocr.Reader(langs, gpu=torch.cuda.is_available(), verbose=False)
 
 
 def _preprocess_hardsub_image(img_path: str, mode: str = "contrast") -> str:
@@ -632,20 +651,31 @@ def _preprocess_hardsub_image(img_path: str, mode: str = "contrast") -> str:
         return img_path
 
 
-def _ocr_single_image(ocr, img_path: str, min_conf: float = 0.25, debug: bool = False) -> str:
+def _ocr_single_image(ocr_engine, img_path: str, is_easyocr: bool = False, min_conf: float = 0.25, debug: bool = False) -> str:
     line_texts = []
+    if is_easyocr:
+        try:
+            res = ocr_engine.readtext(img_path, detail=1)
+            for item in res:
+                if len(item) >= 3 and float(item[2]) >= min_conf:
+                    txt = str(item[1]).strip()
+                    if txt:
+                        line_texts.append(txt)
+            return " ".join(line_texts).strip()
+        except Exception as e:
+            if debug:
+                print(f"[DEBUG] EasyOCR exception ({os.path.basename(img_path)}): {e}")
+            return ""
+
     try:
-        if hasattr(ocr, "predict"):
-            res = list(ocr.predict(img_path))
+        if hasattr(ocr_engine, "predict"):
+            res = list(ocr_engine.predict(img_path))
         else:
-            res = ocr.ocr(img_path)
+            res = ocr_engine.ocr(img_path)
     except Exception as e:
         if debug:
-            print(f"[DEBUG] OCR predict exception ({os.path.basename(img_path)}): {e}")
-        return ""
-
-    if debug:
-        print(f"[DEBUG] Raw OCR output ({os.path.basename(img_path)}): {str(res)[:450]}")
+            print(f"[DEBUG] PaddleOCR predict exception ({os.path.basename(img_path)}): {e}")
+        raise
 
     if not res:
         return ""
@@ -733,9 +763,17 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
     chosen_roi = candidate_rois[0]
     chosen_mode = "raw"
     ocr_records = []
+    ocr_engine = None
+    is_easyocr = False
 
     try:
-        ocr = _init_paddle_ocr_engine()
+        try:
+            ocr_engine = _init_paddle_ocr_engine()
+        except Exception as pe:
+            print(f"[WARN] Khởi tạo PaddleOCR lỗi ({pe}), chuyển sang EasyOCR.")
+            ocr_engine = _init_easyocr_fallback()
+            is_easyocr = True
+
         active_frames = []
 
         for idx_roi, roi in enumerate(candidate_rois):
@@ -753,8 +791,26 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
                 hits = 0
                 for k_i, (_, p) in enumerate(probe_frames):
                     t_img = p if m_name == "raw" else _preprocess_hardsub_image(p, m_name)
-                    do_dbg = (idx_roi == 0 and m_name in ("raw", "contrast") and k_i < 2)
-                    if _ocr_single_image(ocr, t_img, min_conf=0.25, debug=do_dbg):
+                    try:
+                        txt_res = _ocr_single_image(
+                            ocr_engine,
+                            t_img,
+                            is_easyocr=is_easyocr,
+                            min_conf=0.25,
+                            debug=(idx_roi == 0 and m_name == "raw" and k_i == 0),
+                        )
+                    except Exception:
+                        # Nếu PaddleOCR PIR/OneDNN lỗi runtime, chuyển ngay sang EasyOCR
+                        if not is_easyocr:
+                            print("[WARN] PaddleOCR gặp lỗi runtime executor, chuyển sang EasyOCR fallback.")
+                            del ocr_engine
+                            free_gpu()
+                            ocr_engine = _init_easyocr_fallback()
+                            is_easyocr = True
+                            txt_res = _ocr_single_image(ocr_engine, t_img, is_easyocr=True, min_conf=0.25)
+                        else:
+                            txt_res = ""
+                    if txt_res:
                         hits += 1
                 if hits > best_hits:
                     best_hits = hits
@@ -762,7 +818,8 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
                 if hits >= 2:
                     break
 
-            print(f"[INFO] ROI {roi} | mode={matched_mode or 'raw'} | hits={best_hits}/{len(probe_frames)} mẫu.")
+            engine_label = "EasyOCR" if is_easyocr else "PaddleOCR"
+            print(f"[INFO] [{engine_label}] ROI {roi} | mode={matched_mode or 'raw'} | hits={best_hits}/{len(probe_frames)} mẫu.")
             if best_hits > 0 or idx_roi == len(candidate_rois) - 1:
                 chosen_roi = roi
                 chosen_mode = matched_mode or "raw"
@@ -771,14 +828,17 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
 
         for ts, img_path in active_frames:
             t_img = img_path if chosen_mode == "raw" else _preprocess_hardsub_image(img_path, chosen_mode)
-            merged = _ocr_single_image(ocr, t_img, min_conf=0.25, debug=False)
+            try:
+                merged = _ocr_single_image(ocr_engine, t_img, is_easyocr=is_easyocr, min_conf=0.25, debug=False)
+            except Exception:
+                merged = ""
             if merged:
                 ocr_records.append({"time": ts, "text": merged})
 
-        del ocr
+        del ocr_engine
         free_gpu()
     except Exception as ocr_err:
-        print(f"[WARN] PaddleOCR lỗi: {ocr_err}")
+        print(f"[WARN] OCR lỗi: {ocr_err}")
         free_gpu()
 
     print(f"[INFO] Khoanh vùng phụ đề ROI chọn: {chosen_roi} (mode={chosen_mode}) → {len(ocr_records)} mốc phụ đề.")
