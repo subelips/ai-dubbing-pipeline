@@ -44,6 +44,11 @@ GH_REPO = get_cfg("GH_REPO", "__INJECT_GH_REPO__")
 GH_TOKEN = get_cfg("GH_PAT_TOKEN", "__INJECT_GH_PAT_TOKEN__")
 TG_TOKEN = get_cfg("TELEGRAM_BOT_TOKEN", "__INJECT_TELEGRAM_BOT_TOKEN__")
 TG_CHAT = get_cfg("TELEGRAM_CHAT_ID", "__INJECT_TELEGRAM_CHAT_ID__")
+HF_TOKEN = get_cfg("HF_TOKEN", "__INJECT_HF_TOKEN__")
+if HF_TOKEN:
+    # pyannote đọc token từ biến môi trường này
+    os.environ["HF_TOKEN"] = HF_TOKEN
+    os.environ.setdefault("HUGGINGFACE_HUB_TOKEN", HF_TOKEN)
 
 if not JOB_ID:
     raise RuntimeError("Thiếu JOB_ID khi khởi chạy kernel.")
