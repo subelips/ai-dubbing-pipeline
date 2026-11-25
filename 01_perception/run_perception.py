@@ -246,7 +246,8 @@ def ensure_deps():
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=True)
     else:
         print("[INFO] Đã đủ dependency, bỏ qua pip install.")
-    _ensure_paddle_gpu()
+    if os.environ.get("OCR_ENGINE", "easyocr").strip().lower() in ("paddle", "auto"):
+        _ensure_paddle_gpu()
 
 
 def free_gpu():
@@ -1110,13 +1111,23 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         e_t = float(seg.get("end", s_t + 1.0))
         asr_txt = (seg.get("asr_text") or "").strip()
 
-        matched_ocrs = []
+        # Mỗi bản ghi OCR ứng với ~1 khung (1 giây). Chỉ nhận bản ghi CHỒNG LẤN với
+        # câu thoại; cửa sổ ±1.2s cũ hay vơ cả phụ đề của câu bên cạnh.
+        scored = []
         for r in ocr_records:
-            if not ((s_t - 1.2) <= float(r.get("time", 0.0)) <= (e_t + 1.2)):
+            t = float(r.get("time", 0.0))
+            ov = max(0.0, min(e_t + 0.5, t + 0.5) - max(s_t - 0.5, t))
+            if ov <= 0:
                 continue
             cleaned = _clean_ocr_text(r.get("text", ""))
             if cleaned:
-                matched_ocrs.append(cleaned)
+                scored.append((ov, cleaned))
+        matched_ocrs = []
+        if scored:
+            best_ov = max(ov for ov, _ in scored)
+            threshold = max(0.3, best_ov * 0.6)
+            matched_ocrs = [txt for ov, txt in scored if ov >= threshold]
+
         dedup_ocrs = []
         for t in matched_ocrs:
             if not dedup_ocrs or t != dedup_ocrs[-1]:
@@ -1133,8 +1144,8 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
                 best_txt = ocr_txt
                 source_mode = "ocr_verified"
                 verified_cnt += 1
-            elif ocr_cjk >= 4 and len(ocr_txt) >= len(asr_txt) * 1.3:
-                # OCR là câu chữ Hán đầy đủ và dài hơn hẳn ASR → tin OCR
+            elif len(asr_txt) > 3 and ocr_cjk >= 4 and len(ocr_txt) >= len(asr_txt) * 1.3:
+                # OCR là câu chữ Hán đầy đủ, dài hơn hẳn ASR → tin OCR (ASR ngắn dễ sót chữ)
                 best_txt = ocr_txt
                 source_mode = "ocr_verified"
                 verified_cnt += 1
