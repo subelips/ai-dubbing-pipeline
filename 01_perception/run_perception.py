@@ -151,16 +151,31 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
         print(f"[WARN] Gửi Telegram thất bại: {e}")
 
 
+def _is_installed(pkg_name: str) -> bool:
+    try:
+        __import__(pkg_name)
+        return True
+    except Exception:
+        return False
+
+
 def ensure_deps():
-    subprocess.run(
-        [
-            sys.executable, "-m", "pip", "install", "-q", "--upgrade",
-            "faster-whisper", "nvidia-cublas-cu12", "nvidia-cudnn-cu12",
-            "demucs", "soundfile", "numpy", "gdown", "transformers", "accelerate",
-            "paddlepaddle", "paddleocr", "speechbrain", "scikit-learn",
-        ],
-        check=True,
-    )
+    wanted = [
+        ("faster_whisper", "faster-whisper"),
+        ("demucs", "demucs"),
+        ("soundfile", "soundfile"),
+        ("numpy", "numpy"),
+        ("gdown", "gdown"),
+        ("paddleocr", "paddleocr"),
+        ("speechbrain", "speechbrain"),
+        ("sklearn", "scikit-learn"),
+    ]
+    missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
+    if missing:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", *missing],
+            check=False,
+        )
 
 
 def free_gpu():
@@ -185,7 +200,8 @@ def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path
     ref = (source_ref or "source_input.mp4").strip()
     if ref.startswith(("http://", "https://")):
         if "drive.google.com" in ref:
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=True)
+            if not _is_installed("gdown"):
+                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=False)
             direct_url = _normalize_gdrive_url(ref)
             subprocess.run([sys.executable, "-m", "gdown", direct_url, "-O", dest_path], check=True)
         else:
@@ -263,7 +279,7 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         compute_type = "float16" if device == "cuda" else "int8"
         model = WhisperModel(model_size, device=device, compute_type=compute_type)
-        raw_segments, _ = model.transcribe(audio_np, beam_size=5, vad_filter=True)
+        raw_segments, _ = model.transcribe(audio_np, beam_size=3, vad_filter=True)
 
         for idx, seg in enumerate(raw_segments):
             txt = (seg.text or "").strip()
@@ -402,10 +418,12 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
 
     hf_token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or "").strip()
     pyannote_model = os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip()
+    use_pyannote = os.environ.get("USE_PYANNOTE", "1").strip() != "0"
 
-    if hf_token:
+    if hf_token and use_pyannote:
         try:
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pyannote.audio"], check=True)
+            if not _is_installed("pyannote"):
+                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pyannote.audio"], check=True)
             from pyannote.audio import Pipeline
 
             try:
@@ -440,11 +458,10 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
                 print(f"[INFO] pyannote.audio diarization ({pyannote_model}) phát hiện {len(detected_list)} người nói: {detected_list}")
                 return refined_segs
         except Exception as py_err:
-            print(f"[WARN] pyannote.audio chưa chạy được ({py_err}), chuyển sang SpeechBrain.")
+            print(f"[WARN] pyannote.audio bỏ qua/lỗi ({py_err}), dùng SpeechBrain.")
             free_gpu()
 
     try:
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "speechbrain", "scikit-learn"], check=True)
         from sklearn.cluster import AgglomerativeClustering
         from speechbrain.inference.speaker import EncoderClassifier
 
@@ -612,7 +629,8 @@ def _init_paddle_ocr_engine():
 def _init_easyocr_fallback():
     import torch
 
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "easyocr"], check=True)
+    if not _is_installed("easyocr"):
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "easyocr"], check=True)
     import easyocr
 
     lang_env = os.environ.get("PADDLE_OCR_LANG", "ch").strip().lower()
@@ -636,13 +654,13 @@ def _preprocess_hardsub_image(img_path: str, mode: str = "contrast") -> str:
             gray = ImageOps.autocontrast(gray, cutoff=2)
             gray = gray.filter(ImageFilter.SHARPEN)
             img = gray.convert("RGB")
-        img.save(out_path, quality=95)
+        img.save(out_path, quality=92)
         return out_path
     except Exception:
         return img_path
 
 
-def _ocr_single_image(ocr_engine, img_path: str, is_easyocr: bool = False, min_conf: float = 0.25, debug: bool = False) -> str:
+def _ocr_single_image(ocr_engine, img_path: str, is_easyocr: bool = False, min_conf: float = 0.25) -> str:
     line_texts = []
     if is_easyocr:
         try:
@@ -653,9 +671,7 @@ def _ocr_single_image(ocr_engine, img_path: str, is_easyocr: bool = False, min_c
                     if txt:
                         line_texts.append(txt)
             return " ".join(line_texts).strip()
-        except Exception as e:
-            if debug:
-                print(f"[DEBUG] EasyOCR exception ({os.path.basename(img_path)}): {e}")
+        except Exception:
             return ""
 
     if hasattr(ocr_engine, "predict"):
@@ -712,9 +728,9 @@ def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, flo
     crop_w = max(0.2, x2 - x1)
     crop_h = max(0.10, y2 - y1)
     if crop_w >= 0.98 and crop_h >= 0.98:
-        vf_expr = f"fps={fps},scale=1920:-1"
+        vf_expr = f"fps={fps},scale=1280:-1"
     else:
-        vf_expr = f"fps={fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale=1920:-1"
+        vf_expr = f"fps={fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale=1280:-1"
 
     subprocess.run(
         ["ffmpeg", "-y", "-i", video_path, "-vf", vf_expr, os.path.join(out_dir, "f_%04d.jpg")],
@@ -732,7 +748,7 @@ def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, flo
             idx = len(frames) + 1
         ts = round((idx - 1) * interval, 2)
         frames.append((ts, os.path.join(out_dir, fname)))
-    return frames[:150]
+    return frames[:45]
 
 
 def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[float, float, float, float]]:
@@ -740,11 +756,15 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
     if embedded:
         return embedded, (0.02, 0.70, 0.98, 0.98)
 
+    if os.environ.get("ENABLE_OCR", "1").strip() == "0":
+        print("[INFO] Đã tắt OCR theo ENABLE_OCR=0.")
+        return [], (0.02, 0.70, 0.98, 0.98)
+
     candidate_rois = [
-        (0.02, 0.58, 0.98, 0.96),
+        (0.02, 0.62, 0.98, 0.98),
         (0.0, 0.0, 1.0, 1.0),
     ]
-    fps = float(os.environ.get("OCR_FPS", "1.0"))
+    fps = float(os.environ.get("OCR_FPS", "0.5"))
     chosen_roi = candidate_rois[0]
     chosen_mode = "raw"
     ocr_records = []
@@ -767,26 +787,20 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
             if not frames:
                 continue
 
-            step = max(1, len(frames) // 12)
-            probe_frames = frames[::step][:12]
+            step = max(1, len(frames) // 6)
+            probe_frames = frames[::step][:6]
 
             matched_mode = None
             best_hits = 0
-            for m_name in ("raw", "contrast", "high_text"):
+            for m_name in ("raw", "contrast"):
                 hits = 0
-                for k_i, (_, p) in enumerate(probe_frames):
+                for _, p in probe_frames:
                     t_img = p if m_name == "raw" else _preprocess_hardsub_image(p, m_name)
                     try:
-                        txt_res = _ocr_single_image(
-                            ocr_engine,
-                            t_img,
-                            is_easyocr=is_easyocr,
-                            min_conf=0.25,
-                            debug=(idx_roi == 0 and m_name == "raw" and k_i == 0),
-                        )
+                        txt_res = _ocr_single_image(ocr_engine, t_img, is_easyocr=is_easyocr, min_conf=0.25)
                     except Exception:
                         if not is_easyocr:
-                            print("[WARN] PaddleOCR gặp lỗi runtime executor, chuyển sang EasyOCR fallback.")
+                            print("[WARN] PaddleOCR lỗi runtime executor, chuyển sang EasyOCR fallback.")
                             del ocr_engine
                             free_gpu()
                             ocr_engine = _init_easyocr_fallback()
@@ -813,7 +827,7 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         for ts, img_path in active_frames:
             t_img = img_path if chosen_mode == "raw" else _preprocess_hardsub_image(img_path, chosen_mode)
             try:
-                merged = _ocr_single_image(ocr_engine, t_img, is_easyocr=is_easyocr, min_conf=0.25, debug=False)
+                merged = _ocr_single_image(ocr_engine, t_img, is_easyocr=is_easyocr, min_conf=0.25)
             except Exception:
                 merged = ""
             if merged:
@@ -857,7 +871,6 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         raw_s = max(0.0, float(seg.get("start", 0.0)))
         raw_e = max(raw_s + 0.5, float(seg.get("end", raw_s + 1.0)))
 
-        # Chống chồng mốc thời gian giữa các câu liền tiếp
         s_t = round(max(raw_s, prev_end + 0.04 if idx_s > 0 else raw_s), 2)
         e_t = round(max(raw_e, s_t + 0.45), 2)
         prev_end = e_t
@@ -879,7 +892,6 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         source_mode = "asr_only"
         if asr_txt and ocr_txt:
             ratio = SequenceMatcher(None, asr_txt.lower(), ocr_txt.lower()).ratio()
-            # Chỉ ghi đè OCR khi độ tương đồng cao và độ dài không ngắn hơn quá mức khiến mất vế câu
             if ratio >= 0.55 and len(ocr_txt) >= int(len(asr_txt) * 0.80):
                 best_txt = ocr_txt
                 source_mode = "ocr_verified"
@@ -917,7 +929,7 @@ def run_demucs_and_ref_voices(audio_44k: str, segments: list[dict], work_dir: st
     os.makedirs(demucs_out_dir, exist_ok=True)
 
     model_name = os.environ.get("DEMUCS_MODEL", "htdemucs_ft").strip() or "htdemucs_ft"
-    shifts = max(1, min(5, int(os.environ.get("DEMUCS_SHIFTS", "2"))))
+    shifts = max(1, min(3, int(os.environ.get("DEMUCS_SHIFTS", "1"))))
 
     cmd = [
         "demucs",
