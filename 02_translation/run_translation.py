@@ -79,7 +79,7 @@ class GitHubSync:
             r = requests.put(url, headers=self.headers, json=body, timeout=30)
             if r.status_code in (200, 201):
                 return
-            if r.status_code == 409:
+            if r.status_code in (409, 429, 500, 502, 503, 504):
                 time.sleep(1.5 * (attempt + 1))
                 continue
             r.raise_for_status()

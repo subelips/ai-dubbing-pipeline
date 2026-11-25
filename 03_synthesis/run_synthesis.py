@@ -78,7 +78,7 @@ class GitHubSync:
             r = requests.put(url, headers=self.headers, json=body, timeout=30)
             if r.status_code in (200, 201):
                 return
-            if r.status_code == 409:
+            if r.status_code in (409, 429, 500, 502, 503, 504):
                 time.sleep(1.5 * (attempt + 1))
                 continue
             r.raise_for_status()
@@ -98,18 +98,31 @@ class GitHubSync:
         cr.raise_for_status()
         return cr.json()
 
-    def upload_asset(self, tag: str, file_path: str):
-        release = self.ensure_release(tag)
-        upload_url = release["upload_url"].split("{")[0]
+    def upload_asset(self, tag: str, file_path: str, max_attempts: int = 5):
+        """Upload asset lên Release, có retry cho 5xx/429 (GitHub hay trả 500/502 khi quá tải)."""
         filename = os.path.basename(file_path)
-        for asset in release.get("assets", []):
-            if asset["name"] == filename:
-                requests.delete(f"{self.api_base}/releases/assets/{asset['id']}", headers=self.headers, timeout=30)
-        up_headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/octet-stream"}
-        with open(file_path, "rb") as f:
-            r = requests.post(f"{upload_url}?name={filename}", headers=up_headers, data=f.read(), timeout=300)
-        r.raise_for_status()
-        return r.json().get("browser_download_url")
+        last_err = None
+        for attempt in range(max_attempts):
+            try:
+                release = self.ensure_release(tag)
+                upload_url = release["upload_url"].split("{")[0]
+                for asset in release.get("assets", []):
+                    if asset["name"] == filename:
+                        requests.delete(f"{self.api_base}/releases/assets/{asset['id']}", headers=self.headers, timeout=30)
+                up_headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/octet-stream"}
+                with open(file_path, "rb") as f:
+                    r = requests.post(f"{upload_url}?name={filename}", headers=up_headers, data=f.read(), timeout=300)
+                if r.status_code in (200, 201):
+                    return r.json().get("browser_download_url")
+                if r.status_code in (429, 500, 502, 503, 504):
+                    last_err = f"HTTP {r.status_code}"
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                r.raise_for_status()
+            except requests.RequestException as exc:
+                last_err = str(exc)
+                time.sleep(2 * (attempt + 1))
+        raise RuntimeError(f"Upload {filename} thất bại sau {max_attempts} lần: {last_err}")
 
     def download_asset(self, tag: str, filename: str, dest_path: str):
         release = self.ensure_release(tag)
