@@ -232,6 +232,9 @@ def ensure_deps():
         ("speechbrain", "speechbrain"),
         ("sklearn", "scikit-learn"),
     ]
+    if os.environ.get("OCR_ENGINE", "easyocr").strip().lower() in ("easyocr",):
+        # EasyOCR (torch, có sẵn GPU) là engine chính → khỏi cài paddle cho nặng
+        wanted = [(m, s) for m, s in wanted if m not in ("paddleocr", "paddle")]
     missing = [spec for mod, spec in wanted if not _have_module(mod)]
     if _want_gpu_ocr():
         # _ensure_paddle_gpu() sẽ cài đúng bản paddle (gpu/cpu), khỏi cài CPU trước rồi gỡ
@@ -967,12 +970,21 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
     is_easyocr = False
 
     try:
-        try:
+        engine_pref = os.environ.get("OCR_ENGINE", "easyocr").strip().lower()
+        if engine_pref in ("auto", "easyocr"):
+            try:
+                ocr_engine = _init_easyocr_fallback()
+                is_easyocr = True
+                print("[INFO] OCR engine: EasyOCR (dùng GPU nếu torch thấy CUDA).")
+            except Exception as ee:
+                print(f"[WARN] EasyOCR không khởi tạo được ({ee}) → chuyển PaddleOCR.")
+        if ocr_engine is None:
             ocr_engine = _init_paddle_ocr_engine()
-        except Exception as pe:
-            print(f"[WARN] Khởi tạo PaddleOCR lỗi ({pe}), chuyển sang EasyOCR.")
-            ocr_engine = _init_easyocr_fallback()
-            is_easyocr = True
+            print("[INFO] OCR engine: PaddleOCR.")
+    except Exception as pe:
+        print(f"[WARN] Khởi tạo OCR lỗi ({pe}), chuyển sang EasyOCR.")
+        ocr_engine = _init_easyocr_fallback()
+        is_easyocr = True
 
         active_frames = []
         best_pick = None  # (hits, roi, mode, frames) — chọn ROI có nhiều phụ đề THẬT nhất
