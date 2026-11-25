@@ -7,124 +7,18 @@
     "x2": 0.98,
     "y2": 0.98
   },
-  "screen_texts": [
-    {
-      "time": 2.0,
-      "text": "你的饭给狗吃了"
-    },
-    {
-      "time": 6.0,
-      "text": "该你吃了"
-    },
-    {
-      "time": 8.0,
-      "text": "吃"
-    },
-    {
-      "time": 22.0,
-      "text": "0"
-    },
-    {
-      "time": 28.0,
-      "text": "从不吃外卖"
-    },
-    {
-      "time": 34.0,
-      "text": "给她做最健康卫生的三餐"
-    },
-    {
-      "time": 36.0,
-      "text": "今天食材新鲜吗"
-    },
-    {
-      "time": 38.0,
-      "text": "从莱市场买最新鲜的食材"
-    },
-    {
-      "time": 40.0,
-      "text": "三遍"
-    },
-    {
-      "time": 42.0,
-      "text": "浸泡了十五分钟"
-    },
-    {
-      "time": 44.0,
-      "text": "你走吧"
-    },
-    {
-      "time": 46.0,
-      "text": "你一个行政部的小职员"
-    },
-    {
-      "time": 56.0,
-      "text": "那你趁热吃"
-    },
-    {
-      "time": 62.0,
-      "text": "炎辰"
-    },
-    {
-      "time": 64.0,
-      "text": "真是辛苦你了"
-    },
-    {
-      "time": 66.0,
-      "text": "照顾妻子"
-    },
-    {
-      "time": 68.0,
-      "text": "只是我作为丈夫的责任"
-    },
-    {
-      "time": 70.0,
-      "text": "当年要不是你"
-    },
-    {
-      "time": 72.0,
-      "text": "与我们夏氏商业联姻"
-    },
-    {
-      "time": 74.0,
-      "text": "早在三年前就破产了"
-    },
-    {
-      "time": 76.0,
-      "text": "你堂堂陆氏集团继承人"
-    },
-    {
-      "time": 78.0,
-      "text": "甘愿隐姓埋名"
-    },
-    {
-      "time": 82.0,
-      "text": "我隐瞒身份"
-    },
-    {
-      "time": 84.0,
-      "text": "一是不想让公司上下知道"
-    },
-    {
-      "time": 86.0,
-      "text": "夏氏靠陆氐撑腰"
-    }
-  ],
-  "scene_context": "Chữ/phụ đề màn hình: [2.0s] 你的饭给狗吃了; [6.0s] 该你吃了; [8.0s] 吃; [22.0s] 0; [28.0s] 从不吃外卖; [34.0s] 给她做最健康卫生的三餐; [36.0s] 今天食材新鲜吗; [38.0s] 从莱市场买最新鲜的食材; [40.0s] 三遍; [42.0s] 浸泡了十五分钟; [44.0s] 你走吧; [46.0s] 你一个行政部的小职员; [56.0s] 那你趁热吃; [62.0s] 炎辰; [64.0s] 真是辛苦你了",
+  "screen_texts": [],
+  "scene_context": "",
   "speaker_refs": {
-    "SPEAKER_02": {
-      "ref_asset": "ref_speaker_SPEAKER_02.wav",
-      "gender_hint": "male",
-      "pitch_hz": 84.8
+    "SPEAKER_01": {
+      "ref_asset": "ref_speaker_SPEAKER_01.wav",
+      "gender_hint": "female",
+      "pitch_hz": 342.9
     },
     "SPEAKER_00": {
       "ref_asset": "ref_speaker_SPEAKER_00.wav",
       "gender_hint": "male",
       "pitch_hz": 121.8
-    },
-    "SPEAKER_01": {
-      "ref_asset": "ref_speaker_SPEAKER_01.wav",
-      "gender_hint": "female",
-      "pitch_hz": 342.9
     }
   },
   "segments": [
@@ -132,25 +26,25 @@
       "id": 0,
       "start": 1.26,
       "end": 1.94,
-      "speaker_id": "SPEAKER_02",
+      "speaker_id": "SPEAKER_01",
       "gender_hint": "female",
       "pitch_hz": 296.3,
       "asr_text": "老婆",
-      "ocr_text": "你的饭给狗吃了",
+      "ocr_text": "",
       "best_text": "老婆",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 1,
       "start": 1.98,
       "end": 4.06,
-      "speaker_id": "SPEAKER_00",
+      "speaker_id": "SPEAKER_01",
       "gender_hint": "female",
       "pitch_hz": 290.9,
       "asr_text": "你的饭给狗吃了",
-      "ocr_text": "你的饭给狗吃了",
+      "ocr_text": "",
       "best_text": "你的饭给狗吃了",
-      "subtitle_source": "ocr_verified"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 2,
@@ -160,21 +54,21 @@
       "gender_hint": "male",
       "pitch_hz": 97.6,
       "asr_text": "你就该吃狗的",
-      "ocr_text": "该你吃了",
+      "ocr_text": "",
       "best_text": "你就该吃狗的",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 3,
       "start": 5.28,
       "end": 6.44,
-      "speaker_id": "SPEAKER_00",
+      "speaker_id": "SPEAKER_01",
       "gender_hint": "female",
       "pitch_hz": 172.0,
       "asr_text": "狗吃完了",
-      "ocr_text": "该你吃了",
+      "ocr_text": "",
       "best_text": "狗吃完了",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 4,
@@ -184,21 +78,21 @@
       "gender_hint": "male",
       "pitch_hz": 78.8,
       "asr_text": "该你吃了",
-      "ocr_text": "该你吃了 吃",
-      "best_text": "该你吃了 吃",
-      "subtitle_source": "ocr_verified"
+      "ocr_text": "",
+      "best_text": "该你吃了",
+      "subtitle_source": "asr_only"
     },
     {
       "id": 5,
       "start": 7.98,
       "end": 8.76,
-      "speaker_id": "SPEAKER_02",
+      "speaker_id": "SPEAKER_00",
       "gender_hint": "male",
       "pitch_hz": 139.1,
       "asr_text": "吃",
-      "ocr_text": "吃",
+      "ocr_text": "",
       "best_text": "吃",
-      "subtitle_source": "ocr_verified"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 6,
@@ -208,9 +102,9 @@
       "gender_hint": "male",
       "pitch_hz": 76.2,
       "asr_text": "这是今天的午餐",
-      "ocr_text": "吃 0",
+      "ocr_text": "",
       "best_text": "这是今天的午餐",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 7,
@@ -232,9 +126,9 @@
       "gender_hint": "male",
       "pitch_hz": 104.6,
       "asr_text": "我的妻子对餐饮要求苛刻到极致",
-      "ocr_text": "从不吃外卖",
+      "ocr_text": "",
       "best_text": "我的妻子对餐饮要求苛刻到极致",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 9,
@@ -244,9 +138,9 @@
       "gender_hint": "male",
       "pitch_hz": 84.7,
       "asr_text": "从不吃外卖",
-      "ocr_text": "从不吃外卖",
+      "ocr_text": "",
       "best_text": "从不吃外卖",
-      "subtitle_source": "ocr_verified"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 10,
@@ -280,9 +174,9 @@
       "gender_hint": "male",
       "pitch_hz": 77.3,
       "asr_text": "给她做最健康卫生的三餐",
-      "ocr_text": "给她做最健康卫生的三餐 今天食材新鲜吗",
-      "best_text": "给她做最健康卫生的三餐 今天食材新鲜吗",
-      "subtitle_source": "ocr_verified"
+      "ocr_text": "",
+      "best_text": "给她做最健康卫生的三餐",
+      "subtitle_source": "asr_only"
     },
     {
       "id": 13,
@@ -292,9 +186,9 @@
       "gender_hint": "female",
       "pitch_hz": 340.4,
       "asr_text": "今天食材新鲜吗",
-      "ocr_text": "今天食材新鲜吗",
+      "ocr_text": "",
       "best_text": "今天食材新鲜吗",
-      "subtitle_source": "ocr_verified"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 14,
@@ -304,9 +198,9 @@
       "gender_hint": "male",
       "pitch_hz": 114.3,
       "asr_text": "都是早上四点",
-      "ocr_text": "从菜市场买最新鲜的食材",
+      "ocr_text": "",
       "best_text": "都是早上四点",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 15,
@@ -316,9 +210,9 @@
       "gender_hint": "male",
       "pitch_hz": 104.6,
       "asr_text": "从菜市场买最新鲜的食材",
-      "ocr_text": "从菜市场买最新鲜的食材 三遍",
-      "best_text": "从菜市场买最新鲜的食材 三遍",
-      "subtitle_source": "ocr_verified"
+      "ocr_text": "",
+      "best_text": "从菜市场买最新鲜的食材",
+      "subtitle_source": "asr_only"
     },
     {
       "id": 16,
@@ -328,9 +222,9 @@
       "gender_hint": "female",
       "pitch_hz": 163.3,
       "asr_text": "菜市场洗了几遍",
-      "ocr_text": "三遍",
+      "ocr_text": "",
       "best_text": "菜市场洗了几遍",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 17,
@@ -340,9 +234,9 @@
       "gender_hint": "male",
       "pitch_hz": 133.3,
       "asr_text": "三遍",
-      "ocr_text": "三遍 浸泡了十五分钟",
+      "ocr_text": "",
       "best_text": "三遍",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 18,
@@ -352,9 +246,9 @@
       "gender_hint": "male",
       "pitch_hz": 121.2,
       "asr_text": "还用果蔬清洁剂",
-      "ocr_text": "浸泡了十五分钟",
+      "ocr_text": "",
       "best_text": "还用果蔬清洁剂",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 19,
@@ -364,9 +258,9 @@
       "gender_hint": "male",
       "pitch_hz": 113.5,
       "asr_text": "浸泡了十五分钟",
-      "ocr_text": "浸泡了十五分钟 你走吧",
-      "best_text": "浸泡了十五分钟 你走吧",
-      "subtitle_source": "ocr_verified"
+      "ocr_text": "",
+      "best_text": "浸泡了十五分钟",
+      "subtitle_source": "asr_only"
     },
     {
       "id": 20,
@@ -376,9 +270,9 @@
       "gender_hint": "female",
       "pitch_hz": 307.7,
       "asr_text": "行了",
-      "ocr_text": "你走吧",
+      "ocr_text": "",
       "best_text": "行了",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 21,
@@ -388,9 +282,9 @@
       "gender_hint": "female",
       "pitch_hz": 333.3,
       "asr_text": "你走吧",
-      "ocr_text": "你走吧 你一个行政部的小职员",
+      "ocr_text": "",
       "best_text": "你走吧",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 22,
@@ -400,15 +294,15 @@
       "gender_hint": "female",
       "pitch_hz": 205.1,
       "asr_text": "你一个行政部的小职员",
-      "ocr_text": "你一个行政部的小职员",
+      "ocr_text": "",
       "best_text": "你一个行政部的小职员",
-      "subtitle_source": "ocr_verified"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 23,
       "start": 47.35,
       "end": 48.59,
-      "speaker_id": "SPEAKER_01",
+      "speaker_id": "SPEAKER_00",
       "gender_hint": "male",
       "pitch_hz": 109.6,
       "asr_text": "跟我这儿待待久",
@@ -420,7 +314,7 @@
       "id": 24,
       "start": 48.63,
       "end": 50.69,
-      "speaker_id": "SPEAKER_01",
+      "speaker_id": "SPEAKER_00",
       "gender_hint": "male",
       "pitch_hz": 161.6,
       "asr_text": "会引起别人不必要的喘息",
@@ -432,13 +326,13 @@
       "id": 25,
       "start": 50.73,
       "end": 55.22,
-      "speaker_id": "SPEAKER_02",
+      "speaker_id": "SPEAKER_00",
       "gender_hint": "male",
       "pitch_hz": 131.1,
       "asr_text": "好",
-      "ocr_text": "那你趁热吃",
+      "ocr_text": "",
       "best_text": "好",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 26,
@@ -448,9 +342,9 @@
       "gender_hint": "male",
       "pitch_hz": 97.0,
       "asr_text": "那你趁热吃",
-      "ocr_text": "那你趁热吃",
+      "ocr_text": "",
       "best_text": "那你趁热吃",
-      "subtitle_source": "ocr_verified"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 27,
@@ -472,9 +366,9 @@
       "gender_hint": "male",
       "pitch_hz": 123.1,
       "asr_text": "言辰",
-      "ocr_text": "炎辰 真是辛苦你了",
+      "ocr_text": "",
       "best_text": "言辰",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 29,
@@ -484,9 +378,9 @@
       "gender_hint": "male",
       "pitch_hz": 134.5,
       "asr_text": "你又去给瑶瑶送饭了",
-      "ocr_text": "真是辛苦你了",
+      "ocr_text": "",
       "best_text": "你又去给瑶瑶送饭了",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 30,
@@ -496,9 +390,9 @@
       "gender_hint": "male",
       "pitch_hz": 140.4,
       "asr_text": "真是辛苦你了",
-      "ocr_text": "照顾妻子",
+      "ocr_text": "",
       "best_text": "真是辛苦你了",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 31,
@@ -508,9 +402,9 @@
       "gender_hint": "male",
       "pitch_hz": 122.1,
       "asr_text": "照顾妻子",
-      "ocr_text": "照顾妻子",
+      "ocr_text": "",
       "best_text": "照顾妻子",
-      "subtitle_source": "ocr_verified"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 32,
@@ -520,9 +414,9 @@
       "gender_hint": "male",
       "pitch_hz": 125.0,
       "asr_text": "只是我作为丈夫的责任",
-      "ocr_text": "只是我作为丈夫的责任",
+      "ocr_text": "",
       "best_text": "只是我作为丈夫的责任",
-      "subtitle_source": "ocr_verified"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 33,
@@ -532,9 +426,9 @@
       "gender_hint": "male",
       "pitch_hz": 122.1,
       "asr_text": "当年要不是你",
-      "ocr_text": "当年要不是你",
+      "ocr_text": "",
       "best_text": "当年要不是你",
-      "subtitle_source": "ocr_verified"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 34,
@@ -544,9 +438,9 @@
       "gender_hint": "male",
       "pitch_hz": 126.0,
       "asr_text": "与我们夏氏商业联姻",
-      "ocr_text": "与我们夏氏商业联姻",
+      "ocr_text": "",
       "best_text": "与我们夏氏商业联姻",
-      "subtitle_source": "ocr_verified"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 35,
@@ -556,9 +450,9 @@
       "gender_hint": "male",
       "pitch_hz": 126.0,
       "asr_text": "我们夏氏集团",
-      "ocr_text": "早在三年前就破产了",
+      "ocr_text": "",
       "best_text": "我们夏氏集团",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 36,
@@ -568,9 +462,9 @@
       "gender_hint": "male",
       "pitch_hz": 87.0,
       "asr_text": "早在三年前就破产了",
-      "ocr_text": "早在三年前就破产了 你堂堂陆氏集团继承人",
-      "best_text": "早在三年前就破产了 你堂堂陆氏集团继承人",
-      "subtitle_source": "ocr_verified"
+      "ocr_text": "",
+      "best_text": "早在三年前就破产了",
+      "subtitle_source": "asr_only"
     },
     {
       "id": 37,
@@ -580,9 +474,9 @@
       "gender_hint": "male",
       "pitch_hz": 118.5,
       "asr_text": "你谈谈陆氏集团继承人",
-      "ocr_text": "你堂堂陆氏集团继承人 甘愿隐姓埋名",
-      "best_text": "你堂堂陆氏集团继承人 甘愿隐姓埋名",
-      "subtitle_source": "ocr_verified"
+      "ocr_text": "",
+      "best_text": "你谈谈陆氏集团继承人",
+      "subtitle_source": "asr_only"
     },
     {
       "id": 38,
@@ -592,9 +486,9 @@
       "gender_hint": "male",
       "pitch_hz": 122.1,
       "asr_text": "甘愿引信埋名",
-      "ocr_text": "甘愿隐姓埋名",
-      "best_text": "甘愿隐姓埋名",
-      "subtitle_source": "ocr_verified"
+      "ocr_text": "",
+      "best_text": "甘愿引信埋名",
+      "subtitle_source": "asr_only"
     },
     {
       "id": 39,
@@ -628,9 +522,9 @@
       "gender_hint": "male",
       "pitch_hz": 121.2,
       "asr_text": "一次次帮公司填窟窿",
-      "ocr_text": "我隐瞒身份",
+      "ocr_text": "",
       "best_text": "一次次帮公司填窟窿",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 42,
@@ -640,21 +534,21 @@
       "gender_hint": "male",
       "pitch_hz": 128.0,
       "asr_text": "我隐瞒身份",
-      "ocr_text": "一是不想让公司上下知道",
+      "ocr_text": "",
       "best_text": "我隐瞒身份",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 43,
       "start": 83.83,
       "end": 85.75,
-      "speaker_id": "SPEAKER_00",
+      "speaker_id": "SPEAKER_01",
       "gender_hint": "female",
       "pitch_hz": 235.3,
       "asr_text": "一是不想让公司上下知道",
-      "ocr_text": "一是不想让公司上下知道 夏氏靠陆氐撑腰",
-      "best_text": "一是不想让公司上下知道 夏氏靠陆氐撑腰",
-      "subtitle_source": "ocr_verified"
+      "ocr_text": "",
+      "best_text": "一是不想让公司上下知道",
+      "subtitle_source": "asr_only"
     },
     {
       "id": 44,
@@ -664,9 +558,9 @@
       "gender_hint": "male",
       "pitch_hz": 81.2,
       "asr_text": "夏氏靠陆氏撑腰",
-      "ocr_text": "夏氏靠陆氐撑腰",
-      "best_text": "夏氏靠陆氐撑腰",
-      "subtitle_source": "ocr_verified"
+      "ocr_text": "",
+      "best_text": "夏氏靠陆氏撑腰",
+      "subtitle_source": "asr_only"
     },
     {
       "id": 45,
@@ -756,7 +650,7 @@
       "id": 52,
       "start": 97.99,
       "end": 102.36,
-      "speaker_id": "SPEAKER_00",
+      "speaker_id": "SPEAKER_01",
       "gender_hint": "female",
       "pitch_hz": 225.4,
       "asr_text": "我车钥匙落在餐厅里",
