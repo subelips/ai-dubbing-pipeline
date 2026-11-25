@@ -85,6 +85,7 @@
     .badge.done { background: rgba(34, 197, 94, 0.2); color: var(--ok); }
     .badge.run { background: rgba(56, 189, 248, 0.2); color: var(--accent); }
     .badge.wait { background: rgba(245, 158, 11, 0.2); color: var(--warn); }
+    .badge.err { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
     .small { font-size: 0.82rem; color: var(--muted); margin-top: 6px; word-break: break-all; }
     a { color: var(--accent); }
   </style>
@@ -315,8 +316,13 @@
 
     function badgeClass(status = "") {
       if (status === "COMPLETED") return "badge done";
+      if (status.startsWith("FAILED")) return "badge err";
       if (status.includes("DONE") || status.includes("QUEUED")) return "badge wait";
       return "badge run";
+    }
+
+    function escapeHtml(text = "") {
+      return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     }
 
     async function loadJobs() {
@@ -351,7 +357,8 @@
               <strong><code>${id}</code></strong>
               <span class="${badgeClass(info.status)}">${info.status || "UNKNOWN"}</span>
             </div>
-            <div class="small">Video asset: ${info.video_asset || info.video_url || ""}</div>
+            <div class="small">Video asset: ${escapeHtml(info.video_asset || info.video_url || "")}</div>
+            ${info.error ? `<div class="small" style="color:#fca5a5; white-space:pre-wrap;">Lỗi: ${escapeHtml(info.error)}</div>` : ""}
             ${info.output_url ? `<div class="small">Thành phẩm: <a href="${info.output_url}" target="_blank">Tải MP4</a></div>` : ""}
           </div>
         `).join("");
