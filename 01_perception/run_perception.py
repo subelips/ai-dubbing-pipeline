@@ -221,6 +221,43 @@ def _ensure_paddle_gpu() -> bool:
     return False
 
 
+def _ensure_pyannote() -> bool:
+    """Cài pyannote.audio 4.x mà KHÔNG nâng torch của image Kaggle.
+
+    - pyannote 3.1 gọi torchaudio.set_audio_backend() đã bị xoá ở torchaudio 2.11 → lỗi.
+    - pip install pyannote.audio (có deps) kéo torch 2.15 và phá torchvision/CUDA.
+    → cài --no-deps + các gói phụ thuộc thuần Python, ghim numpy/matplotlib cho khớp.
+    """
+    try:
+        import pyannote.audio as _pa  # noqa: F401
+        print(f"[INFO] pyannote.audio đã có sẵn ({_pa.__version__}).")
+        return True
+    except Exception:
+        pass
+
+    print("[INFO] Cài pyannote.audio 4.x (--no-deps) cho diarization...")
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q", "--no-deps", "pyannote.audio>=4,<5",
+         "pyannote.core", "pyannote.database", "pyannote.metrics", "pyannote.pipeline",
+         "lightning", "torchmetrics", "safetensors", "rich", "typer"],
+        check=False,
+    )
+    try:
+        import pyannote.audio as _pa  # noqa: F401
+        print(f"[INFO] pyannote.audio {_pa.__version__} sẵn sàng.")
+        return True
+    except Exception as first_err:
+        print(f"[WARN] pyannote vẫn lỗi import ({first_err}) → ghim numpy/matplotlib.")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "numpy==2.2.6", "matplotlib==3.10.0"], check=False)
+        try:
+            import pyannote.audio as _pa  # noqa: F401
+            print(f"[INFO] pyannote.audio {_pa.__version__} sẵn sàng sau khi ghim numpy.")
+            return True
+        except Exception as second_err:
+            print(f"[WARN] Không cài được pyannote: {second_err}")
+            return False
+
+
 def ensure_deps():
     """Chỉ cài gói còn thiếu; không --upgrade để tránh phá numpy/pillow của image Kaggle.
 
@@ -253,6 +290,8 @@ def ensure_deps():
         print("[INFO] Đã đủ dependency, bỏ qua pip install.")
     if os.environ.get("OCR_ENGINE", "easyocr").strip().lower() in ("paddle", "auto"):
         _ensure_paddle_gpu()
+    if (HF_TOKEN or os.environ.get("HF_TOKEN")):
+        _ensure_pyannote()
 
 
 def free_gpu():
@@ -541,11 +580,6 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
 
     if hf_token:
         try:
-            # torchaudio mới cần torchcodec để đọc wav; thiếu nó pyannote báo thiếu file .so
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-q", "pyannote.audio>=3.1,<4", "torchaudio", "torchcodec"],
-                check=False,
-            )
             try:
                 from huggingface_hub import whoami
 
@@ -583,10 +617,18 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
             elif max_spk_raw.isdigit() and int(max_spk_raw) >= 2:
                 diar_kwargs["max_speakers"] = int(max_spk_raw)
 
-            diarization = pipeline(audio_16k, **diar_kwargs)
+            # Đưa waveform vào bộ nhớ để KHÔNG cần torchcodec (bản .so trong image hay lỗi)
+            import soundfile as _sf
+
+            wav_np, wav_sr = _sf.read(audio_16k, dtype="float32")
+            if wav_np.ndim > 1:
+                wav_np = wav_np.mean(axis=-1)
+            audio_in = {"waveform": torch.from_numpy(wav_np).unsqueeze(0), "sample_rate": int(wav_sr)}
+            result = pipeline(audio_in, **diar_kwargs)
+            ann = getattr(result, "speaker_diarization", result)
 
             turns = []
-            for turn, _, spk in diarization.itertracks(yield_label=True):
+            for turn, _, spk in ann.itertracks(yield_label=True):
                 turns.append((float(turn.start), float(turn.end), str(spk)))
 
             del pipeline
