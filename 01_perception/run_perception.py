@@ -541,13 +541,36 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
 
     if hf_token:
         try:
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pyannote.audio"], check=True)
+            # torchaudio mới cần torchcodec để đọc wav; thiếu nó pyannote báo thiếu file .so
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q", "pyannote.audio>=3.1,<4", "torchaudio", "torchcodec"],
+                check=False,
+            )
+            try:
+                from huggingface_hub import whoami
+
+                info = whoami(token=hf_token)
+                print(f"[INFO] HF token hợp lệ, user={info.get('name')!r}.")
+            except Exception as tok_err:
+                print(f"[WARN] Không xác thực được HF token: {tok_err}")
+
             from pyannote.audio import Pipeline
 
-            try:
-                pipeline = Pipeline.from_pretrained(pyannote_model, token=hf_token)
-            except TypeError:
-                pipeline = Pipeline.from_pretrained(pyannote_model, use_auth_token=hf_token)
+            model_candidates = [pyannote_model, "pyannote/speaker-diarization-3.1", "pyannote/speaker-diarization-3.0"]
+            pipeline = None
+            for cand in dict.fromkeys(model_candidates):
+                try:
+                    try:
+                        pipeline = Pipeline.from_pretrained(cand, token=hf_token)
+                    except TypeError:
+                        pipeline = Pipeline.from_pretrained(cand, use_auth_token=hf_token)
+                    print(f"[INFO] Nạp được pipeline {cand}.")
+                    break
+                except Exception as load_err:
+                    print(f"[WARN] Không nạp được {cand}: {type(load_err).__name__}: {load_err}")
+                    pipeline = None
+            if pipeline is None:
+                raise RuntimeError("Không nạp được pipeline pyannote nào (kiểm tra license + quyền token).")
 
             if torch.cuda.is_available():
                 pipeline.to(torch.device("cuda:0"))
