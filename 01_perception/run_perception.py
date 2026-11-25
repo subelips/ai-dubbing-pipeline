@@ -327,6 +327,69 @@ def run_whisper_asr(audio_16k: str) -> list[dict]:
     return segments
 
 
+def _split_segments_on_speaker_turns(
+    raw_segs: list[dict],
+    turns: list[tuple[float, float, str]],
+    order_map: dict,
+) -> list[dict]:
+    """Khớp speaker theo vùng lõi câu; tách câu nếu có >= 2 lượt nói dài >= 0.45s thuộc 2 người khác nhau."""
+    out_segs = []
+    next_id = 0
+
+    for seg in raw_segs:
+        s_t = float(seg.get("start", 0.0))
+        e_t = max(s_t + 0.3, float(seg.get("end", s_t + 0.5)))
+        dur = e_t - s_t
+        pad = min(0.15, dur * 0.2)
+        c_start = s_t + pad
+        c_end = max(c_start + 0.1, e_t - pad)
+
+        spk_durations: dict[str, float] = {}
+        overlapping_turns: list[tuple[float, float, str]] = []
+        for t_s, t_e, raw_spk in turns:
+            ov = max(0.0, min(c_end, t_e) - max(c_start, t_s))
+            if ov > 0.05:
+                spk_name = order_map.get(raw_spk, "SPEAKER_00")
+                spk_durations[spk_name] = spk_durations.get(spk_name, 0.0) + ov
+                overlapping_turns.append((max(s_t, t_s), min(e_t, t_e), spk_name))
+
+        significant_spks = [k for k, v in spk_durations.items() if v >= 0.45]
+        txt = (seg.get("asr_text") or "").strip()
+        words = txt.split()
+
+        if len(significant_spks) >= 2 and len(words) >= 4 and len(overlapping_turns) >= 2:
+            overlapping_turns.sort(key=lambda x: x[0])
+            total_ov = sum(max(0.05, b - a) for a, b, _ in overlapping_turns)
+            word_cursor = 0
+            for idx_t, (sub_s, sub_e, spk_name) in enumerate(overlapping_turns):
+                sub_dur = max(0.1, sub_e - sub_s)
+                if idx_t == len(overlapping_turns) - 1:
+                    sub_words = words[word_cursor:]
+                else:
+                    take_w = max(1, int(round(len(words) * (sub_dur / total_ov))))
+                    sub_words = words[word_cursor: word_cursor + take_w]
+                    word_cursor += take_w
+                if not sub_words:
+                    continue
+                item = dict(seg)
+                item["id"] = next_id
+                item["start"] = round(sub_s, 2)
+                item["end"] = round(max(sub_s + 0.4, sub_e), 2)
+                item["speaker_id"] = spk_name
+                item["asr_text"] = " ".join(sub_words)
+                out_segs.append(item)
+                next_id += 1
+        else:
+            best_spk = max(spk_durations.items(), key=lambda x: x[1])[0] if spk_durations else "SPEAKER_00"
+            item = dict(seg)
+            item["id"] = next_id
+            item["speaker_id"] = best_spk
+            out_segs.append(item)
+            next_id += 1
+
+    return out_segs
+
+
 def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: str) -> list[dict]:
     """Ưu tiên pyannote.audio (nếu có HF_TOKEN), tự động fallback sang SpeechBrain ECAPA-TDNN."""
     if not segments:
@@ -375,21 +438,10 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
                     if raw_spk not in order_map:
                         order_map[raw_spk] = f"SPEAKER_{len(order_map):02d}"
 
-                for seg in segments:
-                    s_t = float(seg.get("start", 0.0))
-                    e_t = float(seg.get("end", s_t + 0.5))
-                    best_spk = "SPEAKER_00"
-                    best_overlap = 0.0
-                    for t_s, t_e, raw_spk in turns:
-                        ov = max(0.0, min(e_t, t_e) - max(s_t, t_s))
-                        if ov > best_overlap:
-                            best_overlap = ov
-                            best_spk = order_map.get(raw_spk, "SPEAKER_00")
-                    seg["speaker_id"] = best_spk
-
-                detected_list = list(dict.fromkeys(s["speaker_id"] for s in segments))
+                refined_segs = _split_segments_on_speaker_turns(segments, turns, order_map)
+                detected_list = list(dict.fromkeys(s["speaker_id"] for s in refined_segs))
                 print(f"[INFO] pyannote.audio diarization ({pyannote_model}) phát hiện {len(detected_list)} người nói: {detected_list}")
-                return segments
+                return refined_segs
         except Exception as py_err:
             print(f"[WARN] pyannote.audio chưa chạy được ({py_err}), chuyển sang SpeechBrain.")
             free_gpu()
@@ -421,7 +473,6 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
         )
 
         anchor_embs = []
-        anchor_indices = []
         all_embs = {}
 
         for idx, seg in enumerate(segments):
@@ -439,14 +490,9 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
             all_embs[idx] = emb
             if len(clip) >= int(1.0 * sr):
                 anchor_embs.append(emb)
-                anchor_indices.append(idx)
 
         del classifier
         free_gpu()
-
-        if not anchor_embs and all_embs:
-            anchor_indices = list(all_embs.keys())
-            anchor_embs = [all_embs[i] for i in anchor_indices]
 
         if len(anchor_embs) >= 2:
             emb_mat = np.vstack(anchor_embs)
