@@ -133,13 +133,24 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
         print(f"[WARN] Gửi Telegram thất bại: {e}")
 
 
+def _have_module(name: str) -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+
 def ensure_deps():
     subprocess.run(["apt-get", "-qq", "update"], check=False)
     subprocess.run(["apt-get", "-qq", "install", "-y", "espeak-ng"], check=False)
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "vieneu", "numpy", "soundfile", "gdown"],
-        check=True,
-    )
+    # Không --upgrade numpy: bản mới làm lệch ABI của torch/paddle trong image Kaggle.
+    missing = [spec for mod, spec in (("vieneu", "vieneu"), ("soundfile", "soundfile"), ("gdown", "gdown")) if not _have_module(mod)]
+    if missing:
+        print(f"[INFO] pip install các gói còn thiếu: {missing}")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=True)
+    else:
+        print("[INFO] Đã đủ dependency, bỏ qua pip install.")
 
 
 def _normalize_gdrive_url(url: str) -> str:
@@ -349,6 +360,7 @@ def synth_single_line(
                 return idx, start_t, None
 
         if audio_arr is None:
+            print(f"[WARN] Câu {idx}: TTS trả về None (model không sinh audio).")
             return idx, start_t, None
 
         if hasattr(tts_engine, "save"):
@@ -358,6 +370,7 @@ def synth_single_line(
             sf.write(raw_wav, arr_np, 48000)
 
     if not os.path.exists(raw_wav) or os.path.getsize(raw_wav) < 512:
+        print(f"[WARN] Câu {idx}: file TTS rỗng/không tồn tại ({raw_wav}).")
         return idx, start_t, None
 
     probe_data, src_sr = sf.read(raw_wav)
@@ -438,10 +451,12 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
 
     results.sort(key=lambda x: x[0])
     ok_count = 0
+    skipped = []
 
     target_rms = 0.11
-    for _, start_t, wav_path in results:
+    for line_idx, start_t, wav_path in results:
         if not wav_path or not os.path.exists(wav_path):
+            skipped.append(line_idx)
             continue
         seg_audio, seg_sr = sf.read(wav_path)
         if seg_audio.ndim == 1:
@@ -466,6 +481,7 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
 
         start_sample = int(round(start_t * sr))
         if start_sample >= total_samples:
+            skipped.append(line_idx)
             continue
         end_sample = min(total_samples, start_sample + len(seg_f32))
         copy_len = end_sample - start_sample
@@ -474,6 +490,10 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
             ok_count += 1
 
     print(f"[INFO] VieNeu-TTS đã ghép thành công {ok_count}/{len(lines)} câu thoại theo mốc timing.")
+    if skipped:
+        preview = ", ".join(str(x) for x in skipped[:25])
+        more = "..." if len(skipped) > 25 else ""
+        print(f"[WARN] {len(skipped)} câu không ghép được (id: {preview}{more}) — xem [WARN] phía trên để biết lý do.")
 
     raw_voice_active = (np.abs(voice_track).max(axis=-1) > 1e-3).astype(np.float32)
     smooth_active = _smooth_envelope(raw_voice_active, max(1, int(sr * 0.18)))

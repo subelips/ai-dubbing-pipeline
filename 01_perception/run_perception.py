@@ -152,16 +152,38 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
         print(f"[WARN] Gửi Telegram thất bại: {e}")
 
 
+def _have_module(name: str) -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+
 def ensure_deps():
-    subprocess.run(
-        [
-            sys.executable, "-m", "pip", "install", "-q", "--upgrade",
-            "faster-whisper", "nvidia-cublas-cu12", "nvidia-cudnn-cu12",
-            "demucs", "soundfile", "numpy", "gdown", "transformers", "accelerate",
-            "paddlepaddle", "paddleocr", "speechbrain", "scikit-learn",
-        ],
-        check=True,
-    )
+    """Chỉ cài gói còn thiếu; không --upgrade để tránh phá numpy/pillow của image Kaggle.
+
+    Bản cũ pip install --upgrade 15 gói mỗi lần chạy: mất ~6 phút và kéo numpy/pillow
+    lên bản mới làm numba/paddle/moviepy lệch ABI.
+    """
+    wanted = [
+        ("faster_whisper", "faster-whisper"),
+        ("demucs", "demucs"),
+        ("soundfile", "soundfile"),
+        ("gdown", "gdown"),
+        ("paddleocr", "paddleocr"),
+        ("paddle", "paddlepaddle"),
+        ("speechbrain", "speechbrain"),
+        ("sklearn", "scikit-learn"),
+    ]
+    missing = [spec for mod, spec in wanted if not _have_module(mod)]
+    if not _have_module("nvidia.cublas"):
+        missing.extend(["nvidia-cublas-cu12", "nvidia-cudnn-cu12"])
+    if missing:
+        print(f"[INFO] pip install các gói còn thiếu: {missing}")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=True)
+    else:
+        print("[INFO] Đã đủ dependency, bỏ qua pip install.")
 
 
 def free_gpu():
@@ -265,15 +287,19 @@ def estimate_pitch_gender(clip: "np.ndarray", sr: int) -> tuple[float, str]:
 
     if clip is None or len(clip) < sr // 2:
         return 0.0, "unknown"
-    samples = clip[: min(len(clip), sr * 6)].astype(np.float32)
+    samples = clip[: min(len(clip), sr * 3)].astype(np.float32)
     samples = samples - np.mean(samples)
     rms = float(np.sqrt(np.mean(samples ** 2)))
     if rms < 1e-4:
         return 0.0, "unknown"
 
-    corr = np.correlate(samples, samples, mode="full")[len(samples) - 1:]
+    # Tự tương quan bằng FFT: O(n log n). np.correlate trực tiếp là O(n^2) —
+    # với đoạn 6 s @16 kHz tốn hàng chục giây cho MỖI câu thoại.
+    n = len(samples)
+    spec = np.fft.rfft(samples, 2 * n)
+    corr = np.fft.irfft(spec * np.conj(spec))[:n]
     min_lag = max(1, int(sr / 340))
-    max_lag = min(len(corr) - 1, int(sr / 75))
+    max_lag = min(n - 1, int(sr / 75))
     if max_lag <= min_lag:
         return 0.0, "unknown"
 
@@ -758,15 +784,27 @@ def _ocr_single_image(ocr_engine, img_path: str, is_easyocr: bool = False, min_c
     return " ".join(line_texts).strip()
 
 
+def _frame_signature(img_path: str):
+    """Chữ ký rất nhẹ (32x8 grayscale) để bỏ qua các khung phụ đề giống hệt nhau."""
+    try:
+        from PIL import Image
+        with Image.open(img_path) as im:
+            return im.convert("L").resize((32, 8)).tobytes()
+    except Exception:
+        return None
+
+
 def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, float, float, float], fps: float) -> list[tuple[float, str]]:
     os.makedirs(out_dir, exist_ok=True)
     x1, y1, x2, y2 = roi
     crop_w = max(0.2, x2 - x1)
     crop_h = max(0.10, y2 - y1)
+    # Ảnh càng lớn OCR càng chậm (gần như tuyến tính theo số pixel). 1280 đủ nét cho phụ đề.
+    max_w = int(os.environ.get("OCR_MAX_WIDTH", "1280"))
     if crop_w >= 0.98 and crop_h >= 0.98:
-        vf_expr = f"fps={fps},scale=1920:-1"
+        vf_expr = f"fps={fps},scale={max_w}:-1"
     else:
-        vf_expr = f"fps={fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale=1920:-1"
+        vf_expr = f"fps={fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale={max_w}:-1"
 
     subprocess.run(
         ["ffmpeg", "-y", "-i", video_path, "-vf", vf_expr, os.path.join(out_dir, "f_%04d.jpg")],
@@ -864,14 +902,27 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
                 active_frames = frames
                 break
 
+        last_sig = None
+        last_text = ""
         for ts, img_path in active_frames:
+            sig = _frame_signature(img_path)
+            if sig is not None and sig == last_sig:
+                # Phụ đề giữ nguyên giữa 2 khung → không OCR lại, nhưng vẫn ghi mốc thời gian
+                # để bước align_and_refine_segments còn đối chiếu.
+                if last_text:
+                    ocr_records.append({"time": ts, "text": last_text})
+                continue
+            last_sig = sig
             t_img = img_path if chosen_mode == "raw" else _preprocess_hardsub_image(img_path, chosen_mode)
             try:
                 merged = _ocr_single_image(ocr_engine, t_img, is_easyocr=is_easyocr, min_conf=0.25, debug=False)
             except Exception:
                 merged = ""
             if merged:
+                last_text = merged
                 ocr_records.append({"time": ts, "text": merged})
+            else:
+                last_text = ""
 
         del ocr_engine
         free_gpu()

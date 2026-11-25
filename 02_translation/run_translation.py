@@ -118,14 +118,36 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
         print(f"[WARN] Gửi Telegram thất bại: {e}")
 
 
+def _have_module(name: str) -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+
 def ensure_deps():
-    subprocess.run(
-        [
-            sys.executable, "-m", "pip", "install", "-q", "--upgrade",
-            "transformers", "accelerate", "pillow", "gdown",
-        ],
-        check=True,
-    )
+    """Chỉ cài khi thiếu: Qwen3-VL cần transformers mới, còn lại tránh --upgrade vô ích."""
+    qwen_ok = False
+    try:
+        from transformers import Qwen3VLForConditionalGeneration  # noqa: F401
+        qwen_ok = True
+    except Exception:
+        qwen_ok = False
+
+    if qwen_ok:
+        print("[INFO] transformers đã hỗ trợ Qwen3-VL, bỏ qua pip install transformers.")
+    else:
+        print("[INFO] Cài/nâng transformers + accelerate để hỗ trợ Qwen3-VL.")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "transformers", "accelerate"],
+            check=True,
+        )
+
+    missing = [spec for mod, spec in (("gdown", "gdown"), ("PIL", "pillow")) if not _have_module(mod)]
+    if missing:
+        print(f"[INFO] pip install các gói còn thiếu: {missing}")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=True)
 
 
 def free_gpu():
