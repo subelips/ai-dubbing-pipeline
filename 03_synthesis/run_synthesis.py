@@ -12,12 +12,21 @@ import traceback
 import requests
 
 
+def _clean_url_or_str(val: str) -> str:
+    s = str(val or "").strip()
+    m = re.match(r"^\[([^\]]+)\]\(([^)]+)\)$", s)
+    if m:
+        s = m.group(2).strip()
+    return s.strip("[]()\"' ").strip()
+
+
 def get_cfg(key: str, injected: str) -> str:
-    env_val = os.environ.get(key, "").strip()
+    env_val = _clean_url_or_str(os.environ.get(key, ""))
     if env_val:
         return env_val
-    if not injected.startswith("__INJECT_"):
-        return injected
+    clean_inj = _clean_url_or_str(injected)
+    if clean_inj and not clean_inj.startswith("__INJECT_"):
+        return clean_inj
     return ""
 
 
@@ -33,18 +42,19 @@ if not JOB_ID:
 
 class GitHubSync:
     def __init__(self, repo: str, token: str, state_branch: str = "pipeline-state"):
-        self.repo = repo
-        self.token = token
-        self.state_branch = state_branch
-        self.api_base = f"[https://api.github.com/repos/](https://api.github.com/repos/){repo}"
+        clean_repo = _clean_url_or_str(repo).replace("https://api.github.com/repos/", "").strip("/")
+        self.repo = clean_repo
+        self.token = _clean_url_or_str(token)
+        self.state_branch = _clean_url_or_str(state_branch) or "pipeline-state"
+        self.api_base = f"https://api.github.com/repos/{self.repo}"
         self.headers = {
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
     def read_json(self, path: str) -> tuple[dict, str | None]:
-        url = f"{self.api_base}/contents/{path}"
+        url = f"{self.api_base}/contents/{path.lstrip('/')}"
         r = requests.get(url, headers=self.headers, params={"ref": self.state_branch}, timeout=30)
         if r.status_code == 404:
             return {}, None
@@ -56,7 +66,7 @@ class GitHubSync:
         return json.loads(content), data["sha"]
 
     def write_json(self, path: str, payload: dict, message: str, max_retries: int = 5):
-        url = f"{self.api_base}/contents/{path}"
+        url = f"{self.api_base}/contents/{path.lstrip('/')}"
         for attempt in range(max_retries):
             _, sha = self.read_json(path)
             raw_bytes = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
@@ -92,7 +102,7 @@ class GitHubSync:
 
     def upload_asset(self, tag: str, file_path: str):
         release = self.ensure_release(tag)
-        upload_url = release["upload_url"].split("{")[0]
+        upload_url = _clean_url_or_str(release["upload_url"].split("{")[0])
         filename = os.path.basename(file_path)
         for asset in release.get("assets", []):
             if asset["name"] == filename:
@@ -107,8 +117,9 @@ class GitHubSync:
         release = self.ensure_release(tag)
         for asset in release.get("assets", []):
             if asset["name"] == filename:
+                dl_url = _clean_url_or_str(asset["url"])
                 dl_headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/octet-stream"}
-                with requests.get(asset["url"], headers=dl_headers, stream=True, timeout=300) as r:
+                with requests.get(dl_url, headers=dl_headers, stream=True, timeout=300) as r:
                     r.raise_for_status()
                     with open(dest_path, "wb") as out:
                         for chunk in r.iter_content(chunk_size=1024 * 1024):
@@ -119,13 +130,13 @@ class GitHubSync:
 
 
 def send_telegram(bot_token: str, chat_id: str, text: str):
-    if not bot_token or not chat_id:
+    clean_token = _clean_url_or_str(bot_token)
+    clean_chat = _clean_url_or_str(chat_id)
+    if not clean_token or not clean_chat:
         return
-    clean_token = str(bot_token).strip()
-    clean_chat = str(chat_id).strip()
     try:
         requests.post(
-            f"[https://api.telegram.org/bot](https://api.telegram.org/bot){clean_token}/sendMessage",
+            f"https://api.telegram.org/bot{clean_token}/sendMessage",
             json={"chat_id": clean_chat, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": False},
             timeout=20,
         )
@@ -143,14 +154,15 @@ def ensure_deps():
 
 
 def _normalize_gdrive_url(url: str) -> str:
-    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url) or re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
+    clean = _clean_url_or_str(url)
+    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", clean) or re.search(r"[?&]id=([a-zA-Z0-9_-]+)", clean)
     if m:
-        return f"[https://drive.google.com/uc?id=](https://drive.google.com/uc?id=){m.group(1)}"
-    return url
+        return f"https://drive.google.com/uc?id={m.group(1)}"
+    return clean
 
 
 def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
-    ref = (source_ref or "source_input.mp4").strip()
+    ref = _clean_url_or_str(source_ref) or "source_input.mp4"
     if ref.startswith(("http://", "https://")):
         if "drive.google.com" in ref:
             subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=True)
@@ -258,7 +270,6 @@ def _build_atempo_chain(ratio: float) -> str:
 
 
 def _prepare_synth_units(stage2_data: dict) -> list[dict]:
-    """Ưu tiên tổng hợp theo cụm ý (utterances) để tránh đọc rời rạc từng mảnh ngắn."""
     utterances = stage2_data.get("utterances") or []
     lines = stage2_data.get("lines") or []
     if utterances:
