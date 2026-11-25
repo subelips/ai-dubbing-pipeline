@@ -122,7 +122,7 @@ def ensure_deps():
     subprocess.run(
         [
             sys.executable, "-m", "pip", "install", "-q", "--upgrade",
-            "transformers", "accelerate", "bitsandbytes", "pillow", "gdown",
+            "transformers", "accelerate", "pillow", "gdown",
         ],
         check=True,
     )
@@ -168,11 +168,10 @@ def fetch_video_for_labeling(sync: GitHubSync, tag: str, source_ref: str, dest_p
 
 def extract_keyframes(video_path: str, work_dir: str) -> list[str]:
     frames = []
-    # Thu nhỏ ảnh (scale=480:-1) và lấy 2 khung hình đại diện để tránh tràn VRAM vision encoder
     for idx, ts in enumerate(["00:00:04", "00:00:20"]):
         out_img = os.path.join(work_dir, f"frame_{idx}.jpg")
         res = subprocess.run(
-            ["ffmpeg", "-y", "-ss", ts, "-i", video_path, "-vf", "scale=480:-1", "-frames:v", "1", "-q:v", "4", out_img],
+            ["ffmpeg", "-y", "-ss", ts, "-i", video_path, "-vf", "scale=512:-1", "-frames:v", "1", "-q:v", "4", out_img],
             capture_output=True,
             text=True,
         )
@@ -183,14 +182,15 @@ def extract_keyframes(video_path: str, work_dir: str) -> list[str]:
 
 def load_qwen3_vl():
     import torch
-    from transformers import AutoProcessor, BitsAndBytesConfig, Qwen3VLForConditionalGeneration
+    from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
-    model_id = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen3-VL-8B-Instruct")
-    # Giới hạn max_pixels để vision attention không ăn quá nhiều VRAM trên T4
+    model_id = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen3-VL-4B-Instruct").strip() or "Qwen/Qwen3-VL-4B-Instruct"
+    use_4bit = os.environ.get("QWEN_VL_4BIT", "0").strip() == "1"
+
     processor = AutoProcessor.from_pretrained(
         model_id,
         min_pixels=128 * 28 * 28,
-        max_pixels=256 * 28 * 28,
+        max_pixels=320 * 28 * 28,
     )
 
     load_kwargs = {
@@ -198,18 +198,18 @@ def load_qwen3_vl():
         "low_cpu_mem_usage": True,
     }
     if torch.cuda.is_available():
-        min_gpu_gb = min(
-            torch.cuda.get_device_properties(i).total_memory for i in range(torch.cuda.device_count())
-        ) / (1024 ** 3)
-        if min_gpu_gb < 22:
+        if use_4bit:
+            from transformers import BitsAndBytesConfig
             load_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_compute_dtype=torch.float16,
                 bnb_4bit_use_double_quant=True,
             )
+            print(f"[INFO] Nạp {model_id} ở chế độ 4-bit NF4.")
         else:
-            load_kwargs["dtype"] = torch.bfloat16
+            load_kwargs["dtype"] = torch.float16
+            print(f"[INFO] Nạp {model_id} ở chế độ float16 (không nén 4-bit để giữ chất lượng dịch).")
     else:
         load_kwargs["dtype"] = torch.float32
 
@@ -245,7 +245,7 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.inference_mode():
-        out_ids = model.generate(**inputs, max_new_tokens=200, do_sample=False)
+        out_ids = model.generate(**inputs, max_new_tokens=220, do_sample=False)
     trimmed = [out[len(inp):] for inp, out in zip(inputs["input_ids"], out_ids)]
     raw_out = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
 
@@ -297,74 +297,91 @@ def fit_text_to_duration(text_vi: str, duration_sec: float) -> str:
     return cut.strip()
 
 
+def _translate_chunk_with_model(model, processor, chunk: list[dict], start_idx: int, scene_context: str, speakers_meta: dict) -> dict:
+    import torch
+
+    items_for_prompt = []
+    for i, s in enumerate(chunk):
+        line_id = s.get("id", start_idx + i)
+        spk_id = s.get("speaker_id", "SPEAKER_00")
+        dur = round(max(0.6, float(s.get("end", 1.0)) - float(s.get("start", 0.0))), 2)
+        src_txt = (s.get("best_text") or s.get("asr_text") or "").strip()
+        ocr_txt = (s.get("ocr_text") or "").strip()
+        gender = speakers_meta.get(spk_id, {}).get("gender") or s.get("gender_hint") or "female"
+        items_for_prompt.append({
+            "id": line_id,
+            "duration_sec": dur,
+            "speaker_id": spk_id,
+            "gender": gender,
+            "src_text": src_txt,
+            "ocr_text": ocr_txt,
+        })
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Bạn là biên kịch & dịch giả lồng tiếng phim tiếng Việt tự nhiên, giàu cảm xúc. "
+                "Hãy dịch sát nghĩa, trôi chảy như người Việt giao tiếp tự nhiên, chọn đại từ xưng hô phù hợp ngữ cảnh & giới tính, "
+                "giữ câu gọn gàng vừa nhịp nói (~duration_sec) mà không làm mất ý chính. "
+                "Chỉ trả về đúng một mảng JSON các object có khóa: id, speaker_id, gender, text_vi. Không dùng markdown."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Nhãn cảnh & ngữ cảnh: {scene_context or 'Phim chính kịch/đời thường'}\n"
+                f"Danh sách thoại:\n{json.dumps(items_for_prompt, ensure_ascii=False)}"
+            ),
+        },
+    ]
+
+    text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    model_inputs = processor(text=[text_input], return_tensors="pt")
+    if torch.cuda.is_available():
+        model_inputs = {k: v.to(model.device) for k, v in model_inputs.items()}
+
+    with torch.inference_mode():
+        generated_ids = model.generate(**model_inputs, max_new_tokens=1024, do_sample=False)
+    gen_trimmed = [out[len(inp):] for inp, out in zip(model_inputs["input_ids"], generated_ids)]
+    raw_reply = processor.batch_decode(gen_trimmed, skip_special_tokens=True)[0].strip()
+
+    del model_inputs, generated_ids, gen_trimmed
+    free_gpu()
+
+    translated_map = {}
+    try:
+        clean_json = raw_reply
+        if "```" in clean_json:
+            clean_json = clean_json.split("```json")[-1].split("```")[0].strip()
+        parsed = json.loads(clean_json)
+        if isinstance(parsed, list):
+            for row in parsed:
+                if isinstance(row, dict) and "id" in row:
+                    translated_map[row["id"]] = row
+    except Exception:
+        pass
+    return translated_map
+
+
 def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_context: str, speakers_meta: dict) -> list[dict]:
     if not segments:
         return []
 
-    import torch
-
     dub_lines = []
-    batch_size = 5
+    batch_size = 4
     for start_idx in range(0, len(segments), batch_size):
         chunk = segments[start_idx: start_idx + batch_size]
-        items_for_prompt = []
-        for i, s in enumerate(chunk):
-            line_id = s.get("id", start_idx + i)
-            spk_id = s.get("speaker_id", "SPEAKER_00")
-            dur = round(max(0.6, float(s.get("end", 1.0)) - float(s.get("start", 0.0))), 2)
-            src_txt = (s.get("best_text") or s.get("asr_text") or "").strip()
-            ocr_txt = (s.get("ocr_text") or "").strip()
-            gender = speakers_meta.get(spk_id, {}).get("gender") or s.get("gender_hint") or "female"
-            items_for_prompt.append({
-                "id": line_id,
-                "duration_sec": dur,
-                "speaker_id": spk_id,
-                "gender": gender,
-                "src_text": src_txt,
-                "ocr_text": ocr_txt,
-            })
+        translated_map = _translate_chunk_with_model(model, processor, chunk, start_idx, scene_context, speakers_meta)
 
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Bạn là biên kịch & dịch giả lồng tiếng phim tiếng Việt tự nhiên, giàu cảm xúc. "
-                    "Hãy dịch sát nghĩa và tự nhiên như người Việt nói chuyện đời thường, chọn đại từ xưng hô phù hợp ngữ cảnh & giới tính, "
-                    "giữ câu gọn gàng vừa nhịp nói (~duration_sec) mà không làm mất ý chính. "
-                    "Chỉ trả về đúng một mảng JSON các object có khóa: id, speaker_id, gender, text_vi. Không dùng markdown."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Nhãn cảnh & ngữ cảnh: {scene_context or 'Phim chính kịch/đời thường'}\n"
-                    f"Danh sách thoại:\n{json.dumps(items_for_prompt, ensure_ascii=False)}"
-                ),
-            },
+        missing_items = [
+            (i, s) for i, s in enumerate(chunk)
+            if not (translated_map.get(s.get("id", start_idx + i)) or {}).get("text_vi")
         ]
-
-        text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        model_inputs = processor(text=[text_input], return_tensors="pt")
-        if torch.cuda.is_available():
-            model_inputs = {k: v.to(model.device) for k, v in model_inputs.items()}
-
-        with torch.inference_mode():
-            generated_ids = model.generate(**model_inputs, max_new_tokens=750, do_sample=False)
-        gen_trimmed = [out[len(inp):] for inp, out in zip(model_inputs["input_ids"], generated_ids)]
-        raw_reply = processor.batch_decode(gen_trimmed, skip_special_tokens=True)[0].strip()
-
-        translated_map = {}
-        try:
-            clean_json = raw_reply
-            if "```" in clean_json:
-                clean_json = clean_json.split("```json")[-1].split("```")[0].strip()
-            parsed = json.loads(clean_json)
-            if isinstance(parsed, list):
-                for row in parsed:
-                    if isinstance(row, dict) and "id" in row:
-                        translated_map[row["id"]] = row
-        except Exception:
-            pass
+        if missing_items:
+            retry_chunk = [s for _, s in missing_items]
+            retry_map = _translate_chunk_with_model(model, processor, retry_chunk, start_idx, scene_context, speakers_meta)
+            translated_map.update(retry_map)
 
         for i, s in enumerate(chunk):
             line_id = s.get("id", start_idx + i)
@@ -391,9 +408,7 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
                 "text_vi": fitted_vi,
             })
 
-        del model_inputs, generated_ids, gen_trimmed
-        free_gpu()
-
+    print(f"[INFO] Qwen3-VL dịch hoàn tất {len(dub_lines)}/{len(segments)} câu thoại.")
     return dub_lines
 
 
@@ -401,7 +416,8 @@ sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
 def main():
-    send_telegram(TG_TOKEN, TG_CHAT, f"🌐 <b>[Stage 2 - Qwen3-VL-8B]</b> Bắt đầu job <code>{JOB_ID}</code>")
+    model_name = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen3-VL-4B-Instruct").strip() or "Qwen/Qwen3-VL-4B-Instruct"
+    send_telegram(TG_TOKEN, TG_CHAT, f"🌐 <b>[Stage 2 - {model_name}]</b> Bắt đầu job <code>{JOB_ID}</code>")
     stage1_data, _ = sync.read_json(f"state/{JOB_ID}_stage1.json")
     segments = stage1_data.get("segments", [])
     prev_context = stage1_data.get("scene_context", "")
@@ -426,6 +442,7 @@ def main():
 
     stage2_payload = {
         "job_id": JOB_ID,
+        "model": model_name,
         "video_asset": video_asset,
         "scene_context": scene_context,
         "speakers": speakers_meta,
@@ -442,7 +459,7 @@ def main():
     send_telegram(
         TG_TOKEN,
         TG_CHAT,
-        f"✅ <b>[Stage 2]</b> Hoàn tất <code>{JOB_ID}</code> ({len(dub_lines)} câu dịch) → chuyển sang Stage 3.",
+        f"✅ <b>[Stage 2]</b> Hoàn tất <code>{JOB_ID}</code> ({len(dub_lines)} câu dịch, model <code>{model_name}</code>) → chuyển sang Stage 3.",
     )
 
 
