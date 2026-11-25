@@ -365,11 +365,11 @@ def synth_single_line(
                 audio_arr = _run_infer(use_ref=False)
             except Exception as p_err:
                 print(f"[WARN] Câu {idx} TTS lỗi hoàn toàn: {p_err}")
-                return idx, start_t, None
+                return idx, start_t, None, (0.0, 0.0, 1.0, False)
 
         if audio_arr is None:
             print(f"[WARN] Câu {idx}: TTS trả về None (model không sinh audio).")
-            return idx, start_t, None
+            return idx, start_t, None, (0.0, 0.0, 1.0, False)
 
         if hasattr(tts_engine, "save"):
             tts_engine.save(audio_arr, raw_wav)
@@ -379,7 +379,7 @@ def synth_single_line(
 
     if not os.path.exists(raw_wav) or os.path.getsize(raw_wav) < 512:
         print(f"[WARN] Câu {idx}: file TTS rỗng/không tồn tại ({raw_wav}).")
-        return idx, start_t, None
+        return idx, start_t, None, (0.0, 0.0, 1.0, False)
 
     probe_data, src_sr = sf.read(raw_wav)
     if probe_data.ndim > 1:
@@ -387,21 +387,29 @@ def synth_single_line(
     actual_dur = max(0.1, len(probe_data) / float(src_sr or 48000))
 
     tempo = 1.0
-    if actual_dur > slot_dur * 1.05:
-        tempo = min(1.25, actual_dur / slot_dur)
-    elif actual_dur < slot_dur * 0.82:
-        tempo = max(0.90, actual_dur / slot_dur)
+    if actual_dur > slot_dur * 1.03:
+        tempo = min(1.45, actual_dur / slot_dur)
+    elif actual_dur < slot_dur * 0.80:
+        tempo = max(0.95, actual_dur / slot_dur)
 
     af_parts = []
     if abs(tempo - 1.0) > 0.02:
         af_parts.append(_build_atempo_chain(tempo))
 
     est_dur_after_tempo = actual_dur / tempo
-    max_allowed_dur = round(slot_dur * 1.12, 3)
+    max_allowed_dur = round(slot_dur * 1.06, 3)
+    trimmed = False
     if est_dur_after_tempo > max_allowed_dur:
+        trimmed = True
         fade_dur = min(0.06, max(0.02, max_allowed_dur * 0.1))
         fade_start = max(0.0, round(max_allowed_dur - fade_dur, 3))
         af_parts.append(f"atrim=0:{max_allowed_dur},afade=t=out:st={fade_start}:d={fade_dur},asetpts=PTS-STARTPTS")
+        print(
+            f"[WARN] Câu {idx}: audio {actual_dur:.2f}s > slot {slot_dur:.2f}s "
+            f"(tempo {tempo:.2f}) → cắt còn {max_allowed_dur:.2f}s"
+        )
+
+    meta = (actual_dur, slot_dur, tempo, trimmed)
 
     ff_cmd = ["ffmpeg", "-y", "-i", raw_wav]
     if af_parts:
@@ -410,8 +418,8 @@ def synth_single_line(
 
     res = subprocess.run(ff_cmd, capture_output=True, text=True)
     if res.returncode != 0 or not os.path.exists(aligned_wav):
-        return idx, start_t, raw_wav
-    return idx, start_t, aligned_wav
+        return idx, start_t, raw_wav, meta
+    return idx, start_t, aligned_wav, meta
 
 
 def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_map: dict, work_dir: str, final_mp4: str):
@@ -460,12 +468,21 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
     results.sort(key=lambda x: x[0])
     ok_count = 0
     skipped = []
+    tempos = []
+    trimmed_lines = []
+    worst_overrun = 0.0
 
     target_rms = 0.11
-    for line_idx, start_t, wav_path in results:
+    for line_idx, start_t, wav_path, meta in results:
         if not wav_path or not os.path.exists(wav_path):
             skipped.append(line_idx)
             continue
+        actual_dur, slot_dur, tempo, was_trimmed = meta
+        if slot_dur:
+            tempos.append(float(tempo))
+            worst_overrun = max(worst_overrun, float(actual_dur) - float(slot_dur))
+            if was_trimmed:
+                trimmed_lines.append(line_idx)
         seg_audio, seg_sr = sf.read(wav_path)
         if seg_audio.ndim == 1:
             seg_audio = np.stack([seg_audio, seg_audio], axis=-1)
@@ -498,6 +515,15 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
             ok_count += 1
 
     print(f"[INFO] VieNeu-TTS đã ghép thành công {ok_count}/{len(lines)} câu thoại theo mốc timing.")
+    if tempos:
+        avg_tempo = sum(tempos) / len(tempos)
+        print(
+            f"[INFO] Timing: tempo TB {avg_tempo:.2f} (max {max(tempos):.2f}); "
+            f"{len(trimmed_lines)} câu bị cắt bớt; audio dài hơn slot nhiều nhất {worst_overrun:.2f}s"
+        )
+    if trimmed_lines:
+        preview = ", ".join(str(x) for x in trimmed_lines[:15])
+        print(f"[WARN] Câu bị cắt do dài hơn slot: {preview}{'...' if len(trimmed_lines) > 15 else ''}")
     if skipped:
         preview = ", ".join(str(x) for x in skipped[:25])
         more = "..." if len(skipped) > 25 else ""

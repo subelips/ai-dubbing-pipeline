@@ -952,6 +952,96 @@ def _clean_ocr_text(text: str) -> str:
     return t
 
 
+def _extract_frame_at(video_path: str, ts: float, roi: tuple[float, float, float, float], width: int, out_path: str) -> str | None:
+    x1, y1, x2, y2 = roi
+    crop_w = max(0.2, x2 - x1)
+    crop_h = max(0.10, y2 - y1)
+    if crop_w >= 0.98 and crop_h >= 0.98:
+        vf = f"scale={width}:-1"
+    else:
+        vf = f"fps=1,crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale={width}:-1"
+    subprocess.run(
+        ["ffmpeg", "-y", "-ss", f"{max(0.0, ts):.3f}", "-i", video_path, "-vf", vf, "-frames:v", "1", "-q:v", "2", out_path],
+        capture_output=True,
+    )
+    return out_path if os.path.exists(out_path) and os.path.getsize(out_path) > 512 else None
+
+
+def _scan_subtitle_spans(video_path: str, work_dir: str, roi: tuple[float, float, float, float]) -> list[tuple[float, float]]:
+    """Quét khung hình ở tần số cao (mặc định 5 fps) để tìm MỌI mốc phụ đề đổi chữ.
+
+    Khác cách lấy mẫu 1 fps (dễ bỏ sót phụ đề ngắn), ở đây:
+      1. Trích khung 320px ở 5 fps;
+      2. So chữ ký 32x8 giữa 2 khung liên tiếp, chênh > ngưỡng thì coi là mốc đổi;
+      3. Cắt thành các span theo mốc, span quá ngắn (<0.3s) do nhiễu nén thì gộp vào span bên cạnh
+         (gộp chứ không bỏ, nên không mất phụ đề).
+    """
+    scan_dir = os.path.join(work_dir, "ocr_scan")
+    os.makedirs(scan_dir, exist_ok=True)
+    for old in os.listdir(scan_dir):
+        if old.endswith(".jpg"):
+            os.remove(os.path.join(scan_dir, old))
+
+    scan_fps = float(os.environ.get("OCR_SCAN_FPS", "5.0"))
+    max_scan = int(os.environ.get("OCR_SCAN_MAX_FRAMES", "4000"))
+    duration = _video_duration(video_path)
+    if duration > 0:
+        scan_fps = max(0.5, min(scan_fps, max_scan / duration))
+
+    x1, y1, x2, y2 = roi
+    crop_w = max(0.2, x2 - x1)
+    crop_h = max(0.10, y2 - y1)
+    if crop_w >= 0.98 and crop_h >= 0.98:
+        vf = f"fps={scan_fps},scale=320:-1"
+    else:
+        vf = f"fps={scan_fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale=320:-1"
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path, "-vf", vf, "-q:v", "5", os.path.join(scan_dir, "s_%05d.jpg")],
+        capture_output=True,
+    )
+    files = sorted(f for f in os.listdir(scan_dir) if f.endswith(".jpg"))
+    if not files:
+        return []
+
+    import numpy as np
+
+    vecs = []
+    for fname in files:
+        sig = _frame_signature(os.path.join(scan_dir, fname))
+        if sig is None:
+            vecs.append(None)
+        else:
+            vecs.append(np.frombuffer(sig, dtype=np.uint8).astype(np.int16))
+
+    thr = float(os.environ.get("OCR_SPAN_DIFF_THRESHOLD", "6.0"))
+    min_dur = float(os.environ.get("OCR_SPAN_MIN_DUR", "0.30"))
+    bounds = [0]
+    for i in range(1, len(vecs)):
+        a, b = vecs[i - 1], vecs[i]
+        if a is None or b is None:
+            bounds.append(i)
+            continue
+        if float(np.mean(np.abs(a - b))) > thr:
+            bounds.append(i)
+    bounds.append(len(files))
+
+    interval = 1.0 / scan_fps
+    segs = [[bounds[i] * interval, bounds[i + 1] * interval] for i in range(len(bounds) - 1)]
+
+    merged: list[list[float]] = []
+    for s, e in segs:
+        if not merged:
+            merged.append([s, e])
+            continue
+        prev = merged[-1]
+        if (e - s) < min_dur or (prev[1] - prev[0]) < min_dur:
+            prev[1] = e
+        else:
+            merged.append([s, e])
+
+    return [(round(s, 2), round(e, 2)) for s, e in merged if e - s >= 0.20]
+
+
 def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[float, float, float, float]]:
     embedded = extract_embedded_subtitles(video_path, work_dir)
     if embedded:
@@ -963,12 +1053,16 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         (0.02, 0.55, 0.98, 0.99),
         (0.0, 0.0, 1.0, 1.0),
     ]
-    fps = float(os.environ.get("OCR_FPS", "1.0"))
     chosen_roi = candidate_rois[0]
-    chosen_mode = "raw"
-    ocr_records = []
+    ocr_records: list[dict] = []
     ocr_engine = None
     is_easyocr = False
+
+    def _ocr_path(path: str, min_conf: float = 0.25) -> str:
+        try:
+            return _ocr_single_image(ocr_engine, path, is_easyocr=is_easyocr, min_conf=min_conf)
+        except Exception:
+            return ""
 
     try:
         engine_pref = os.environ.get("OCR_ENGINE", "easyocr").strip().lower()
@@ -988,110 +1082,49 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
                 ocr_engine = _init_easyocr_fallback()
                 is_easyocr = True
 
-        active_frames = []
-        best_pick = None  # (hits, roi, mode, frames) — chọn ROI có nhiều phụ đề THẬT nhất
-        last_frames = []
-        last_roi = candidate_rois[-1]
-
+        # 1) Chọn ROI: chấm điểm bằng số phụ đề HỢP LỆ trên vài khung mẫu
+        best_roi = None
+        best_hits = -1
+        probe_dir = os.path.join(work_dir, "ocr_probe")
+        os.makedirs(probe_dir, exist_ok=True)
         for idx_roi, roi in enumerate(candidate_rois):
-            roi_dir = os.path.join(work_dir, f"ocr_frames_r{idx_roi}")
-            frames = _extract_frames_for_roi(video_path, roi_dir, roi, fps)
-            if not frames:
-                continue
-            last_frames, last_roi = frames, roi
-
-            step = max(1, len(frames) // 12)
-            probe_frames = frames[::step][:12]
-
-            matched_mode = None
-            best_hits = 0
-            for m_name in ("raw", "contrast", "high_text"):
-                hits = 0
-                for k_i, (_, p) in enumerate(probe_frames):
-                    t_img = p if m_name == "raw" else _preprocess_hardsub_image(p, m_name)
-                    try:
-                        txt_res = _ocr_single_image(
-                            ocr_engine,
-                            t_img,
-                            is_easyocr=is_easyocr,
-                            min_conf=0.25,
-                            debug=(idx_roi == 0 and m_name == "raw" and k_i == 0),
-                        )
-                    except Exception:
-                        # Nếu PaddleOCR PIR/OneDNN lỗi runtime, chuyển ngay sang EasyOCR
-                        if not is_easyocr:
-                            print("[WARN] PaddleOCR gặp lỗi runtime executor, chuyển sang EasyOCR fallback.")
-                            del ocr_engine
-                            free_gpu()
-                            ocr_engine = _init_easyocr_fallback()
-                            is_easyocr = True
-                            txt_res = _ocr_single_image(ocr_engine, t_img, is_easyocr=True, min_conf=0.25)
-                        else:
-                            txt_res = ""
-                    if txt_res and _clean_ocr_text(txt_res):
-                        hits += 1
-                if hits > best_hits:
-                    best_hits = hits
-                    matched_mode = m_name
-                if hits >= 2:
-                    break
-
-            engine_label = "EasyOCR" if is_easyocr else "PaddleOCR"
-            print(f"[INFO] [{engine_label}] ROI {roi} | mode={matched_mode or 'raw'} | hits hợp lệ={best_hits}/{len(probe_frames)} mẫu.")
-            if best_hits > 0 and (best_pick is None or best_hits > best_pick[0]):
-                best_pick = (best_hits, roi, matched_mode or "raw", frames)
-            if best_hits >= 2:
+            frames = []
+            for k in range(8):
+                ts = 2.0 + k * 3.0
+                p = _extract_frame_at(video_path, ts, roi, 960, os.path.join(probe_dir, f"p_{idx_roi}_{k}.jpg"))
+                if p:
+                    frames.append(p)
+            hits = 0
+            samples = []
+            for p in frames:
+                txt = _ocr_path(p)
+                cleaned = _clean_ocr_text(txt)
+                if cleaned:
+                    hits += 1
+                    samples.append(cleaned[:16])
+            print(f"[INFO] [{('EasyOCR' if is_easyocr else 'PaddleOCR')}] ROI {roi} | phụ đề hợp lệ={hits}/{len(frames)} | vd: {' | '.join(samples[:3])}")
+            if hits > best_hits:
+                best_hits, best_roi = hits, roi
+            if hits >= 4:
                 break
+        chosen_roi = best_roi or candidate_rois[0]
+        print(f"[INFO] ROI chọn: {chosen_roi} (hits={max(0, best_hits)})")
 
-        if best_pick:
-            _, chosen_roi, chosen_mode, active_frames = best_pick
-        else:
-            # Không ROI nào có phụ đề hợp lệ (video chỉ có watermark) → vẫn chạy full pass
-            # trên ROI cuối để giữ hành vi cũ, nhưng text sẽ bị _clean_ocr_text lọc sạch.
-            chosen_roi, chosen_mode, active_frames = last_roi, "raw", last_frames
-        print(f"[INFO] ROI chọn: {chosen_roi} (mode={chosen_mode}, {len(active_frames)} khung)")
-
-        if os.environ.get("OCR_DIAG_EASYOCR", "1").strip() == "1" and not is_easyocr and active_frames:
-            try:
-                diag_engine = _init_easyocr_fallback()
-                step = max(1, len(active_frames) // 5)
-                samples = active_frames[::step][:5]
-                diag_texts = []
-                for _, p in samples:
-                    t_img = p if chosen_mode == "raw" else _preprocess_hardsub_image(p, chosen_mode)
-                    diag_texts.append(_ocr_single_image(diag_engine, t_img, is_easyocr=True, min_conf=0.25))
-                pretty = " | ".join((x or "")[:28] for x in diag_texts)
-                print(f"[DIAG] EasyOCR(GPU) 5 khung: {pretty}")
-                del diag_engine
-                free_gpu()
-            except Exception as diag_err:
-                print(f"[DIAG] EasyOCR không chạy được: {diag_err}")
-
-        last_sig = None
-        last_text = ""
-        total_frames = len(active_frames)
-        for frame_i, (ts, img_path) in enumerate(active_frames, 1):
-            if frame_i % 20 == 0 or frame_i == total_frames:
-                print(f"[INFO] OCR {frame_i}/{total_frames} khung (t={ts:.0f}s)...")
-            sig = _frame_signature(img_path)
-            if sig is not None and sig == last_sig:
-                # Phụ đề giữ nguyên giữa 2 khung → không OCR lại, nhưng vẫn ghi mốc thời gian
-                # để bước align_and_refine_segments còn đối chiếu.
-                if last_text:
-                    ocr_records.append({"time": ts, "text": last_text})
+        # 2) Quét span phụ đề ở tần số cao rồi OCR đúng 1 khung đại diện mỗi span
+        spans = _scan_subtitle_spans(video_path, work_dir, chosen_roi)
+        print(f"[INFO] Phát hiện {len(spans)} span phụ đề bằng quét {os.environ.get('OCR_SCAN_FPS', '5.0')} fps.")
+        span_dir = os.path.join(work_dir, "ocr_spans")
+        os.makedirs(span_dir, exist_ok=True)
+        for i, (s_t, e_t) in enumerate(spans, 1):
+            mid = (s_t + e_t) / 2.0
+            img = _extract_frame_at(video_path, mid, chosen_roi, 960, os.path.join(span_dir, f"span_{i:05d}.jpg"))
+            if not img:
                 continue
-            last_sig = sig
-            t_img = img_path if chosen_mode == "raw" else _preprocess_hardsub_image(img_path, chosen_mode)
-            try:
-                merged = _ocr_single_image(ocr_engine, t_img, is_easyocr=is_easyocr, min_conf=0.25, debug=False)
-            except Exception:
-                merged = ""
-            cleaned = _clean_ocr_text(merged)
+            cleaned = _clean_ocr_text(_ocr_path(img))
             if cleaned:
-                last_text = cleaned
-                ocr_records.append({"time": ts, "text": cleaned})
-            else:
-                last_text = ""
+                ocr_records.append({"time": round(mid, 2), "start": s_t, "end": e_t, "text": cleaned})
+            if i % 25 == 0 or i == len(spans):
+                print(f"[INFO] OCR span {i}/{len(spans)} → {len(ocr_records)} dòng phụ đề hợp lệ...")
 
         del ocr_engine
         free_gpu()
@@ -1099,63 +1132,68 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         print(f"[WARN] OCR lỗi: {ocr_err}")
         free_gpu()
 
-    print(f"[INFO] Khoanh vùng phụ đề ROI chọn: {chosen_roi} (mode={chosen_mode}) → {len(ocr_records)} mốc phụ đề.")
+    print(f"[INFO] OCR xong: ROI {chosen_roi} → {len(ocr_records)} dòng phụ đề có mốc start/end.")
     return ocr_records, chosen_roi
 
 
 def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> list[dict]:
+    """Ghép phụ đề OCR (đã có start/end) vào từng câu ASR để SỬA CHÍNH TẢ.
+
+    Nguyên tắc: chỉ dùng chữ OCR khi span phụ đề chồng lấn thời gian với câu thoại;
+    nếu OCR và ASR là cùng một câu (tỉ lệ giống ≥0.5 hoặc độ dài tương đương) thì lấy
+    chữ OCR vì OCR đọc đúng mặt chữ, ASR hay nghe nhầm từ đồng âm.
+    """
     refined = []
-    verified_cnt = 0
+    corrected_cnt = 0
+    extended_cnt = 0
+    kept_cnt = 0
     for seg in segments:
         s_t = float(seg.get("start", 0.0))
         e_t = float(seg.get("end", s_t + 1.0))
         asr_txt = (seg.get("asr_text") or "").strip()
 
-        # Mỗi bản ghi OCR ứng với ~1 khung (1 giây). Chỉ nhận bản ghi CHỒNG LẤN với
-        # câu thoại; cửa sổ ±1.2s cũ hay vơ cả phụ đề của câu bên cạnh.
-        scored = []
+        picked = []
         for r in ocr_records:
-            t = float(r.get("time", 0.0))
-            ov = max(0.0, min(e_t + 0.5, t + 0.5) - max(s_t - 0.5, t))
-            if ov <= 0:
+            r_s = float(r.get("start", r.get("time", 0.0)))
+            r_e = float(r.get("end", r_s + 1.0))
+            ov = max(0.0, min(e_t + 0.25, r_e) - max(s_t - 0.25, r_s))
+            if ov <= 0.05:
                 continue
             cleaned = _clean_ocr_text(r.get("text", ""))
             if cleaned:
-                scored.append((ov, cleaned))
-        matched_ocrs = []
-        if scored:
-            best_ov = max(ov for ov, _ in scored)
-            threshold = max(0.3, best_ov * 0.6)
-            matched_ocrs = [txt for ov, txt in scored if ov >= threshold]
-
-        dedup_ocrs = []
-        for t in matched_ocrs:
-            if not dedup_ocrs or t != dedup_ocrs[-1]:
-                dedup_ocrs.append(t)
-        ocr_txt = " ".join(dedup_ocrs).strip()
+                picked.append((r_s, cleaned))
+        picked.sort(key=lambda x: x[0])
+        dedup = []
+        for _, txt in picked:
+            if not dedup or txt != dedup[-1]:
+                dedup.append(txt)
+        ocr_txt = " ".join(dedup).strip()
 
         best_txt = asr_txt
         source_mode = "asr_only"
-        ocr_cjk = len(re.findall(r"[\u4e00-\u9fff]", ocr_txt))
         if asr_txt and ocr_txt:
-            ratio = SequenceMatcher(None, asr_txt.lower(), ocr_txt.lower()).ratio()
-            if ratio >= 0.55:
-                # OCR gần trùng ASR → xác nhận, dùng bản OCR (thường sạch hơn)
-                best_txt = ocr_txt
-                source_mode = "ocr_verified"
-                verified_cnt += 1
-            elif len(asr_txt) > 3 and ocr_cjk >= 4 and len(ocr_txt) >= len(asr_txt) * 1.3:
-                # OCR là câu chữ Hán đầy đủ, dài hơn hẳn ASR → tin OCR (ASR ngắn dễ sót chữ)
-                best_txt = ocr_txt
-                source_mode = "ocr_verified"
-                verified_cnt += 1
+            ratio = SequenceMatcher(None, asr_txt, ocr_txt).ratio()
+            len_ratio = len(ocr_txt) / max(1, len(asr_txt))
+            cjk_ocr = len(re.findall(r"[\u4e00-\u9fff]", ocr_txt))
+            cjk_asr = len(re.findall(r"[\u4e00-\u9fff]", asr_txt))
+            if ratio >= 0.5:
+                best_txt, source_mode = ocr_txt, "ocr_corrected"
+                corrected_cnt += 1
+            elif cjk_ocr >= 2 and cjk_asr >= 1 and 0.6 <= len_ratio <= 1.8:
+                # Cùng một câu, khác mặt chữ do ASR nghe nhầm → lấy chữ OCR
+                best_txt, source_mode = ocr_txt, "ocr_corrected"
+                corrected_cnt += 1
+            elif cjk_ocr >= 4 and len(asr_txt) > 3 and len_ratio > 1.8:
+                best_txt, source_mode = ocr_txt, "ocr_extended"
+                extended_cnt += 1
             else:
-                best_txt = asr_txt
-                source_mode = "asr_with_ocr_hint"
+                best_txt, source_mode = asr_txt, "asr_kept"
+                kept_cnt += 1
         elif ocr_txt and not asr_txt:
-            best_txt = ocr_txt
-            source_mode = "ocr_only"
-            verified_cnt += 1
+            best_txt, source_mode = ocr_txt, "ocr_only"
+            corrected_cnt += 1
+        else:
+            kept_cnt += 1
 
         item = dict(seg)
         item["ocr_text"] = ocr_txt
@@ -1163,7 +1201,10 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         item["subtitle_source"] = source_mode
         refined.append(item)
 
-    print(f"[INFO] Đối chiếu ASR+OCR: {verified_cnt}/{len(refined)} câu đối chiếu OCR.")
+    print(
+        f"[INFO] Đối chiếu ASR+OCR: {corrected_cnt} câu lấy chữ OCR (sửa chính tả), "
+        f"{extended_cnt} câu OCR dài hơn, {kept_cnt} câu giữ ASR."
+    )
     return refined
 
 

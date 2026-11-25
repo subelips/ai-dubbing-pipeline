@@ -153,6 +153,8 @@ def ensure_deps():
         )
 
     missing = [spec for mod, spec in (("gdown", "gdown"), ("PIL", "pillow")) if not _have_module(mod)]
+    if os.environ.get("QWEN_VL_4BIT", "1").strip() == "1" and not _have_module("bitsandbytes"):
+        missing.append("bitsandbytes")
     if missing:
         print(f"[INFO] pip install các gói còn thiếu: {missing}")
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=True)
@@ -252,8 +254,8 @@ def load_qwen3_vl():
     import torch
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
-    model_id = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen3-VL-4B-Instruct").strip() or "Qwen/Qwen3-VL-4B-Instruct"
-    use_4bit = os.environ.get("QWEN_VL_4BIT", "0").strip() == "1"
+    model_id = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen3-VL-8B-Instruct").strip() or "Qwen/Qwen3-VL-8B-Instruct"
+    use_4bit = os.environ.get("QWEN_VL_4BIT", "1").strip() == "1"
 
     processor = AutoProcessor.from_pretrained(
         model_id,
@@ -365,7 +367,7 @@ def fit_text_to_duration(text_vi: str, duration_sec: float) -> str:
     return cut.strip()
 
 
-def _translate_chunk_with_model(model, processor, chunk: list[dict], start_idx: int, scene_context: str, speakers_meta: dict) -> dict:
+def _translate_chunk_with_model(model, processor, chunk: list[dict], start_idx: int, scene_context: str, speakers_meta: dict, context_pair: tuple[list[str], list[str]] | None = None) -> dict:
     import torch
 
     items_for_prompt = []
@@ -385,21 +387,33 @@ def _translate_chunk_with_model(model, processor, chunk: list[dict], start_idx: 
             "ocr_text": ocr_txt,
         })
 
+    before, after = context_pair if context_pair else ([], [])
     messages = [
         {
             "role": "system",
             "content": (
-                "Bạn là biên kịch & dịch giả lồng tiếng phim tiếng Việt tự nhiên, giàu cảm xúc. "
-                "Hãy dịch sát nghĩa, trôi chảy như người Việt giao tiếp tự nhiên, chọn đại từ xưng hô phù hợp ngữ cảnh & giới tính, "
-                "giữ câu gọn gàng vừa nhịp nói (~duration_sec) mà không làm mất ý chính. "
-                "Chỉ trả về đúng một mảng JSON các object có khóa: id, speaker_id, gender, text_vi. Không dùng markdown."
+                "Bạn là dịch giả phụ đề phim Trung → Việt chuyên nghiệp, làm lồng tiếng.\n"
+                "Quy tắc bắt buộc:\n"
+                "1) Dịch thoát nghĩa theo khẩu ngữ, giữ sắc thái cảm xúc; không dịch máy móc từng chữ.\n"
+                "2) Giữ nguyên tên riêng/công ty, viết phiên âm Hán-Việt quen thuộc "
+                "(vd 言辰 → Ngôn Thần, 夏氏集团 → Tập đoàn Hạ thị).\n"
+                "3) Xưng hô theo trường gender và quan hệ trong nhãn cảnh "
+                "(vợ/chồng, sếp/nhân viên, mẹ/con...); không dùng 'bạn' máy móc khi đã rõ vai.\n"
+                "4) Mỗi dòng là MỘT câu thoại ngắn, dài ≤ duration_sec × 16 ký tự, "
+                "không gộp nhiều dòng, không thêm chú thích, không dùng ngoặc kép hay markdown.\n"
+                "5) Thành ngữ/tiếng lóng thì dịch nghĩa bóng cho tự nhiên.\n"
+                "Ví dụ: [{\"id\": 0, \"src_text\": \"你的饭给狗吃了\", \"duration_sec\": 2.1, "
+                "\"text_vi\": \"Cơm của anh đem cho chó ăn rồi.\"}]\n"
+                "Chỉ trả về JSON array với đúng các khoá: id, speaker_id, gender, text_vi."
             ),
         },
         {
             "role": "user",
             "content": (
                 f"Nhãn cảnh & ngữ cảnh: {scene_context or 'Phim chính kịch/đời thường'}\n"
-                f"Danh sách thoại:\n{json.dumps(items_for_prompt, ensure_ascii=False)}"
+                f"Câu thoại ngay trước: {json.dumps(before, ensure_ascii=False)}\n"
+                f"Câu thoại ngay sau: {json.dumps(after, ensure_ascii=False)}\n"
+                f"Danh sách thoại cần dịch:\n{json.dumps(items_for_prompt, ensure_ascii=False)}"
             ),
         },
     ]
@@ -426,12 +440,12 @@ def _translate_chunk_with_model(model, processor, chunk: list[dict], start_idx: 
         if isinstance(parsed, list):
             for row in parsed:
                 if isinstance(row, dict) and "id" in row:
+                    txt = str(row.get("text_vi") or "").strip().strip('"').strip("“”")
+                    row["text_vi"] = txt
                     translated_map[row["id"]] = row
     except Exception:
         pass
     return translated_map
-
-
 def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_context: str, speakers_meta: dict) -> list[dict]:
     if not segments:
         return []
@@ -440,7 +454,11 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
     batch_size = 4
     for start_idx in range(0, len(segments), batch_size):
         chunk = segments[start_idx: start_idx + batch_size]
-        translated_map = _translate_chunk_with_model(model, processor, chunk, start_idx, scene_context, speakers_meta)
+        ctx_before = [(s.get("best_text") or s.get("asr_text") or "").strip() for s in segments[max(0, start_idx - 2):start_idx]]
+        ctx_after = [(s.get("best_text") or s.get("asr_text") or "").strip() for s in segments[start_idx + len(chunk): start_idx + len(chunk) + 2]]
+        translated_map = _translate_chunk_with_model(
+            model, processor, chunk, start_idx, scene_context, speakers_meta, (ctx_before, ctx_after)
+        )
 
         missing_items = [
             (i, s) for i, s in enumerate(chunk)
