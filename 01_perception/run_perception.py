@@ -1,5 +1,6 @@
 import os
 
+# Tắt PIR / OneDNN trên PaddlePaddle 3.x để tránh lỗi ConvertPirAttribute2RuntimeAttribute khi chạy CPU
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 os.environ.setdefault("FLAGS_use_mkldnn", "0")
 os.environ.setdefault("FLAGS_enable_pir_api", "0")
@@ -406,13 +407,25 @@ def _split_segments_on_speaker_turns(
     return out_segs
 
 
+def _get_hf_token() -> str:
+    token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or "").strip()
+    if token:
+        return token
+    try:
+        from kaggle_secrets import UserSecretsClient
+        token = (UserSecretsClient().get_secret("HF_TOKEN") or "").strip()
+    except Exception:
+        token = ""
+    return token
+
+
 def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: str) -> list[dict]:
     if not segments:
         return segments
 
     import torch
 
-    hf_token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or "").strip()
+    hf_token = _get_hf_token()
     pyannote_model = os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip()
     use_pyannote = os.environ.get("USE_PYANNOTE", "1").strip() != "0"
 
@@ -459,7 +472,6 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
     else:
         print("[INFO] Thiếu HF_TOKEN hoặc USE_PYANNOTE=0, dùng dự phòng cao độ/giới tính.")
 
-    # Dự phòng nhẹ theo gender_hint (không dùng SpeechBrain)
     gender_to_spk = {"male": "SPEAKER_00", "female": "SPEAKER_01"}
     for seg in segments:
         g = str(seg.get("gender_hint", "unknown")).lower()
@@ -506,21 +518,15 @@ def _init_paddle_ocr_engine():
     from paddleocr import PaddleOCR
 
     lang = os.environ.get("PADDLE_OCR_LANG", "ch")
-    use_gpu = os.environ.get("PADDLE_OCR_GPU", "0").strip() == "1"
-
     try:
         return PaddleOCR(
             lang=lang,
-            enable_mkldnn=False,
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
         )
     except Exception:
-        try:
-            return PaddleOCR(lang=lang, enable_mkldnn=False)
-        except Exception:
-            return PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=use_gpu, enable_mkldnn=False)
+        return PaddleOCR(lang=lang)
 
 
 def _preprocess_hardsub_image(img_path: str, mode: str = "contrast") -> str:
@@ -633,7 +639,7 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         return [], (0.02, 0.70, 0.98, 0.98)
 
     candidate_rois = [
-        (0.02, 0.62, 0.98, 0.98),
+        (0.02, 0.58, 0.98, 0.96),
         (0.0, 0.0, 1.0, 1.0),
     ]
     fps = float(os.environ.get("OCR_FPS", "0.5"))
