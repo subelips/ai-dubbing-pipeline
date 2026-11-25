@@ -167,8 +167,6 @@ def ensure_deps():
         ("numpy", "numpy"),
         ("gdown", "gdown"),
         ("paddleocr", "paddleocr"),
-        ("speechbrain", "speechbrain"),
-        ("sklearn", "scikit-learn"),
     ]
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
     if missing:
@@ -412,8 +410,6 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
     if not segments:
         return segments
 
-    import numpy as np
-    import soundfile as sf
     import torch
 
     hf_token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or "").strip()
@@ -458,118 +454,19 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
                 print(f"[INFO] pyannote.audio diarization ({pyannote_model}) phát hiện {len(detected_list)} người nói: {detected_list}")
                 return refined_segs
         except Exception as py_err:
-            print(f"[WARN] pyannote.audio bỏ qua/lỗi ({py_err}), dùng SpeechBrain.")
+            print(f"[WARN] pyannote.audio không chạy được ({py_err}), dùng dự phòng cao độ/giới tính.")
             free_gpu()
+    else:
+        print("[INFO] Thiếu HF_TOKEN hoặc USE_PYANNOTE=0, dùng dự phòng cao độ/giới tính.")
 
-    try:
-        from sklearn.cluster import AgglomerativeClustering
-        from speechbrain.inference.speaker import EncoderClassifier
+    # Dự phòng nhẹ theo gender_hint (không dùng SpeechBrain)
+    gender_to_spk = {"male": "SPEAKER_00", "female": "SPEAKER_01"}
+    for seg in segments:
+        g = str(seg.get("gender_hint", "unknown")).lower()
+        seg["speaker_id"] = gender_to_spk.get(g, "SPEAKER_00")
 
-        audio_np, sr = sf.read(audio_16k, dtype="float32")
-        if audio_np.ndim > 1:
-            audio_np = audio_np.mean(axis=-1)
-        if sr != 16000:
-            rs_wav = os.path.join(work_dir, "diar_16k.wav")
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", audio_16k, "-ac", "1", "-ar", "16000", rs_wav],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            audio_np, sr = sf.read(rs_wav, dtype="float32")
-
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        savedir = os.path.join(work_dir, "ecapa_model")
-        classifier = EncoderClassifier.from_hparams(
-            source="speechbrain/spkrec-ecapa-voxceleb",
-            savedir=savedir,
-            run_opts={"device": device},
-        )
-
-        anchor_embs = []
-        all_embs = {}
-
-        for idx, seg in enumerate(segments):
-            s_idx = max(0, int(float(seg.get("start", 0.0)) * sr))
-            e_idx = min(len(audio_np), int(float(seg.get("end", 0.0)) * sr))
-            clip = audio_np[s_idx:e_idx]
-            if len(clip) < int(0.45 * sr):
-                continue
-            wav_tensor = torch.from_numpy(clip).unsqueeze(0).to(device)
-            with torch.inference_mode():
-                emb = classifier.encode_batch(wav_tensor).squeeze().detach().cpu().numpy()
-            norm = float(np.linalg.norm(emb))
-            if norm > 1e-8:
-                emb = emb / norm
-            all_embs[idx] = emb
-            if len(clip) >= int(1.0 * sr):
-                anchor_embs.append(emb)
-
-        del classifier
-        free_gpu()
-
-        if len(anchor_embs) >= 2:
-            emb_mat = np.vstack(anchor_embs)
-            fixed_k_raw = os.environ.get("NUM_SPEAKERS", "").strip()
-            max_spk = max(2, int(os.environ.get("MAX_SPEAKERS", "3")))
-            dist_thresh = float(os.environ.get("DIAR_DIST_THRESHOLD", "0.62"))
-
-            if fixed_k_raw.isdigit() and int(fixed_k_raw) >= 1:
-                k = min(int(fixed_k_raw), len(anchor_embs))
-                clustering = AgglomerativeClustering(n_clusters=k, metric="cosine", linkage="average")
-                anchor_labels = clustering.fit_predict(emb_mat)
-            else:
-                clustering = AgglomerativeClustering(
-                    n_clusters=None,
-                    metric="cosine",
-                    linkage="average",
-                    distance_threshold=dist_thresh,
-                )
-                anchor_labels = clustering.fit_predict(emb_mat)
-                uniq = list(dict.fromkeys(int(x) for x in anchor_labels))
-                if len(uniq) > max_spk:
-                    clustering_k = AgglomerativeClustering(n_clusters=max_spk, metric="cosine", linkage="average")
-                    anchor_labels = clustering_k.fit_predict(emb_mat)
-
-            cluster_vecs = {}
-            for emb, lbl in zip(anchor_embs, anchor_labels):
-                cluster_vecs.setdefault(int(lbl), []).append(emb)
-
-            centroids = {}
-            for lbl, vecs in cluster_vecs.items():
-                c = np.mean(np.vstack(vecs), axis=0)
-                cn = float(np.linalg.norm(c))
-                centroids[lbl] = c / cn if cn > 1e-8 else c
-
-            order_map = {}
-            for lbl in anchor_labels:
-                ilbl = int(lbl)
-                if ilbl not in order_map:
-                    order_map[ilbl] = f"SPEAKER_{len(order_map):02d}"
-
-            assigned = {}
-            for idx, emb in all_embs.items():
-                best_lbl = max(centroids.keys(), key=lambda c_lbl: float(np.dot(emb, centroids[c_lbl])))
-                assigned[idx] = order_map[best_lbl]
-
-            last_spk = "SPEAKER_00"
-            for idx, seg in enumerate(segments):
-                if idx in assigned:
-                    last_spk = assigned[idx]
-                seg["speaker_id"] = last_spk
-
-            detected_list = list(dict.fromkeys(s["speaker_id"] for s in segments))
-            print(f"[INFO] SpeechBrain diarization xác định {len(detected_list)} người nói: {detected_list}")
-        else:
-            for seg in segments:
-                seg["speaker_id"] = "SPEAKER_00"
-
-    except Exception as diar_err:
-        print(f"[WARN] SpeechBrain diarization fallback sang SPEAKER_00 do: {diar_err}")
-        free_gpu()
-        for seg in segments:
-            seg["speaker_id"] = "SPEAKER_00"
-
+    detected_list = list(dict.fromkeys(s["speaker_id"] for s in segments))
+    print(f"[INFO] Dự phòng gán người nói tạo {len(detected_list)} nhãn: {detected_list}")
     return segments
 
 
@@ -626,19 +523,6 @@ def _init_paddle_ocr_engine():
             return PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=use_gpu, enable_mkldnn=False)
 
 
-def _init_easyocr_fallback():
-    import torch
-
-    if not _is_installed("easyocr"):
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "easyocr"], check=True)
-    import easyocr
-
-    lang_env = os.environ.get("PADDLE_OCR_LANG", "ch").strip().lower()
-    lang_map = {"ch": ["ch_sim", "en"], "vi": ["vi", "en"], "en": ["en"], "korean": ["ko", "en"], "japan": ["ja", "en"]}
-    langs = lang_map.get(lang_env, ["ch_sim", "en"])
-    return easyocr.Reader(langs, gpu=torch.cuda.is_available(), verbose=False)
-
-
 def _preprocess_hardsub_image(img_path: str, mode: str = "contrast") -> str:
     from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
@@ -660,20 +544,8 @@ def _preprocess_hardsub_image(img_path: str, mode: str = "contrast") -> str:
         return img_path
 
 
-def _ocr_single_image(ocr_engine, img_path: str, is_easyocr: bool = False, min_conf: float = 0.25) -> str:
+def _ocr_single_image(ocr_engine, img_path: str, min_conf: float = 0.25) -> str:
     line_texts = []
-    if is_easyocr:
-        try:
-            res = ocr_engine.readtext(img_path, detail=1)
-            for item in res:
-                if len(item) >= 3 and float(item[2]) >= min_conf:
-                    txt = str(item[1]).strip()
-                    if txt:
-                        line_texts.append(txt)
-            return " ".join(line_texts).strip()
-        except Exception:
-            return ""
-
     if hasattr(ocr_engine, "predict"):
         res = list(ocr_engine.predict(img_path))
     else:
@@ -768,17 +640,9 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
     chosen_roi = candidate_rois[0]
     chosen_mode = "raw"
     ocr_records = []
-    ocr_engine = None
-    is_easyocr = False
 
     try:
-        try:
-            ocr_engine = _init_paddle_ocr_engine()
-        except Exception as pe:
-            print(f"[WARN] Khởi tạo PaddleOCR lỗi ({pe}), chuyển sang EasyOCR.")
-            ocr_engine = _init_easyocr_fallback()
-            is_easyocr = True
-
+        ocr_engine = _init_paddle_ocr_engine()
         active_frames = []
 
         for idx_roi, roi in enumerate(candidate_rois):
@@ -797,17 +661,9 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
                 for _, p in probe_frames:
                     t_img = p if m_name == "raw" else _preprocess_hardsub_image(p, m_name)
                     try:
-                        txt_res = _ocr_single_image(ocr_engine, t_img, is_easyocr=is_easyocr, min_conf=0.25)
+                        txt_res = _ocr_single_image(ocr_engine, t_img, min_conf=0.25)
                     except Exception:
-                        if not is_easyocr:
-                            print("[WARN] PaddleOCR lỗi runtime executor, chuyển sang EasyOCR fallback.")
-                            del ocr_engine
-                            free_gpu()
-                            ocr_engine = _init_easyocr_fallback()
-                            is_easyocr = True
-                            txt_res = _ocr_single_image(ocr_engine, t_img, is_easyocr=True, min_conf=0.25)
-                        else:
-                            txt_res = ""
+                        txt_res = ""
                     if txt_res:
                         hits += 1
                 if hits > best_hits:
@@ -816,8 +672,7 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
                 if hits >= 2:
                     break
 
-            engine_label = "EasyOCR" if is_easyocr else "PaddleOCR"
-            print(f"[INFO] [{engine_label}] ROI {roi} | mode={matched_mode or 'raw'} | hits={best_hits}/{len(probe_frames)} mẫu.")
+            print(f"[INFO] [PaddleOCR] ROI {roi} | mode={matched_mode or 'raw'} | hits={best_hits}/{len(probe_frames)} mẫu.")
             if best_hits > 0 or idx_roi == len(candidate_rois) - 1:
                 chosen_roi = roi
                 chosen_mode = matched_mode or "raw"
@@ -827,7 +682,7 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         for ts, img_path in active_frames:
             t_img = img_path if chosen_mode == "raw" else _preprocess_hardsub_image(img_path, chosen_mode)
             try:
-                merged = _ocr_single_image(ocr_engine, t_img, is_easyocr=is_easyocr, min_conf=0.25)
+                merged = _ocr_single_image(ocr_engine, t_img, min_conf=0.25)
             except Exception:
                 merged = ""
             if merged:
@@ -836,7 +691,7 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         del ocr_engine
         free_gpu()
     except Exception as ocr_err:
-        print(f"[WARN] OCR lỗi: {ocr_err}")
+        print(f"[WARN] PaddleOCR lỗi: {ocr_err}")
         free_gpu()
 
     print(f"[INFO] Khoanh vùng phụ đề ROI chọn: {chosen_roi} (mode={chosen_mode}) → {len(ocr_records)} mốc phụ đề.")
@@ -853,6 +708,7 @@ def _clean_ocr_typos(text: str) -> str:
         "引信埋名": "隐姓埋名",
         "匕下": "上下",
         "落荏": "落在",
+        "陆氐": "陆氏",
     }
     cleaned = text
     for bad, good in replacements.items():
