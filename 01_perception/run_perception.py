@@ -1050,6 +1050,7 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
     candidate_rois = [
         (0.02, 0.70, 0.98, 0.98),
         (0.02, 0.58, 0.98, 0.86),
+        (0.02, 0.52, 0.98, 0.80),
         (0.02, 0.55, 0.98, 0.99),
         (0.0, 0.0, 1.0, 1.0),
     ]
@@ -1094,8 +1095,10 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         os.makedirs(probe_dir, exist_ok=True)
         for idx_roi, roi in enumerate(candidate_rois):
             frames = []
-            for k in range(8):
-                ts = 2.0 + k * 3.0
+            duration = _video_duration(video_path) or 30.0
+            n_probe = int(os.environ.get("OCR_PROBE_FRAMES", "12"))
+            for k in range(n_probe):
+                ts = duration * (0.05 + 0.90 * k / max(1, n_probe - 1))
                 p = _extract_frame_at(video_path, ts, roi, 960, os.path.join(probe_dir, f"p_{idx_roi}_{k}.jpg"))
                 if p:
                     frames.append(p)
@@ -1128,10 +1131,17 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         os.makedirs(span_dir, exist_ok=True)
         for i, (s_t, e_t) in enumerate(spans, 1):
             mid = (s_t + e_t) / 2.0
-            img = _extract_frame_at(video_path, mid, chosen_roi, 960, os.path.join(span_dir, f"span_{i:05d}.jpg"))
-            if not img:
-                continue
-            cleaned = _clean_ocr_text(_ocr_path(img))
+            candidates = [mid]
+            if e_t - s_t > 0.8:
+                candidates += [s_t + 0.15, max(s_t, e_t - 0.20)]
+            cleaned = ""
+            for c_i, ts in enumerate(candidates):
+                img = _extract_frame_at(video_path, ts, chosen_roi, 960, os.path.join(span_dir, f"span_{i:05d}_{c_i}.jpg"))
+                if not img:
+                    continue
+                cleaned = _clean_ocr_text(_ocr_path(img))
+                if cleaned:
+                    break
             if cleaned:
                 ocr_records.append({"time": round(mid, 2), "start": s_t, "end": e_t, "text": cleaned})
             if i % 25 == 0 or i == len(spans):

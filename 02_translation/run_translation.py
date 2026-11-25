@@ -355,14 +355,16 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
 
 
 def fit_text_to_duration(text_vi: str, duration_sec: float) -> str:
-    max_chars = max(18, int(round(duration_sec * 15.5)))
+    # ~13 ký tự/giây cho tiếng Việt; KHÔNG đặt sàn 18 ký tự như trước — câu thoại
+    # 0,5-0,8s mà ép 18 ký tự sẽ bị TTS đọc dài rồi phải cắt giữa từ.
+    max_chars = max(8, int(round(duration_sec * 13.0)))
     txt = " ".join(text_vi.split()).strip()
     if len(txt) <= max_chars:
         return txt
     cut = txt[:max_chars]
     for sep in ["。", "！", "？", ".", "!", "?", ",", "，", ";", " "]:
         pos = cut.rfind(sep)
-        if pos >= int(max_chars * 0.75):
+        if pos >= int(max_chars * 0.60):
             return cut[:pos].strip()
     return cut.strip()
 
