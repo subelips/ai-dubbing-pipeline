@@ -245,7 +245,6 @@ def _smooth_envelope(mask: "np.ndarray", win_samples: int) -> "np.ndarray":
 
 
 def _build_atempo_chain(ratio: float) -> str:
-    """Xây dựng chuỗi bộ lọc atempo an toàn trong ffmpeg (mỗi atempo nằm trong [0.5, 2.0])."""
     r = max(0.5, min(2.5, float(ratio)))
     parts = []
     while r > 2.0:
@@ -266,6 +265,7 @@ def synth_single_line(
     work_dir: str,
     target_sr: int,
     speaker_ref_map: dict,
+    next_start_t: float | None = None,
 ) -> tuple[int, float, str | None]:
     import numpy as np
     import soundfile as sf
@@ -274,6 +274,10 @@ def synth_single_line(
     start_t = max(0.0, float(line.get("start", 0.0)))
     end_t = max(start_t + 0.4, float(line.get("end", start_t + 1.0)))
     slot_dur = max(0.4, end_t - start_t)
+
+    if next_start_t is not None and next_start_t > start_t + slot_dur:
+        safe_gap_end = max(start_t + slot_dur, next_start_t - 0.08)
+        slot_dur = min(safe_gap_end - start_t, slot_dur * 1.45)
 
     if not text_vi:
         text_vi = f"Câu số {idx + 1}"
@@ -323,28 +327,27 @@ def synth_single_line(
         probe_data = probe_data.mean(axis=-1)
     actual_dur = max(0.1, len(probe_data) / float(src_sr or 48000))
 
-    # Căn tốc độ sát khung thời gian [start_t, end_t] để tránh tràn câu sau
     tempo = 1.0
-    if actual_dur > slot_dur * 1.04:
-        tempo = min(1.45, actual_dur / slot_dur)
-    elif actual_dur < slot_dur * 0.80:
-        tempo = max(0.85, actual_dur / slot_dur)
+    if actual_dur > slot_dur * 1.05:
+        tempo = min(1.25, actual_dur / slot_dur)
+    elif actual_dur < slot_dur * 0.82:
+        tempo = max(0.90, actual_dur / slot_dur)
 
     af_parts = []
     if abs(tempo - 1.0) > 0.02:
         af_parts.append(_build_atempo_chain(tempo))
-    # Giới hạn tối đa độ dài đoạn không vượt quá 1.15x slot_dur để hạn chế đè lên câu kế tiếp
-    max_allowed_dur = round(slot_dur * 1.15, 3)
-    af_parts.append(f"atrim=0:{max_allowed_dur},asetpts=PTS-STARTPTS")
 
-    ff_cmd = [
-        "ffmpeg", "-y",
-        "-i", raw_wav,
-        "-af", ",".join(af_parts),
-        "-ac", "2",
-        "-ar", str(target_sr),
-        aligned_wav,
-    ]
+    est_dur_after_tempo = actual_dur / tempo
+    max_allowed_dur = round(slot_dur * 1.12, 3)
+    if est_dur_after_tempo > max_allowed_dur:
+        fade_dur = min(0.06, max(0.02, max_allowed_dur * 0.1))
+        fade_start = max(0.0, round(max_allowed_dur - fade_dur, 3))
+        af_parts.append(f"atrim=0:{max_allowed_dur},afade=t=out:st={fade_start}:d={fade_dur},asetpts=PTS-STARTPTS")
+
+    ff_cmd = ["ffmpeg", "-y", "-i", raw_wav]
+    if af_parts:
+        ff_cmd.extend(["-af", ",".join(af_parts)])
+    ff_cmd.extend(["-ac", "2", "-ar", str(target_sr), aligned_wav])
 
     res = subprocess.run(ff_cmd, capture_output=True, text=True)
     if res.returncode != 0 or not os.path.exists(aligned_wav):
@@ -365,14 +368,23 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
 
     tts_engine = init_vieneu_engine()
     lock = threading.Lock()
-    # Mặc định 1 worker để đảm bảo đủ số câu và ổn định trạng thái model TTS
     workers = max(1, min(2, int(os.environ.get("TTS_WORKERS", "1"))))
 
     results = []
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [
-                pool.submit(synth_single_line, tts_engine, lock, line, i, work_dir, sr, speaker_ref_map)
+                pool.submit(
+                    synth_single_line,
+                    tts_engine,
+                    lock,
+                    line,
+                    i,
+                    work_dir,
+                    sr,
+                    speaker_ref_map,
+                    float(lines[i + 1].get("start", 0.0)) if i + 1 < len(lines) else None,
+                )
                 for i, line in enumerate(lines)
             ]
             for fut in futures:
