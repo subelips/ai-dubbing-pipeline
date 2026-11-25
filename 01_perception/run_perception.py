@@ -339,7 +339,6 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
     hf_token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or "").strip()
     pyannote_model = os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip()
 
-    # 1. Ưu tiên pyannote.audio nếu có HF_TOKEN
     if hf_token:
         try:
             subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pyannote.audio"], check=True)
@@ -395,7 +394,6 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
             print(f"[WARN] pyannote.audio chưa chạy được ({py_err}), chuyển sang SpeechBrain.")
             free_gpu()
 
-    # 2. Fallback sang SpeechBrain ECAPA-TDNN + phân cụm tâm cụm
     try:
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "speechbrain", "scikit-learn"], check=True)
         from sklearn.cluster import AgglomerativeClustering
@@ -515,6 +513,38 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
     return segments
 
 
+def extract_embedded_subtitles(video_path: str, work_dir: str) -> list[dict]:
+    srt_path = os.path.join(work_dir, "embedded_subs.srt")
+    res = subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path, "-map", "0:s:0", srt_path],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0 or not os.path.exists(srt_path) or os.path.getsize(srt_path) < 10:
+        return []
+
+    with open(srt_path, "r", encoding="utf-8", errors="ignore") as f:
+        raw_srt = f.read()
+
+    pattern = re.compile(
+        r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*\n(.*?)(?=\n\s*\n|\Z)",
+        re.DOTALL,
+    )
+    records = []
+    for m in pattern.finditer(raw_srt):
+        h1, m1, s1, ms1, h2, m2, s2, ms2, body = m.groups()
+        t_start = int(h1) * 3600 + int(m1) * 60 + int(s1) + int(ms1) / 1000.0
+        t_end = int(h2) * 3600 + int(m2) * 60 + int(s2) + int(ms2) / 1000.0
+        clean_txt = re.sub(r"<[^>]+>", "", body).replace("\n", " ").strip()
+        if clean_txt:
+            mid_t = round((t_start + t_end) * 0.5, 2)
+            records.append({"time": mid_t, "start": round(t_start, 2), "end": round(t_end, 2), "text": clean_txt})
+
+    if records:
+        print(f"[INFO] Phát hiện và trích xuất thành công {len(records)} dòng phụ đề mềm (softsub) trong video.")
+    return records
+
+
 def _init_paddle_ocr_engine():
     from paddleocr import PaddleOCR
 
@@ -535,31 +565,63 @@ def _init_paddle_ocr_engine():
             return PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=use_gpu)
 
 
-def _ocr_single_image(ocr, img_path: str, min_conf: float = 0.25) -> str:
+def _preprocess_hardsub_image(img_path: str, mode: str = "contrast") -> str:
+    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+
+    out_path = f"{img_path}_{mode}.jpg"
+    try:
+        img = Image.open(img_path).convert("RGB")
+        if mode == "contrast":
+            img = ImageOps.autocontrast(img, cutoff=1)
+            img = ImageEnhance.Contrast(img).enhance(1.65)
+            img = img.filter(ImageFilter.SHARPEN)
+        elif mode == "high_text":
+            gray = ImageOps.grayscale(img)
+            gray = ImageOps.autocontrast(gray, cutoff=2)
+            gray = gray.filter(ImageFilter.SHARPEN)
+            img = gray.convert("RGB")
+        img.save(out_path, quality=95)
+        return out_path
+    except Exception:
+        return img_path
+
+
+def _ocr_single_image(ocr, img_path: str, min_conf: float = 0.25, debug: bool = False) -> str:
     line_texts = []
     try:
         if hasattr(ocr, "predict"):
             res = list(ocr.predict(img_path))
         else:
             res = ocr.ocr(img_path)
-    except Exception:
+    except Exception as e:
+        if debug:
+            print(f"[DEBUG] OCR predict exception ({os.path.basename(img_path)}): {e}")
         return ""
+
+    if debug:
+        print(f"[DEBUG] Raw OCR output ({os.path.basename(img_path)}): {str(res)[:450]}")
 
     if not res:
         return ""
 
     for item in res:
+        payload = item
+        if hasattr(item, "res") and isinstance(item.res, dict):
+            payload = item.res
+        elif hasattr(item, "json") and isinstance(item.json, dict):
+            payload = item.json.get("res", item.json)
+
         rec_texts = None
         rec_scores = None
-        if isinstance(item, dict):
-            rec_texts = item.get("rec_texts")
-            rec_scores = item.get("rec_scores")
-        elif hasattr(item, "get"):
-            rec_texts = item.get("rec_texts")
-            rec_scores = item.get("rec_scores")
-        elif hasattr(item, "rec_texts"):
-            rec_texts = getattr(item, "rec_texts", None)
-            rec_scores = getattr(item, "rec_scores", None)
+        if isinstance(payload, dict):
+            rec_texts = payload.get("rec_texts")
+            rec_scores = payload.get("rec_scores")
+        elif hasattr(payload, "get"):
+            rec_texts = payload.get("rec_texts")
+            rec_scores = payload.get("rec_scores")
+        elif hasattr(payload, "rec_texts"):
+            rec_texts = getattr(payload, "rec_texts", None)
+            rec_scores = getattr(payload, "rec_scores", None)
 
         if rec_texts is not None:
             scores = list(rec_scores) if rec_scores is not None else [1.0] * len(rec_texts)
@@ -569,8 +631,8 @@ def _ocr_single_image(ocr, img_path: str, min_conf: float = 0.25) -> str:
                     line_texts.append(txt)
             continue
 
-        if isinstance(item, (list, tuple)):
-            for det in item:
+        if isinstance(payload, (list, tuple)):
+            for det in payload:
                 if isinstance(det, (list, tuple)) and len(det) >= 2:
                     info = det[1]
                     if isinstance(info, (list, tuple)) and info:
@@ -580,19 +642,6 @@ def _ocr_single_image(ocr, img_path: str, min_conf: float = 0.25) -> str:
                             line_texts.append(txt)
 
     return " ".join(line_texts).strip()
-
-
-def _enhance_contrast_image(img_path: str) -> str:
-    from PIL import Image, ImageEnhance
-
-    enh_path = img_path + "_enh.jpg"
-    try:
-        img = Image.open(img_path).convert("RGB")
-        img = ImageEnhance.Contrast(img).enhance(1.6)
-        img.save(enh_path, quality=92)
-        return enh_path
-    except Exception:
-        return img_path
 
 
 def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, float, float, float], fps: float) -> list[tuple[float, str]]:
@@ -625,15 +674,19 @@ def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, flo
 
 
 def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[float, float, float, float]]:
-    """Quét phụ đề cứng đa vùng + tăng tương phản dự phòng khi nét chữ mờ/khó nhận."""
+    embedded = extract_embedded_subtitles(video_path, work_dir)
+    if embedded:
+        return embedded, (0.02, 0.70, 0.98, 0.98)
+
     candidate_rois = [
-        (0.02, 0.65, 0.98, 0.99),
+        (0.02, 0.70, 0.98, 0.98),
+        (0.02, 0.55, 0.98, 0.99),
         (0.0, 0.0, 1.0, 1.0),
     ]
     fps = float(os.environ.get("OCR_FPS", "1.0"))
     chosen_roi = candidate_rois[0]
+    chosen_mode = "raw"
     ocr_records = []
-    use_contrast = False
 
     try:
         ocr = _init_paddle_ocr_engine()
@@ -647,24 +700,32 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
 
             step = max(1, len(frames) // 12)
             probe_frames = frames[::step][:12]
-            hits = sum(1 for _, p in probe_frames if _ocr_single_image(ocr, p, min_conf=0.25))
-            enh_hits = 0
-            if hits == 0:
-                enh_hits = sum(
-                    1 for _, p in probe_frames
-                    if _ocr_single_image(ocr, _enhance_contrast_image(p), min_conf=0.25)
-                )
 
-            print(f"[INFO] Thử ROI {roi}: bắt được {hits} frame gốc, {enh_hits} frame tăng tương phản (trên {len(probe_frames)} mẫu).")
-            if hits > 0 or enh_hits > 0 or idx_roi == len(candidate_rois) - 1:
+            matched_mode = None
+            best_hits = 0
+            for m_name in ("raw", "contrast", "high_text"):
+                hits = 0
+                for k_i, (_, p) in enumerate(probe_frames):
+                    t_img = p if m_name == "raw" else _preprocess_hardsub_image(p, m_name)
+                    do_dbg = (idx_roi == 0 and m_name in ("raw", "contrast") and k_i < 2)
+                    if _ocr_single_image(ocr, t_img, min_conf=0.25, debug=do_dbg):
+                        hits += 1
+                if hits > best_hits:
+                    best_hits = hits
+                    matched_mode = m_name
+                if hits >= 2:
+                    break
+
+            print(f"[INFO] ROI {roi} | mode={matched_mode or 'raw'} | hits={best_hits}/{len(probe_frames)} mẫu.")
+            if best_hits > 0 or idx_roi == len(candidate_rois) - 1:
                 chosen_roi = roi
+                chosen_mode = matched_mode or "raw"
                 active_frames = frames
-                use_contrast = (hits == 0 and enh_hits > 0)
                 break
 
         for ts, img_path in active_frames:
-            target_img = _enhance_contrast_image(img_path) if use_contrast else img_path
-            merged = _ocr_single_image(ocr, target_img, min_conf=0.25)
+            t_img = img_path if chosen_mode == "raw" else _preprocess_hardsub_image(img_path, chosen_mode)
+            merged = _ocr_single_image(ocr, t_img, min_conf=0.25, debug=False)
             if merged:
                 ocr_records.append({"time": ts, "text": merged})
 
@@ -674,7 +735,7 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         print(f"[WARN] PaddleOCR lỗi: {ocr_err}")
         free_gpu()
 
-    print(f"[INFO] Khoanh vùng phụ đề ROI chọn: {chosen_roi} → {len(ocr_records)} mốc phụ đề.")
+    print(f"[INFO] Khoanh vùng phụ đề ROI chọn: {chosen_roi} (mode={chosen_mode}) → {len(ocr_records)} mốc phụ đề.")
     return ocr_records, chosen_roi
 
 
