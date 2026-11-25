@@ -979,12 +979,13 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
             except Exception as ee:
                 print(f"[WARN] EasyOCR không khởi tạo được ({ee}) → chuyển PaddleOCR.")
         if ocr_engine is None:
-            ocr_engine = _init_paddle_ocr_engine()
-            print("[INFO] OCR engine: PaddleOCR.")
-    except Exception as pe:
-        print(f"[WARN] Khởi tạo OCR lỗi ({pe}), chuyển sang EasyOCR.")
-        ocr_engine = _init_easyocr_fallback()
-        is_easyocr = True
+            try:
+                ocr_engine = _init_paddle_ocr_engine()
+                print("[INFO] OCR engine: PaddleOCR.")
+            except Exception as pe:
+                print(f"[WARN] PaddleOCR không khởi tạo được ({pe}) → thử lại EasyOCR.")
+                ocr_engine = _init_easyocr_fallback()
+                is_easyocr = True
 
         active_frames = []
         best_pick = None  # (hits, roi, mode, frames) — chọn ROI có nhiều phụ đề THẬT nhất
