@@ -1057,11 +1057,16 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
     ocr_records: list[dict] = []
     ocr_engine = None
     is_easyocr = False
+    _ocr_err_shown = False
 
     def _ocr_path(path: str, min_conf: float = 0.25) -> str:
+        nonlocal _ocr_err_shown
         try:
             return _ocr_single_image(ocr_engine, path, is_easyocr=is_easyocr, min_conf=min_conf)
-        except Exception:
+        except Exception as exc:
+            if not _ocr_err_shown:
+                _ocr_err_shown = True
+                print(f"[WARN] OCR exception: {type(exc).__name__}: {exc}")
             return ""
 
     try:
@@ -1096,13 +1101,19 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
                     frames.append(p)
             hits = 0
             samples = []
-            for p in frames:
-                txt = _ocr_path(p)
-                cleaned = _clean_ocr_text(txt)
+            raws = []
+            for k_i, p in enumerate(frames):
+                if k_i == 0 and idx_roi == 0:
+                    raw = _ocr_single_image(ocr_engine, p, is_easyocr=is_easyocr, min_conf=0.15, debug=True)
+                else:
+                    raw = _ocr_path(p, min_conf=0.15)
+                raws.append(raw)
+                cleaned = _clean_ocr_text(raw)
                 if cleaned:
                     hits += 1
                     samples.append(cleaned[:16])
-            print(f"[INFO] [{('EasyOCR' if is_easyocr else 'PaddleOCR')}] ROI {roi} | phụ đề hợp lệ={hits}/{len(frames)} | vd: {' | '.join(samples[:3])}")
+            raw_preview = " | ".join((r or "")[:14] for r in raws[:3])
+            print(f"[INFO] [{('EasyOCR' if is_easyocr else 'PaddleOCR')}] ROI {roi} | phụ đề hợp lệ={hits}/{len(frames)} | raw: {raw_preview}")
             if hits > best_hits:
                 best_hits, best_roi = hits, roi
             if hits >= 4:
