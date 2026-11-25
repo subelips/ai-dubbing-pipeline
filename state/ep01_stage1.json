@@ -2,18 +2,31 @@
   "job_id": "ep01",
   "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
   "subtitle_roi": {
-    "x1": 0.0,
-    "y1": 0.0,
-    "x2": 1.0,
-    "y2": 1.0
+    "x1": 0.02,
+    "y1": 0.7,
+    "x2": 0.98,
+    "y2": 0.98
   },
-  "screen_texts": [],
-  "scene_context": "",
+  "screen_texts": [
+    {
+      "time": 28.0,
+      "text": "1"
+    },
+    {
+      "time": 48.0,
+      "text": "O"
+    },
+    {
+      "time": 50.0,
+      "text": "0"
+    }
+  ],
+  "scene_context": "Chữ/phụ đề màn hình (PaddleOCR): [28.0s] 1; [48.0s] O; [50.0s] 0",
   "speaker_refs": {
     "SPEAKER_02": {
       "ref_asset": "ref_speaker_SPEAKER_02.wav",
       "gender_hint": "female",
-      "pitch_hz": 237.6
+      "pitch_hz": 222.2
     },
     "SPEAKER_00": {
       "ref_asset": "ref_speaker_SPEAKER_00.wav",
@@ -105,7 +118,7 @@
       "end": 22.87,
       "speaker_id": "SPEAKER_00",
       "gender_hint": "male",
-      "pitch_hz": 76.2,
+      "pitch_hz": 75.5,
       "asr_text": "这是今天的午餐",
       "ocr_text": "",
       "best_text": "这是今天的午餐",
@@ -129,11 +142,11 @@
       "end": 28.25,
       "speaker_id": "SPEAKER_00",
       "gender_hint": "male",
-      "pitch_hz": 104.6,
+      "pitch_hz": 103.9,
       "asr_text": "我的妻子对餐饮要求苛刻到极致",
-      "ocr_text": "",
+      "ocr_text": "1",
       "best_text": "我的妻子对餐饮要求苛刻到极致",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_with_ocr_hint"
     },
     {
       "id": 9,
@@ -143,9 +156,9 @@
       "gender_hint": "male",
       "pitch_hz": 84.7,
       "asr_text": "从不吃外卖",
-      "ocr_text": "",
+      "ocr_text": "1",
       "best_text": "从不吃外卖",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_with_ocr_hint"
     },
     {
       "id": 10,
@@ -299,9 +312,9 @@
       "gender_hint": "female",
       "pitch_hz": 205.1,
       "asr_text": "你一个行政部的小职员",
-      "ocr_text": "",
+      "ocr_text": "O",
       "best_text": "你一个行政部的小职员",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_with_ocr_hint"
     },
     {
       "id": 23,
@@ -311,9 +324,9 @@
       "gender_hint": "male",
       "pitch_hz": 109.6,
       "asr_text": "跟我这儿待待久",
-      "ocr_text": "",
+      "ocr_text": "O",
       "best_text": "跟我这儿待待久",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_with_ocr_hint"
     },
     {
       "id": 24,
@@ -323,9 +336,9 @@
       "gender_hint": "male",
       "pitch_hz": 161.6,
       "asr_text": "会引起别人不必要的喘息",
-      "ocr_text": "",
+      "ocr_text": "O 0",
       "best_text": "会引起别人不必要的喘息",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_with_ocr_hint"
     },
     {
       "id": 25,
@@ -335,9 +348,9 @@
       "gender_hint": "male",
       "pitch_hz": 131.1,
       "asr_text": "好",
-      "ocr_text": "",
+      "ocr_text": "0",
       "best_text": "好",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_with_ocr_hint"
     },
     {
       "id": 26,
@@ -369,7 +382,7 @@
       "end": 63.21,
       "speaker_id": "SPEAKER_00",
       "gender_hint": "male",
-      "pitch_hz": 123.1,
+      "pitch_hz": 116.8,
       "asr_text": "言辰",
       "ocr_text": "",
       "best_text": "言辰",
