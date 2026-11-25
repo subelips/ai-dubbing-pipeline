@@ -518,11 +518,119 @@ def mark_job_failed(err_text: str):
         print(f"[WARN] Không ghi được trạng thái FAILED: {exc}")
 
 
+def build_utterances(segments: list[dict], ocr_spans: list[dict] | None = None, max_gap: float = 0.45, max_chars: int = 60) -> list[dict]:
+    """Gộp các mảnh ASR vụn thành CÂU THOẠI TRỌN VẸN trước khi dịch.
+
+    ASR cắt câu rất vụn (đo thật: 29/54 mảnh ≤6 ký tự). Dịch từng mảnh thì câu tiếng
+    Việt cũng vụn, sai nghĩa và lặp.
+
+    Ưu tiên gộp theo PHỤ ĐỀ OCR: mỗi dòng phụ đề ~ một câu nói, nên các mảnh ASR cùng
+    rơi vào một span phụ đề được gộp lại. Không có span thì gộp theo khoảng lặng.
+    """
+    spans = []
+    for sp in (ocr_spans or []):
+        try:
+            s0 = float(sp.get("start") or 0.0)
+            s1 = float(sp.get("end") or 0.0)
+        except Exception:
+            continue
+        if s1 > s0:
+            spans.append((s0, s1))
+
+    def span_key(seg) -> int | None:
+        s_t = float(seg.get("start", 0.0))
+        e_t = float(seg.get("end", s_t + 0.5))
+        best_i, best_ov = None, 0.0
+        for i, (s0, s1) in enumerate(spans):
+            ov = max(0.0, min(e_t, s1) - max(s_t, s0))
+            if ov > best_ov:
+                best_i, best_ov = i, ov
+        if best_i is not None and best_ov >= min(0.30, 0.4 * max(0.3, e_t - s_t)):
+            return best_i
+        return None
+
+    utts: list[dict] = []
+    cur = None
+    for s in segments:
+        txt = (s.get("best_text") or s.get("asr_text") or "").strip()
+        if not txt:
+            continue
+        spk = s.get("speaker_id") or "SPEAKER_00"
+        key = span_key(s)
+
+        if cur is None:
+            cur = {"id": 0, "start": float(s.get("start", 0.0)), "end": float(s.get("end", 0.0)),
+                   "speaker_id": spk, "gender_hint": s.get("gender_hint"), "best_text": txt,
+                   "ocr_text": s.get("ocr_text", ""), "segment_ids": [s.get("id")], "key": key}
+            continue
+
+        gap = float(s.get("start", 0.0)) - float(cur["end"])
+        same_span = key is not None and key == cur.get("key")
+        short_gap_merge = (
+            key is None and cur.get("key") is None and spk == cur["speaker_id"]
+            and gap <= max_gap and (len(cur["best_text"]) <= 6 or len(txt) <= 6)
+            and len(cur["best_text"]) + len(txt) <= 20
+        )
+        if (same_span or short_gap_merge) and spk == cur["speaker_id"] and len(cur["best_text"]) + len(txt) <= max_chars:
+            cur["end"] = float(s.get("end", cur["end"]))
+            cur["best_text"] = f"{cur['best_text']}{txt}"
+            cur["segment_ids"].append(s.get("id"))
+            if key is not None:
+                cur["key"] = key
+        else:
+            utts.append(cur)
+            cur = {"id": 0, "start": float(s.get("start", 0.0)), "end": float(s.get("end", 0.0)),
+                   "speaker_id": spk, "gender_hint": s.get("gender_hint"), "best_text": txt,
+                   "ocr_text": s.get("ocr_text", ""), "segment_ids": [s.get("id")], "key": key}
+    if cur:
+        utts.append(cur)
+
+    for i, u in enumerate(utts):
+        u["id"] = i
+        u.pop("key", None)
+    return utts
+
+
+def expand_utterances_to_lines(utts: list[dict], segments: list[dict]) -> list[dict]:
+    """Chia bản dịch của câu thoại về các mảnh timing gốc (để UI/tương thích cũ)."""
+    seg_by_id = {s.get("id"): s for s in segments}
+    lines = []
+    for u in utts:
+        text = (u.get("text_vi") or "").strip()
+        ids = [i for i in (u.get("segment_ids") or []) if i in seg_by_id]
+        if not ids:
+            continue
+        durs = [max(0.3, float(seg_by_id[i].get("end", 0.0)) - float(seg_by_id[i].get("start", 0.0))) for i in ids]
+        total = sum(durs) or 1.0
+        words = text.split()
+        pos = 0
+        for k, sid in enumerate(ids):
+            seg = seg_by_id[sid]
+            if k == len(ids) - 1:
+                part = " ".join(words[pos:])
+            else:
+                take = max(1, int(round(len(words) * durs[k] / total))) if words else 0
+                part = " ".join(words[pos:pos + take])
+                pos += take
+            lines.append({
+                "id": sid,
+                "start": float(seg.get("start", 0.0)),
+                "end": float(seg.get("end", 0.0)),
+                "speaker_id": u.get("speaker_id"),
+                "gender": u.get("gender", "female"),
+                "src_text": u.get("src_text", ""),
+                "text_vi": part.strip(),
+            })
+    return lines
+
+
 def main():
     model_name = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen3-VL-8B-Instruct").strip() or "Qwen/Qwen3-VL-8B-Instruct"
     send_telegram(TG_TOKEN, TG_CHAT, f"🌐 <b>[Stage 2 - {model_name}]</b> Bắt đầu job <code>{JOB_ID}</code>")
     stage1_data, _ = sync.read_json(f"state/{JOB_ID}_stage1.json")
     segments = stage1_data.get("segments", [])
+    utterances = build_utterances(segments, stage1_data.get("screen_texts", []))
+    print(f"[INFO] Gộp {len(segments)} mảnh ASR → {len(utterances)} câu thoại trọn vẹn trước khi dịch.")
     prev_context = stage1_data.get("scene_context", "")
     speaker_refs = stage1_data.get("speaker_refs") or {}
     video_asset = (stage1_data.get("video_asset") or stage1_data.get("video_url") or "source_input.mp4").strip()
@@ -538,10 +646,31 @@ def main():
     model, processor = load_qwen3_vl()
     try:
         scene_context, speakers_meta = label_scene_and_speakers(model, processor, frames, speaker_refs, prev_context)
-        dub_lines = translate_with_qwen3_vl(model, processor, segments, scene_context, speakers_meta)
+        dub_utts = translate_with_qwen3_vl(model, processor, utterances, scene_context, speakers_meta)
     finally:
         del model, processor
         free_gpu()
+
+    utt_map = {u.get("id"): u for u in dub_utts}
+    payload_utts = []
+    for u in utterances:
+        tr = utt_map.get(u["id"]) or {}
+        gender = str(
+            tr.get("gender") or speakers_meta.get(u["speaker_id"], {}).get("gender") or u.get("gender_hint") or "female"
+        ).lower()
+        if gender not in ("male", "female"):
+            gender = "female"
+        payload_utts.append({
+            "id": u["id"],
+            "start": u["start"],
+            "end": u["end"],
+            "speaker_id": u["speaker_id"],
+            "gender": gender,
+            "src_text": u["best_text"],
+            "text_vi": (tr.get("text_vi") or "").strip(),
+            "segment_ids": u["segment_ids"],
+        })
+    dub_lines = expand_utterances_to_lines(payload_utts, segments)
 
     stage2_payload = {
         "job_id": JOB_ID,
@@ -549,6 +678,7 @@ def main():
         "video_asset": video_asset,
         "scene_context": scene_context,
         "speakers": speakers_meta,
+        "utterances": payload_utts,
         "lines": dub_lines,
     }
     sync.write_json(f"state/{JOB_ID}_stage2.json", stage2_payload, f"stage2 done: {JOB_ID}")

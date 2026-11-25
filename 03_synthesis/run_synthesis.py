@@ -609,7 +609,24 @@ def main():
             speaker_ref_map.setdefault(spk_id, {})["ref_path"] = local_ref
 
     ensure_deps()
-    lines = stage2_data.get("lines", [])
+    utts = stage2_data.get("utterances") or []
+    if utts:
+        lines = [
+            {
+                "id": u.get("id"),
+                "start": u.get("start"),
+                "end": u.get("end"),
+                "speaker_id": u.get("speaker_id"),
+                "gender": u.get("gender"),
+                "text_vi": (u.get("text_vi") or "").strip(),
+            }
+            for u in utts
+            if (u.get("text_vi") or "").strip()
+        ]
+        print(f"[INFO] Dùng {len(lines)} câu thoại trọn vẹn (utterance) cho TTS.")
+    else:
+        lines = stage2_data.get("lines", [])
+        print(f"[INFO] Fallback: dùng {len(lines)} dòng cũ (line) cho TTS.")
     mix_dub_and_mux(video_in, bgm_in, lines, speaker_ref_map, out_dir, final_mp4)
 
     download_url = sync.upload_asset(JOB_ID, final_mp4)
