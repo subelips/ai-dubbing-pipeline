@@ -1187,46 +1187,37 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         e_t = float(seg.get("end", s_t + 1.0))
         asr_txt = (seg.get("asr_text") or "").strip()
 
-        scored = []
+        cands = []
         for r in ocr_records:
             r_s = float(r.get("start", r.get("time", 0.0)))
             r_e = float(r.get("end", r_s + 1.0))
-            ov = max(0.0, min(e_t, r_e) - max(s_t, r_s))
-            if ov <= 0.05:
+            if r_e < s_t - 1.2 or r_s > e_t + 1.2:
                 continue
             cleaned = _clean_ocr_text(r.get("text", ""))
-            if cleaned:
-                scored.append((ov, r_s, cleaned))
-        scored.sort(key=lambda x: (-x[0], x[1]))
-        ocr_txt = ""
-        if scored:
-            best_ov, _, first_txt = scored[0]
-            ocr_txt = first_txt
-            # Chỉ nối span thứ hai khi nó phủ gần bằng span tốt nhất VÀ tổng độ dài
-            # vẫn hợp lý so với câu ASR — tránh dính phụ đề của câu bên cạnh.
-            for ov, _, txt in scored[1:]:
-                if txt in ocr_txt:
-                    continue
-                if ov >= best_ov * 0.8 and len(ocr_txt) + len(txt) <= max(6, int(len(asr_txt) * 1.5)):
-                    ocr_txt = f"{ocr_txt} {txt}"
-                else:
-                    break
+            if not cleaned:
+                continue
+            ov = max(0.0, min(e_t, r_e) - max(s_t, r_s))
+            ov_ratio = ov / max(0.3, e_t - s_t)
+            sim = SequenceMatcher(None, asr_txt, cleaned).ratio() if asr_txt else 0.0
+            # Điểm kết hợp thời gian + độ giống chữ: ASR và phụ đề thường lệch nhau ~0.5s,
+            # nếu chỉ lấy overlap lớn nhất sẽ vơ phụ đề của câu bên cạnh.
+            score = sim + 0.35 * min(1.0, ov_ratio)
+            cands.append((score, sim, ov_ratio, cleaned))
+        cands.sort(key=lambda x: -x[0])
+        ocr_txt = cands[0][3] if cands else ""
+        best_sim = cands[0][1] if cands else 0.0
+        best_ovr = cands[0][2] if cands else 0.0
 
         best_txt = asr_txt
         source_mode = "asr_only"
         if asr_txt and ocr_txt:
-            ratio = SequenceMatcher(None, asr_txt, ocr_txt).ratio()
             len_ratio = len(ocr_txt) / max(1, len(asr_txt))
             cjk_ocr = len(re.findall(r"[\u4e00-\u9fff]", ocr_txt))
-            cjk_asr = len(re.findall(r"[\u4e00-\u9fff]", asr_txt))
-            if ratio >= 0.5:
-                best_txt, source_mode = ocr_txt, "ocr_corrected"
-                corrected_cnt += 1
-            elif cjk_ocr >= 2 and cjk_asr >= 1 and 0.6 <= len_ratio <= 1.8:
+            if best_sim >= 0.55 or (best_sim >= 0.35 and best_ovr >= 0.45):
                 # Cùng một câu, khác mặt chữ do ASR nghe nhầm → lấy chữ OCR
                 best_txt, source_mode = ocr_txt, "ocr_corrected"
                 corrected_cnt += 1
-            elif cjk_ocr >= 4 and len(asr_txt) > 3 and len_ratio > 1.8:
+            elif cjk_ocr >= 4 and len(asr_txt) > 3 and len_ratio > 1.3 and best_ovr >= 0.6:
                 best_txt, source_mode = ocr_txt, "ocr_extended"
                 extended_cnt += 1
             else:
