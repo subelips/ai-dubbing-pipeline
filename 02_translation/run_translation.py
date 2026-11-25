@@ -146,6 +146,42 @@ def _normalize_gdrive_url(url: str) -> str:
     return url
 
 
+def _state_asset_ref(ref: str) -> bool:
+    """True nếu ref trỏ vào file nằm trên nhánh pipeline-state (do web UI upload)."""
+    return ref.startswith("uploads_tmp/") or (ref.startswith("state/") and ref.endswith("manifest.json"))
+
+
+def _state_raw_bytes(sync: "GitHubSync", path: str) -> bytes:
+    headers = dict(sync.headers)
+    headers["Accept"] = "application/vnd.github.raw"
+    r = requests.get(
+        f"{sync.api_base}/contents/{path}",
+        headers=headers,
+        params={"ref": sync.state_branch},
+        timeout=180,
+    )
+    r.raise_for_status()
+    return r.content
+
+
+def download_from_state(sync: "GitHubSync", ref: str, dest_path: str):
+    """Ghép các mảnh upload từ web UI (manifest.json) thành 1 file video hoàn chỉnh."""
+    os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+    if ref.endswith("manifest.json"):
+        manifest = json.loads(_state_raw_bytes(sync, ref).decode("utf-8"))
+        parts = manifest.get("parts") or []
+        if not parts:
+            raise RuntimeError(f"Manifest {ref} không có danh sách parts")
+        with open(dest_path, "wb") as out:
+            for part in parts:
+                out.write(_state_raw_bytes(sync, part))
+    else:
+        with open(dest_path, "wb") as out:
+            out.write(_state_raw_bytes(sync, ref))
+    if not os.path.exists(dest_path) or os.path.getsize(dest_path) < 1024:
+        raise RuntimeError(f"Tải video từ nhánh {sync.state_branch} thất bại: {ref}")
+
+
 def fetch_video_for_labeling(sync: GitHubSync, tag: str, source_ref: str, dest_path: str) -> str:
     ref = (source_ref or "").strip()
     if not ref:
@@ -158,6 +194,8 @@ def fetch_video_for_labeling(sync: GitHubSync, tag: str, source_ref: str, dest_p
                 subprocess.run([sys.executable, "-m", "gdown", direct_url, "-O", dest_path], check=True)
             else:
                 subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
+        elif _state_asset_ref(ref):
+            download_from_state(sync, ref, dest_path)
         else:
             sync.download_asset(tag, ref, dest_path)
     except Exception as e:
