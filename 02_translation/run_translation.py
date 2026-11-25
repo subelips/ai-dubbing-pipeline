@@ -357,7 +357,7 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
 def fit_text_to_duration(text_vi: str, duration_sec: float) -> str:
     # ~17 ký tự/giây: chấp nhận nhanh hơn nhịp đọc tự nhiên một chút để KHÔNG cắt cụt
     # nghĩa câu; stage 3 sẽ tăng tốc độ đọc (atempo ≤1.5) cho vừa slot.
-    max_chars = max(12, int(round(duration_sec * 17.0)))
+    max_chars = max(8, int(round(duration_sec * 17.0)))
     txt = " ".join(text_vi.split()).strip()
     if len(txt) <= max_chars:
         return txt

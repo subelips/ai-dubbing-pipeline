@@ -397,7 +397,9 @@ def synth_single_line(
         af_parts.append(_build_atempo_chain(tempo))
 
     est_dur_after_tempo = actual_dur / tempo
-    max_allowed_dur = round(slot_dur * 1.10, 3)
+    # Slot rất ngắn (<0.9s) cho phép dài hơn tối đa 0.2s để không cắt giữa từ;
+    # phần dôi ra sẽ lấn nhẹ vào khoảng lặng sau câu.
+    max_allowed_dur = round(max(slot_dur * 1.10, min(slot_dur + 0.20, 1.20)), 3)
     trimmed = False
     if est_dur_after_tempo > max_allowed_dur:
         trimmed = True
