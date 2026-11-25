@@ -278,7 +278,7 @@
     "SPEAKER_02": {
       "ref_asset": "ref_speaker_SPEAKER_02.wav",
       "gender_hint": "female",
-      "pitch_hz": 222.2
+      "pitch_hz": 235.3
     },
     "SPEAKER_00": {
       "ref_asset": "ref_speaker_SPEAKER_00.wav",
