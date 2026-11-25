@@ -1131,21 +1131,35 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         os.makedirs(span_dir, exist_ok=True)
         for i, (s_t, e_t) in enumerate(spans, 1):
             mid = (s_t + e_t) / 2.0
-            candidates = [mid]
-            if e_t - s_t > 0.8:
-                candidates += [s_t + 0.15, max(s_t, e_t - 0.20)]
-            cleaned = ""
-            for c_i, ts in enumerate(candidates):
+            fracs = (0.25, 0.75) if e_t - s_t >= 0.6 else (0.5,)
+            samples = []
+            for c_i, frac in enumerate(fracs):
+                ts = s_t + (e_t - s_t) * frac
                 img = _extract_frame_at(video_path, ts, chosen_roi, 960, os.path.join(span_dir, f"span_{i:05d}_{c_i}.jpg"))
                 if not img:
                     continue
-                cleaned = _clean_ocr_text(_ocr_path(img))
-                if cleaned:
-                    break
-            if cleaned:
-                ocr_records.append({"time": round(mid, 2), "start": s_t, "end": e_t, "text": cleaned})
+                txt = _clean_ocr_text(_ocr_path(img))
+                if txt:
+                    samples.append((ts, txt))
+            if not samples:
+                continue
+            if len(samples) >= 2 and samples[0][1] != samples[1][1]:
+                # Hai nửa span là hai phụ đề khác nhau → tách đôi tại trung điểm
+                ocr_records.append({"time": round(samples[0][0], 2), "start": s_t, "end": round(mid, 2), "text": samples[0][1]})
+                ocr_records.append({"time": round(samples[1][0], 2), "start": round(mid, 2), "end": e_t, "text": samples[1][1]})
+            else:
+                ocr_records.append({"time": round(mid, 2), "start": s_t, "end": e_t, "text": samples[0][1]})
             if i % 25 == 0 or i == len(spans):
                 print(f"[INFO] OCR span {i}/{len(spans)} → {len(ocr_records)} dòng phụ đề hợp lệ...")
+
+        # Gộp các record liền kề trùng chữ (1 phụ đề bị tách làm 2 span do fade)
+        merged_records = []
+        for rec in ocr_records:
+            if merged_records and rec["text"] == merged_records[-1]["text"] and rec["start"] - merged_records[-1]["end"] <= 0.6:
+                merged_records[-1]["end"] = rec["end"]
+            else:
+                merged_records.append(dict(rec))
+        ocr_records = merged_records
 
         del ocr_engine
         free_gpu()
@@ -1173,22 +1187,30 @@ def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> 
         e_t = float(seg.get("end", s_t + 1.0))
         asr_txt = (seg.get("asr_text") or "").strip()
 
-        picked = []
+        scored = []
         for r in ocr_records:
             r_s = float(r.get("start", r.get("time", 0.0)))
             r_e = float(r.get("end", r_s + 1.0))
-            ov = max(0.0, min(e_t + 0.25, r_e) - max(s_t - 0.25, r_s))
+            ov = max(0.0, min(e_t, r_e) - max(s_t, r_s))
             if ov <= 0.05:
                 continue
             cleaned = _clean_ocr_text(r.get("text", ""))
             if cleaned:
-                picked.append((r_s, cleaned))
-        picked.sort(key=lambda x: x[0])
-        dedup = []
-        for _, txt in picked:
-            if not dedup or txt != dedup[-1]:
-                dedup.append(txt)
-        ocr_txt = " ".join(dedup).strip()
+                scored.append((ov, r_s, cleaned))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        ocr_txt = ""
+        if scored:
+            best_ov, _, first_txt = scored[0]
+            ocr_txt = first_txt
+            # Chỉ nối span thứ hai khi nó phủ gần bằng span tốt nhất VÀ tổng độ dài
+            # vẫn hợp lý so với câu ASR — tránh dính phụ đề của câu bên cạnh.
+            for ov, _, txt in scored[1:]:
+                if txt in ocr_txt:
+                    continue
+                if ov >= best_ov * 0.8 and len(ocr_txt) + len(txt) <= max(6, int(len(asr_txt) * 1.5)):
+                    ocr_txt = f"{ocr_txt} {txt}"
+                else:
+                    break
 
         best_txt = asr_txt
         source_mode = "asr_only"
