@@ -3,173 +3,293 @@
   "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
   "subtitle_roi": {
     "x1": 0.02,
-    "y1": 0.7,
+    "y1": 0.58,
     "x2": 0.98,
-    "y2": 0.98
+    "y2": 0.86
   },
   "screen_texts": [
     {
-      "time": 0.0,
-      "text": "（百度）网微刷条字（2026）第412924号"
-    },
-    {
-      "time": 1.0,
-      "text": "（百度）网微刷备字（2026）第412924号"
-    },
-    {
-      "time": 2.0,
-      "text": "(百度)网微刷备字(2026)第412924号"
-    },
-    {
       "time": 3.0,
-      "text": "百度)网微剧备字(2026)第412924号"
+      "text": "你的饭给狗吃了"
     },
     {
       "time": 4.0,
-      "text": "（百度）网微刷备字（2026）第412924号"
+      "text": "你就该吃狗的"
+    },
+    {
+      "time": 5.0,
+      "text": "你就该吃狗的"
+    },
+    {
+      "time": 6.0,
+      "text": "狗吃完了"
     },
     {
       "time": 7.0,
-      "text": "N"
-    },
-    {
-      "time": 15.0,
-      "text": "11"
-    },
-    {
-      "time": 19.0,
-      "text": "11"
-    },
-    {
-      "time": 21.0,
-      "text": "PPP"
+      "text": "该你吃了"
     },
     {
       "time": 22.0,
-      "text": "0 o"
+      "text": "这是今天的午餐"
     },
     {
-      "time": 23.0,
-      "text": "bb"
+      "time": 24.0,
+      "text": "结婚三年"
     },
     {
-      "time": 28.0,
-      "text": "1 0 Z"
+      "time": 25.0,
+      "text": "我的妻子对餐饮要求"
+    },
+    {
+      "time": 26.0,
+      "text": "我的妻子对餐饮要求"
+    },
+    {
+      "time": 27.0,
+      "text": "苛刻到极致"
     },
     {
       "time": 29.0,
-      "text": "Z"
+      "text": "从不吃外卖"
     },
     {
       "time": 30.0,
-      "text": "Z"
+      "text": "不碰垃圾食品"
     },
     {
       "time": 31.0,
-      "text": "1"
+      "text": "所以我每天四点起"
+    },
+    {
+      "time": 32.0,
+      "text": "所以我每天四点起"
     },
     {
       "time": 33.0,
-      "text": "Z"
+      "text": "给她做最健康卫生的三餐"
     },
     {
       "time": 34.0,
-      "text": "Z"
+      "text": "给她做最健康卫生的三餐"
+    },
+    {
+      "time": 35.0,
+      "text": "给她做最健康卫生的三餐"
     },
     {
       "time": 36.0,
-      "text": "qb"
+      "text": "今天食材新鲜吗"
+    },
+    {
+      "time": 37.0,
+      "text": "都是早上四点"
+    },
+    {
+      "time": 38.0,
+      "text": "从菜市场买最新鲜的食材"
+    },
+    {
+      "time": 39.0,
+      "text": "从菜市场买最新鲜的食材"
+    },
+    {
+      "time": 40.0,
+      "text": "菜擦洗了几遍"
+    },
+    {
+      "time": 41.0,
+      "text": "三遍"
+    },
+    {
+      "time": 42.0,
+      "text": "还用果蔬清洁剂"
     },
     {
       "time": 43.0,
-      "text": "11"
+      "text": "浸泡了十五分钟"
+    },
+    {
+      "time": 44.0,
+      "text": "行了"
+    },
+    {
+      "time": 45.0,
+      "text": "你走吧"
+    },
+    {
+      "time": 46.0,
+      "text": "你一个行政部的小职员"
+    },
+    {
+      "time": 47.0,
+      "text": "跟我这待太久"
     },
     {
       "time": 48.0,
-      "text": "U 女"
+      "text": "跟我这待太久"
     },
     {
       "time": 49.0,
-      "text": "女"
+      "text": "会引起别人不必要的揣测"
     },
     {
       "time": 50.0,
-      "text": "U 女"
+      "text": "会引起别人不必要的揣测"
     },
     {
-      "time": 53.0,
-      "text": "U 女"
+      "time": 56.0,
+      "text": "那你趁热吃"
     },
     {
-      "time": 62.0,
-      "text": "5"
+      "time": 58.0,
+      "text": "凉了对胃不好"
+    },
+    {
+      "time": 63.0,
+      "text": "你又去给瑶瑶送饭了"
     },
     {
       "time": 64.0,
-      "text": "Z"
+      "text": "你又去给瑶瑶送饭了"
     },
     {
       "time": 65.0,
-      "text": "S"
+      "text": "真是辛苦你了"
     },
     {
       "time": 66.0,
-      "text": "乙"
+      "text": "照顾妻子"
     },
     {
       "time": 67.0,
-      "text": "乙"
+      "text": "只是我作为丈夫的责任"
+    },
+    {
+      "time": 68.0,
+      "text": "只是我作为丈夫的责任"
+    },
+    {
+      "time": 70.0,
+      "text": "当年要不是你"
+    },
+    {
+      "time": 71.0,
+      "text": "与我们夏氏商业联姻"
+    },
+    {
+      "time": 72.0,
+      "text": "与我们夏氏商业联姻"
     },
     {
       "time": 73.0,
-      "text": "N"
+      "text": "我们夏氏集团"
+    },
+    {
+      "time": 74.0,
+      "text": "早在三年前就破产了"
+    },
+    {
+      "time": 75.0,
+      "text": "早在三年前就破产了"
+    },
+    {
+      "time": 76.0,
+      "text": "你堂堂陆氏集团继承人"
     },
     {
       "time": 77.0,
-      "text": "C"
+      "text": "你堂堂陆氏集团继承人"
+    },
+    {
+      "time": 78.0,
+      "text": "甘愿隐姓埋名"
+    },
+    {
+      "time": 79.0,
+      "text": "来我们公司做一个小职员"
+    },
+    {
+      "time": 80.0,
+      "text": "来我们公司做一个小职员"
+    },
+    {
+      "time": 81.0,
+      "text": "一次次帮公司填窟窿"
     },
     {
       "time": 82.0,
-      "text": "B"
+      "text": "一次次帮公司填窟窿"
+    },
+    {
+      "time": 83.0,
+      "text": "我隐瞒身份"
+    },
+    {
+      "time": 84.0,
+      "text": "一是不想让公司上下知道"
+    },
+    {
+      "time": 85.0,
+      "text": "一是不想让公司上下知道"
+    },
+    {
+      "time": 86.0,
+      "text": "夏氏靠陆氏撑腰"
+    },
+    {
+      "time": 87.0,
+      "text": "夏氏靠陆氏撑腰"
+    },
+    {
+      "time": 88.0,
+      "text": "免得人心浮动"
+    },
+    {
+      "time": 89.0,
+      "text": "也是对明瑶的一种考验吧"
+    },
+    {
+      "time": 90.0,
+      "text": "也是对明瑶的一种考验吧"
     },
     {
       "time": 91.0,
-      "text": "O"
+      "text": "明瑶她不懂事"
     },
     {
-      "time": 99.0,
-      "text": "A"
+      "time": 93.0,
+      "text": "不知道你的好"
     },
     {
-      "time": 107.0,
-      "text": "LI"
+      "time": 94.0,
+      "text": "我作为当爸的"
     },
     {
-      "time": 108.0,
-      "text": "11"
+      "time": 96.0,
+      "text": "真的很感激你啊"
     },
     {
-      "time": 110.0,
-      "text": "N"
+      "time": 101.0,
+      "text": "我车钥匙落在餐厅了"
     },
     {
-      "time": 111.0,
-      "text": "N"
+      "time": 102.0,
+      "text": "我车钥匙落在餐厅了"
     },
     {
-      "time": 112.0,
-      "text": "11 N"
+      "time": 103.0,
+      "text": "我回去拿一下"
     },
     {
-      "time": 118.0,
-      "text": "司"
+      "time": 114.0,
+      "text": "裁助理 宇轩"
     },
     {
-      "time": 119.0,
-      "text": "è"
+      "time": 115.0,
+      "text": "总裁助理 宇轩"
     }
   ],
-  "scene_context": "Chữ/phụ đề màn hình (PaddleOCR): [0.0s] （百度）网微刷条字（2026）第412924号; [1.0s] （百度）网微刷备字（2026）第412924号; [2.0s] (百度)网微刷备字(2026)第412924号; [3.0s] 百度)网微剧备字(2026)第412924号; [4.0s] （百度）网微刷备字（2026）第412924号; [7.0s] N; [15.0s] 11; [19.0s] 11; [21.0s] PPP; [22.0s] 0 o; [23.0s] bb; [28.0s] 1 0 Z; [29.0s] Z; [30.0s] Z; [31.0s] 1",
+  "scene_context": "Chữ/phụ đề màn hình (PaddleOCR): [3.0s] 你的饭给狗吃了; [4.0s] 你就该吃狗的; [5.0s] 你就该吃狗的; [6.0s] 狗吃完了; [7.0s] 该你吃了; [22.0s] 这是今天的午餐; [24.0s] 结婚三年; [25.0s] 我的妻子对餐饮要求; [26.0s] 我的妻子对餐饮要求; [27.0s] 苛刻到极致; [29.0s] 从不吃外卖; [30.0s] 不碰垃圾食品; [31.0s] 所以我每天四点起; [32.0s] 所以我每天四点起; [33.0s] 给她做最健康卫生的三餐",
   "speaker_refs": {
     "SPEAKER_02": {
       "ref_asset": "ref_speaker_SPEAKER_02.wav",
@@ -196,8 +316,8 @@
       "gender_hint": "female",
       "pitch_hz": 296.3,
       "asr_text": "老婆",
-      "ocr_text": "（百度）网微刷备字（2026）第412924号 (百度)网微刷备字(2026)第412924号 百度)网微剧备字(2026)第412924号",
-      "best_text": "（百度）网微刷备字（2026）第412924号 (百度)网微刷备字(2026)第412924号 百度)网微剧备字(2026)第412924号",
+      "ocr_text": "你的饭给狗吃了",
+      "best_text": "你的饭给狗吃了",
       "subtitle_source": "ocr_verified"
     },
     {
@@ -208,8 +328,8 @@
       "gender_hint": "female",
       "pitch_hz": 290.9,
       "asr_text": "你的饭给狗吃了",
-      "ocr_text": "（百度）网微刷备字（2026）第412924号 (百度)网微刷备字(2026)第412924号 百度)网微剧备字(2026)第412924号 （百度）网微刷备字（2026）第412924号",
-      "best_text": "（百度）网微刷备字（2026）第412924号 (百度)网微刷备字(2026)第412924号 百度)网微剧备字(2026)第412924号 （百度）网微刷备字（2026）第412924号",
+      "ocr_text": "你的饭给狗吃了 你就该吃狗的",
+      "best_text": "你的饭给狗吃了 你就该吃狗的",
       "subtitle_source": "ocr_verified"
     },
     {
@@ -220,8 +340,8 @@
       "gender_hint": "male",
       "pitch_hz": 97.6,
       "asr_text": "你就该吃狗的",
-      "ocr_text": "百度)网微剧备字(2026)第412924号 （百度）网微刷备字（2026）第412924号",
-      "best_text": "百度)网微剧备字(2026)第412924号 （百度）网微刷备字（2026）第412924号",
+      "ocr_text": "你的饭给狗吃了 你就该吃狗的 狗吃完了",
+      "best_text": "你的饭给狗吃了 你就该吃狗的 狗吃完了",
       "subtitle_source": "ocr_verified"
     },
     {
@@ -232,9 +352,9 @@
       "gender_hint": "female",
       "pitch_hz": 172.0,
       "asr_text": "狗吃完了",
-      "ocr_text": "N",
-      "best_text": "狗吃完了",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "你就该吃狗的 狗吃完了 该你吃了",
+      "best_text": "你就该吃狗的 狗吃完了 该你吃了",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 4,
@@ -244,9 +364,9 @@
       "gender_hint": "male",
       "pitch_hz": 78.8,
       "asr_text": "该你吃了",
-      "ocr_text": "N",
-      "best_text": "该你吃了",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "狗吃完了 该你吃了",
+      "best_text": "狗吃完了 该你吃了",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 5,
@@ -256,9 +376,9 @@
       "gender_hint": "male",
       "pitch_hz": 139.1,
       "asr_text": "吃",
-      "ocr_text": "N",
-      "best_text": "吃",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "该你吃了",
+      "best_text": "该你吃了",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 6,
@@ -268,8 +388,8 @@
       "gender_hint": "male",
       "pitch_hz": 75.5,
       "asr_text": "这是今天的午餐",
-      "ocr_text": "11 PPP 0 o bb",
-      "best_text": "11 PPP 0 o bb",
+      "ocr_text": "这是今天的午餐 结婚三年",
+      "best_text": "这是今天的午餐 结婚三年",
       "subtitle_source": "ocr_verified"
     },
     {
@@ -280,8 +400,8 @@
       "gender_hint": "male",
       "pitch_hz": 105.3,
       "asr_text": "结婚三年",
-      "ocr_text": "0 o bb",
-      "best_text": "0 o bb",
+      "ocr_text": "这是今天的午餐 结婚三年 我的妻子对餐饮要求",
+      "best_text": "这是今天的午餐 结婚三年 我的妻子对餐饮要求",
       "subtitle_source": "ocr_verified"
     },
     {
@@ -292,9 +412,9 @@
       "gender_hint": "male",
       "pitch_hz": 103.9,
       "asr_text": "我的妻子对餐饮要求苛刻到极致",
-      "ocr_text": "1 0 Z Z",
-      "best_text": "我的妻子对餐饮要求苛刻到极致",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "结婚三年 我的妻子对餐饮要求 苛刻到极致 从不吃外卖",
+      "best_text": "结婚三年 我的妻子对餐饮要求 苛刻到极致 从不吃外卖",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 9,
@@ -304,8 +424,8 @@
       "gender_hint": "male",
       "pitch_hz": 84.7,
       "asr_text": "从不吃外卖",
-      "ocr_text": "1 0 Z Z",
-      "best_text": "1 0 Z Z",
+      "ocr_text": "从不吃外卖 不碰垃圾食品",
+      "best_text": "从不吃外卖 不碰垃圾食品",
       "subtitle_source": "ocr_verified"
     },
     {
@@ -316,9 +436,9 @@
       "gender_hint": "male",
       "pitch_hz": 95.2,
       "asr_text": "不碰垃圾食品",
-      "ocr_text": "Z 1",
-      "best_text": "不碰垃圾食品",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "从不吃外卖 不碰垃圾食品 所以我每天四点起",
+      "best_text": "从不吃外卖 不碰垃圾食品 所以我每天四点起",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 11,
@@ -328,9 +448,9 @@
       "gender_hint": "male",
       "pitch_hz": 122.1,
       "asr_text": "所以我每天四点起",
-      "ocr_text": "Z 1 Z",
-      "best_text": "所以我每天四点起",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "不碰垃圾食品 所以我每天四点起 给她做最健康卫生的三餐",
+      "best_text": "不碰垃圾食品 所以我每天四点起 给她做最健康卫生的三餐",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 12,
@@ -340,9 +460,9 @@
       "gender_hint": "male",
       "pitch_hz": 77.3,
       "asr_text": "给她做最健康卫生的三餐",
-      "ocr_text": "Z qb",
-      "best_text": "给她做最健康卫生的三餐",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "所以我每天四点起 给她做最健康卫生的三餐 今天食材新鲜吗",
+      "best_text": "所以我每天四点起 给她做最健康卫生的三餐 今天食材新鲜吗",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 13,
@@ -352,9 +472,9 @@
       "gender_hint": "female",
       "pitch_hz": 340.4,
       "asr_text": "今天食材新鲜吗",
-      "ocr_text": "qb",
-      "best_text": "今天食材新鲜吗",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "给她做最健康卫生的三餐 今天食材新鲜吗 都是早上四点 从菜市场买最新鲜的食材",
+      "best_text": "给她做最健康卫生的三餐 今天食材新鲜吗 都是早上四点 从菜市场买最新鲜的食材",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 14,
@@ -364,9 +484,9 @@
       "gender_hint": "male",
       "pitch_hz": 114.3,
       "asr_text": "都是早上四点",
-      "ocr_text": "qb",
-      "best_text": "都是早上四点",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "今天食材新鲜吗 都是早上四点 从菜市场买最新鲜的食材",
+      "best_text": "今天食材新鲜吗 都是早上四点 从菜市场买最新鲜的食材",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 15,
@@ -376,9 +496,9 @@
       "gender_hint": "male",
       "pitch_hz": 104.6,
       "asr_text": "从菜市场买最新鲜的食材",
-      "ocr_text": "",
-      "best_text": "从菜市场买最新鲜的食材",
-      "subtitle_source": "asr_only"
+      "ocr_text": "都是早上四点 从菜市场买最新鲜的食材 菜擦洗了几遍",
+      "best_text": "都是早上四点 从菜市场买最新鲜的食材 菜擦洗了几遍",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 16,
@@ -388,9 +508,9 @@
       "gender_hint": "female",
       "pitch_hz": 163.3,
       "asr_text": "菜市场洗了几遍",
-      "ocr_text": "",
-      "best_text": "菜市场洗了几遍",
-      "subtitle_source": "asr_only"
+      "ocr_text": "从菜市场买最新鲜的食材 菜擦洗了几遍 三遍",
+      "best_text": "从菜市场买最新鲜的食材 菜擦洗了几遍 三遍",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 17,
@@ -400,9 +520,9 @@
       "gender_hint": "male",
       "pitch_hz": 133.3,
       "asr_text": "三遍",
-      "ocr_text": "",
-      "best_text": "三遍",
-      "subtitle_source": "asr_only"
+      "ocr_text": "菜擦洗了几遍 三遍 还用果蔬清洁剂",
+      "best_text": "菜擦洗了几遍 三遍 还用果蔬清洁剂",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 18,
@@ -412,9 +532,9 @@
       "gender_hint": "male",
       "pitch_hz": 121.2,
       "asr_text": "还用果蔬清洁剂",
-      "ocr_text": "11",
-      "best_text": "还用果蔬清洁剂",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "三遍 还用果蔬清洁剂 浸泡了十五分钟",
+      "best_text": "三遍 还用果蔬清洁剂 浸泡了十五分钟",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 19,
@@ -424,9 +544,9 @@
       "gender_hint": "male",
       "pitch_hz": 113.5,
       "asr_text": "浸泡了十五分钟",
-      "ocr_text": "11",
-      "best_text": "浸泡了十五分钟",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "还用果蔬清洁剂 浸泡了十五分钟 行了",
+      "best_text": "还用果蔬清洁剂 浸泡了十五分钟 行了",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 20,
@@ -436,9 +556,9 @@
       "gender_hint": "female",
       "pitch_hz": 307.7,
       "asr_text": "行了",
-      "ocr_text": "11",
-      "best_text": "行了",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "浸泡了十五分钟 行了 你走吧",
+      "best_text": "浸泡了十五分钟 行了 你走吧",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 21,
@@ -448,9 +568,9 @@
       "gender_hint": "female",
       "pitch_hz": 333.3,
       "asr_text": "你走吧",
-      "ocr_text": "",
-      "best_text": "你走吧",
-      "subtitle_source": "asr_only"
+      "ocr_text": "行了 你走吧 你一个行政部的小职员",
+      "best_text": "行了 你走吧 你一个行政部的小职员",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 22,
@@ -460,9 +580,9 @@
       "gender_hint": "female",
       "pitch_hz": 205.1,
       "asr_text": "你一个行政部的小职员",
-      "ocr_text": "U 女",
-      "best_text": "你一个行政部的小职员",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "你走吧 你一个行政部的小职员 跟我这待太久",
+      "best_text": "你走吧 你一个行政部的小职员 跟我这待太久",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 23,
@@ -472,8 +592,8 @@
       "gender_hint": "male",
       "pitch_hz": 109.6,
       "asr_text": "跟我这儿待待久",
-      "ocr_text": "U 女 女",
-      "best_text": "U 女 女",
+      "ocr_text": "跟我这待太久 会引起别人不必要的揣测",
+      "best_text": "跟我这待太久 会引起别人不必要的揣测",
       "subtitle_source": "ocr_verified"
     },
     {
@@ -484,8 +604,8 @@
       "gender_hint": "male",
       "pitch_hz": 161.6,
       "asr_text": "会引起别人不必要的喘息",
-      "ocr_text": "U 女 女 U 女",
-      "best_text": "U 女 女 U 女",
+      "ocr_text": "跟我这待太久 会引起别人不必要的揣测",
+      "best_text": "跟我这待太久 会引起别人不必要的揣测",
       "subtitle_source": "ocr_verified"
     },
     {
@@ -496,8 +616,8 @@
       "gender_hint": "male",
       "pitch_hz": 131.1,
       "asr_text": "好",
-      "ocr_text": "U 女",
-      "best_text": "U 女",
+      "ocr_text": "会引起别人不必要的揣测 那你趁热吃",
+      "best_text": "会引起别人不必要的揣测 那你趁热吃",
       "subtitle_source": "ocr_verified"
     },
     {
@@ -508,9 +628,9 @@
       "gender_hint": "male",
       "pitch_hz": 97.0,
       "asr_text": "那你趁热吃",
-      "ocr_text": "",
-      "best_text": "那你趁热吃",
-      "subtitle_source": "asr_only"
+      "ocr_text": "那你趁热吃 凉了对胃不好",
+      "best_text": "那你趁热吃 凉了对胃不好",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 27,
@@ -520,9 +640,9 @@
       "gender_hint": "male",
       "pitch_hz": 90.9,
       "asr_text": "凉了对胃不好",
-      "ocr_text": "",
-      "best_text": "凉了对胃不好",
-      "subtitle_source": "asr_only"
+      "ocr_text": "那你趁热吃 凉了对胃不好",
+      "best_text": "那你趁热吃 凉了对胃不好",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 28,
@@ -532,8 +652,8 @@
       "gender_hint": "male",
       "pitch_hz": 116.8,
       "asr_text": "言辰",
-      "ocr_text": "5 Z",
-      "best_text": "5 Z",
+      "ocr_text": "凉了对胃不好 你又去给瑶瑶送饭了",
+      "best_text": "凉了对胃不好 你又去给瑶瑶送饭了",
       "subtitle_source": "ocr_verified"
     },
     {
@@ -544,9 +664,9 @@
       "gender_hint": "male",
       "pitch_hz": 134.5,
       "asr_text": "你又去给瑶瑶送饭了",
-      "ocr_text": "Z S 乙",
-      "best_text": "你又去给瑶瑶送饭了",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "你又去给瑶瑶送饭了 真是辛苦你了 照顾妻子",
+      "best_text": "你又去给瑶瑶送饭了 真是辛苦你了 照顾妻子",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 30,
@@ -556,8 +676,8 @@
       "gender_hint": "male",
       "pitch_hz": 140.4,
       "asr_text": "真是辛苦你了",
-      "ocr_text": "Z S 乙",
-      "best_text": "Z S 乙",
+      "ocr_text": "你又去给瑶瑶送饭了 真是辛苦你了 照顾妻子 只是我作为丈夫的责任",
+      "best_text": "你又去给瑶瑶送饭了 真是辛苦你了 照顾妻子 只是我作为丈夫的责任",
       "subtitle_source": "ocr_verified"
     },
     {
@@ -568,8 +688,8 @@
       "gender_hint": "male",
       "pitch_hz": 122.1,
       "asr_text": "照顾妻子",
-      "ocr_text": "S 乙",
-      "best_text": "S 乙",
+      "ocr_text": "真是辛苦你了 照顾妻子 只是我作为丈夫的责任",
+      "best_text": "真是辛苦你了 照顾妻子 只是我作为丈夫的责任",
       "subtitle_source": "ocr_verified"
     },
     {
@@ -580,9 +700,9 @@
       "gender_hint": "male",
       "pitch_hz": 125.0,
       "asr_text": "只是我作为丈夫的责任",
-      "ocr_text": "乙",
-      "best_text": "只是我作为丈夫的责任",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "照顾妻子 只是我作为丈夫的责任 当年要不是你",
+      "best_text": "照顾妻子 只是我作为丈夫的责任 当年要不是你",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 33,
@@ -592,9 +712,9 @@
       "gender_hint": "male",
       "pitch_hz": 122.1,
       "asr_text": "当年要不是你",
-      "ocr_text": "",
-      "best_text": "当年要不是你",
-      "subtitle_source": "asr_only"
+      "ocr_text": "只是我作为丈夫的责任 当年要不是你 与我们夏氏商业联姻",
+      "best_text": "只是我作为丈夫的责任 当年要不是你 与我们夏氏商业联姻",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 34,
@@ -604,9 +724,9 @@
       "gender_hint": "male",
       "pitch_hz": 126.0,
       "asr_text": "与我们夏氏商业联姻",
-      "ocr_text": "N",
-      "best_text": "与我们夏氏商业联姻",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "当年要不是你 与我们夏氏商业联姻 我们夏氏集团 早在三年前就破产了",
+      "best_text": "当年要不是你 与我们夏氏商业联姻 我们夏氏集团 早在三年前就破产了",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 35,
@@ -616,9 +736,9 @@
       "gender_hint": "male",
       "pitch_hz": 126.0,
       "asr_text": "我们夏氏集团",
-      "ocr_text": "N",
-      "best_text": "我们夏氏集团",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "与我们夏氏商业联姻 我们夏氏集团 早在三年前就破产了",
+      "best_text": "与我们夏氏商业联姻 我们夏氏集团 早在三年前就破产了",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 36,
@@ -628,9 +748,9 @@
       "gender_hint": "male",
       "pitch_hz": 87.0,
       "asr_text": "早在三年前就破产了",
-      "ocr_text": "C",
-      "best_text": "早在三年前就破产了",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "早在三年前就破产了 你堂堂陆氏集团继承人",
+      "best_text": "早在三年前就破产了 你堂堂陆氏集团继承人",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 37,
@@ -640,9 +760,9 @@
       "gender_hint": "male",
       "pitch_hz": 118.5,
       "asr_text": "你谈谈陆氏集团继承人",
-      "ocr_text": "C",
-      "best_text": "你谈谈陆氏集团继承人",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "早在三年前就破产了 你堂堂陆氏集团继承人 甘愿隐姓埋名 来我们公司做一个小职员",
+      "best_text": "早在三年前就破产了 你堂堂陆氏集团继承人 甘愿隐姓埋名 来我们公司做一个小职员",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 38,
@@ -652,9 +772,9 @@
       "gender_hint": "male",
       "pitch_hz": 122.1,
       "asr_text": "甘愿引信埋名",
-      "ocr_text": "C",
-      "best_text": "甘愿引信埋名",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "你堂堂陆氏集团继承人 甘愿隐姓埋名 来我们公司做一个小职员",
+      "best_text": "你堂堂陆氏集团继承人 甘愿隐姓埋名 来我们公司做一个小职员",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 39,
@@ -664,9 +784,9 @@
       "gender_hint": "male",
       "pitch_hz": 123.1,
       "asr_text": "来我们公司",
-      "ocr_text": "",
-      "best_text": "来我们公司",
-      "subtitle_source": "asr_only"
+      "ocr_text": "甘愿隐姓埋名 来我们公司做一个小职员",
+      "best_text": "甘愿隐姓埋名 来我们公司做一个小职员",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 40,
@@ -676,9 +796,9 @@
       "gender_hint": "male",
       "pitch_hz": 125.0,
       "asr_text": "做一个小职员",
-      "ocr_text": "",
-      "best_text": "做一个小职员",
-      "subtitle_source": "asr_only"
+      "ocr_text": "来我们公司做一个小职员 一次次帮公司填窟窿",
+      "best_text": "来我们公司做一个小职员 一次次帮公司填窟窿",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 41,
@@ -688,9 +808,9 @@
       "gender_hint": "male",
       "pitch_hz": 121.2,
       "asr_text": "一次次帮公司填窟窿",
-      "ocr_text": "B",
-      "best_text": "一次次帮公司填窟窿",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "来我们公司做一个小职员 一次次帮公司填窟窿 我隐瞒身份 一是不想让公司上下知道",
+      "best_text": "来我们公司做一个小职员 一次次帮公司填窟窿 我隐瞒身份 一是不想让公司上下知道",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 42,
@@ -700,9 +820,9 @@
       "gender_hint": "male",
       "pitch_hz": 128.0,
       "asr_text": "我隐瞒身份",
-      "ocr_text": "B",
-      "best_text": "我隐瞒身份",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "一次次帮公司填窟窿 我隐瞒身份 一是不想让公司上下知道",
+      "best_text": "一次次帮公司填窟窿 我隐瞒身份 一是不想让公司上下知道",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 43,
@@ -712,9 +832,9 @@
       "gender_hint": "female",
       "pitch_hz": 235.3,
       "asr_text": "一是不想让公司上下知道",
-      "ocr_text": "",
-      "best_text": "一是不想让公司上下知道",
-      "subtitle_source": "asr_only"
+      "ocr_text": "我隐瞒身份 一是不想让公司上下知道 夏氏靠陆氏撑腰",
+      "best_text": "我隐瞒身份 一是不想让公司上下知道 夏氏靠陆氏撑腰",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 44,
@@ -724,9 +844,9 @@
       "gender_hint": "male",
       "pitch_hz": 81.2,
       "asr_text": "夏氏靠陆氏撑腰",
-      "ocr_text": "",
-      "best_text": "夏氏靠陆氏撑腰",
-      "subtitle_source": "asr_only"
+      "ocr_text": "一是不想让公司上下知道 夏氏靠陆氏撑腰 免得人心浮动",
+      "best_text": "一是不想让公司上下知道 夏氏靠陆氏撑腰 免得人心浮动",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 45,
@@ -736,9 +856,9 @@
       "gender_hint": "male",
       "pitch_hz": 86.0,
       "asr_text": "免得人心浮动",
-      "ocr_text": "",
-      "best_text": "免得人心浮动",
-      "subtitle_source": "asr_only"
+      "ocr_text": "夏氏靠陆氏撑腰 免得人心浮动 也是对明瑶的一种考验吧",
+      "best_text": "夏氏靠陆氏撑腰 免得人心浮动 也是对明瑶的一种考验吧",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 46,
@@ -748,9 +868,9 @@
       "gender_hint": "male",
       "pitch_hz": 87.9,
       "asr_text": "二也是对明瑶的一种考验吧",
-      "ocr_text": "O",
-      "best_text": "二也是对明瑶的一种考验吧",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "免得人心浮动 也是对明瑶的一种考验吧 明瑶她不懂事",
+      "best_text": "免得人心浮动 也是对明瑶的一种考验吧 明瑶她不懂事",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 47,
@@ -760,9 +880,9 @@
       "gender_hint": "male",
       "pitch_hz": 131.1,
       "asr_text": "明瑶她不懂事",
-      "ocr_text": "O",
-      "best_text": "明瑶她不懂事",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "也是对明瑶的一种考验吧 明瑶她不懂事 不知道你的好",
+      "best_text": "也是对明瑶的一种考验吧 明瑶她不懂事 不知道你的好",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 48,
@@ -772,9 +892,9 @@
       "gender_hint": "male",
       "pitch_hz": 127.0,
       "asr_text": "我知道你的好",
-      "ocr_text": "O",
-      "best_text": "我知道你的好",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "明瑶她不懂事 不知道你的好 我作为当爸的",
+      "best_text": "明瑶她不懂事 不知道你的好 我作为当爸的",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 49,
@@ -784,9 +904,9 @@
       "gender_hint": "male",
       "pitch_hz": 124.0,
       "asr_text": "我作为当爸的",
-      "ocr_text": "",
-      "best_text": "我作为当爸的",
-      "subtitle_source": "asr_only"
+      "ocr_text": "不知道你的好 我作为当爸的 真的很感激你啊",
+      "best_text": "不知道你的好 我作为当爸的 真的很感激你啊",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 50,
@@ -796,9 +916,9 @@
       "gender_hint": "male",
       "pitch_hz": 124.0,
       "asr_text": "真的很感激你啊",
-      "ocr_text": "",
+      "ocr_text": "真的很感激你啊",
       "best_text": "真的很感激你啊",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 51,
@@ -808,9 +928,9 @@
       "gender_hint": "male",
       "pitch_hz": 91.4,
       "asr_text": "不用",
-      "ocr_text": "A",
+      "ocr_text": "",
       "best_text": "不用",
-      "subtitle_source": "asr_with_ocr_hint"
+      "subtitle_source": "asr_only"
     },
     {
       "id": 52,
@@ -820,9 +940,9 @@
       "gender_hint": "female",
       "pitch_hz": 225.4,
       "asr_text": "我车钥匙落在餐厅里",
-      "ocr_text": "A",
-      "best_text": "我车钥匙落在餐厅里",
-      "subtitle_source": "asr_with_ocr_hint"
+      "ocr_text": "我车钥匙落在餐厅了 我回去拿一下",
+      "best_text": "我车钥匙落在餐厅了 我回去拿一下",
+      "subtitle_source": "ocr_verified"
     },
     {
       "id": 53,
@@ -832,9 +952,9 @@
       "gender_hint": "male",
       "pitch_hz": 109.6,
       "asr_text": "我回去拿一下",
-      "ocr_text": "",
-      "best_text": "我回去拿一下",
-      "subtitle_source": "asr_only"
+      "ocr_text": "我车钥匙落在餐厅了 我回去拿一下",
+      "best_text": "我车钥匙落在餐厅了 我回去拿一下",
+      "subtitle_source": "ocr_verified"
     }
   ]
 }
