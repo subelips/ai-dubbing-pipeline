@@ -121,10 +121,10 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
 def ensure_deps():
     subprocess.run(
         [
-            sys.executable, "-m", "pip", "install", "-q", "--upgrade",
+            sys.executable, "-m", "pip", "install", "-q",
             "transformers", "accelerate", "pillow", "gdown",
         ],
-        check=True,
+        check=False,
     )
 
 
@@ -218,14 +218,81 @@ def load_qwen3_vl():
     return model, processor
 
 
+def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_refs: dict, fallback_context: str) -> tuple[str, dict]:
+    updated_speakers = {k: dict(v) for k, v in (speaker_refs or {}).items()}
+    if not frame_paths:
+        for spk_id, info in updated_speakers.items():
+            if "gender" not in info:
+                hint = info.get("gender_hint", "unknown")
+                info["gender"] = hint if hint in ("male", "female") else "female"
+        return fallback_context or "", updated_speakers
+
+    import torch
+    from PIL import Image
+
+    images = [Image.open(p).convert("RGB") for p in frame_paths]
+    content = [{"type": "image", "image": img} for img in images]
+    content.append({
+        "type": "text",
+        "text": (
+            "Hãy gắn nhãn chi tiết cho đoạn video này bằng tiếng Việt ngắn gọn: "
+            "1) Bối cảnh, cảm xúc và mối quan hệ xưng hô nhân vật; "
+            "2) Ước lượng giới tính ('male' hoặc 'female') cho từng speaker nếu có thể. "
+            f"Gợi ý thông số âm thanh từ Stage 1: {json.dumps(speaker_refs, ensure_ascii=False)}. "
+            "Trả về JSON thuần dạng: {\"scene_label\": \"...\", \"speakers\": {\"SPEAKER_00\": \"male|female\"}}."
+        ),
+    })
+
+    messages = [{"role": "user", "content": content}]
+    prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = processor(text=[prompt], images=images, return_tensors="pt")
+    if torch.cuda.is_available():
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    with torch.inference_mode():
+        out_ids = model.generate(**inputs, max_new_tokens=220, do_sample=False)
+    trimmed = [out[len(inp):] for inp, out in zip(inputs["input_ids"], out_ids)]
+    raw_out = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
+
+    del inputs, out_ids, trimmed, images
+    free_gpu()
+
+    scene_label = fallback_context or ""
+    try:
+        clean_json = raw_out
+        if "```" in clean_json:
+            clean_json = clean_json.split("```json")[-1].split("```")[0].strip()
+        parsed = json.loads(clean_json)
+        if isinstance(parsed, dict):
+            if parsed.get("scene_label"):
+                lbl = str(parsed["scene_label"]).strip()
+                scene_label = f"{lbl} | {fallback_context}".strip(" |") if fallback_context else lbl
+            spk_map = parsed.get("speakers") or {}
+            if isinstance(spk_map, dict):
+                for spk_id, g_val in spk_map.items():
+                    g_norm = str(g_val).lower().strip()
+                    if g_norm in ("male", "nam"):
+                        updated_speakers.setdefault(spk_id, {})["gender"] = "male"
+                    elif g_norm in ("female", "nữ", "nu"):
+                        updated_speakers.setdefault(spk_id, {})["gender"] = "female"
+    except Exception:
+        if raw_out:
+            scene_label = f"{raw_out} | {fallback_context}".strip(" |") if fallback_context else raw_out
+
+    for spk_id, info in updated_speakers.items():
+        if "gender" not in info:
+            hint = info.get("gender_hint", "unknown")
+            info["gender"] = hint if hint in ("male", "female") else "female"
+
+    return scene_label, updated_speakers
+
+
 def _clean_vietnamese_translation(text_vi: str, fallback_src: str) -> str:
     txt = " ".join(str(text_vi or "").split()).strip()
-    # Loại bỏ ký tự Hán sót lại nếu có
     txt = re.sub(r"[\u4e00-\u9fff]+", "", txt)
     txt = re.sub(r"\s+([,.!?;:])", r"\1", txt)
     txt = re.sub(r"\s{2,}", " ", txt).strip()
 
-    # Chuẩn hóa tên riêng phổ biến trong tập mẫu nếu mô hình phiên âm lệch
     txt = re.sub(r"\bMinh Nhu\b", "Minh Dao", txt)
     txt = re.sub(r"\bLạc thị\b", "Lục thị", txt, flags=re.IGNORECASE)
 
@@ -235,7 +302,6 @@ def _clean_vietnamese_translation(text_vi: str, fallback_src: str) -> str:
 
 
 def _split_utterance_across_segments(utterance_vi: str, seg_list: list[dict]) -> list[str]:
-    """Phân bổ câu dịch hoàn chỉnh theo tỷ lệ thời lượng từng segment để giữ đủ 100% số câu."""
     if len(seg_list) == 1:
         return [utterance_vi.strip()]
 
@@ -264,7 +330,6 @@ def _split_utterance_across_segments(utterance_vi: str, seg_list: list[dict]) ->
 
 
 def _build_utterance_groups(segments: list[dict]) -> list[list[dict]]:
-    """Gom các segment liền mạch cùng người nói và cách nhau <= 1.2s thành cụm ý để dịch liền mạch."""
     if not segments:
         return []
     groups: list[list[dict]] = []
@@ -365,7 +430,6 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
         for local_i, vi_txt in got.items():
             utt_translations[start_g + local_i] = vi_txt
 
-        # Dịch bù riêng từng cụm còn thiếu nếu có
         for local_i, grp in enumerate(sub_groups):
             g_id = start_g + local_i
             if not utt_translations.get(g_id):
