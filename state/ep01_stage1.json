@@ -278,7 +278,7 @@
     "SPEAKER_02": {
       "ref_asset": "ref_speaker_SPEAKER_02.wav",
       "gender_hint": "female",
-      "pitch_hz": 222.2
+      "pitch_hz": 224.3
     },
     "SPEAKER_00": {
       "ref_asset": "ref_speaker_SPEAKER_00.wav",
@@ -325,8 +325,8 @@
       "pitch_hz": 97.6,
       "asr_text": "你就该吃狗的",
       "ocr_text": "你的饭绐狗吃了",
-      "best_text": "你的饭绐狗吃了",
-      "subtitle_source": "ocr_corrected"
+      "best_text": "你就该吃狗的",
+      "subtitle_source": "asr_kept"
     },
     {
       "id": 3,
@@ -336,9 +336,9 @@
       "gender_hint": "female",
       "pitch_hz": 172.0,
       "asr_text": "狗吃完了",
-      "ocr_text": "",
+      "ocr_text": "你的饭绐狗吃了",
       "best_text": "狗吃完了",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_kept"
     },
     {
       "id": 4,
@@ -408,8 +408,8 @@
       "gender_hint": "male",
       "pitch_hz": 84.7,
       "asr_text": "从不吃外卖",
-      "ocr_text": "不碰垃圾食品",
-      "best_text": "不碰垃圾食品",
+      "ocr_text": "从不吃外卖",
+      "best_text": "从不吃外卖",
       "subtitle_source": "ocr_corrected"
     },
     {
@@ -433,8 +433,8 @@
       "pitch_hz": 122.1,
       "asr_text": "所以我每天四点起",
       "ocr_text": "不碰垃圾食品",
-      "best_text": "不碰垃圾食品",
-      "subtitle_source": "ocr_corrected"
+      "best_text": "所以我每天四点起",
+      "subtitle_source": "asr_kept"
     },
     {
       "id": 12,
@@ -457,8 +457,8 @@
       "pitch_hz": 340.4,
       "asr_text": "今天食材新鲜吗",
       "ocr_text": "都是早上四点",
-      "best_text": "都是早上四点",
-      "subtitle_source": "ocr_corrected"
+      "best_text": "今天食材新鲜吗",
+      "subtitle_source": "asr_kept"
     },
     {
       "id": 14,
@@ -468,9 +468,9 @@
       "gender_hint": "male",
       "pitch_hz": 114.3,
       "asr_text": "都是早上四点",
-      "ocr_text": "从莱市场买最新鲜的食材",
-      "best_text": "从莱市场买最新鲜的食材",
-      "subtitle_source": "ocr_extended"
+      "ocr_text": "都是早上四点",
+      "best_text": "都是早上四点",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 15,
@@ -504,9 +504,9 @@
       "gender_hint": "male",
       "pitch_hz": 133.3,
       "asr_text": "三遍",
-      "ocr_text": "还用果蔬清洁剂",
+      "ocr_text": "三遍",
       "best_text": "三遍",
-      "subtitle_source": "asr_kept"
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 18,
@@ -540,9 +540,9 @@
       "gender_hint": "female",
       "pitch_hz": 307.7,
       "asr_text": "行了",
-      "ocr_text": "",
+      "ocr_text": "浸泡了十五分钟",
       "best_text": "行了",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_kept"
     },
     {
       "id": 21,
@@ -552,9 +552,9 @@
       "gender_hint": "female",
       "pitch_hz": 333.3,
       "asr_text": "你走吧",
-      "ocr_text": "",
+      "ocr_text": "你一个行政部的小职员",
       "best_text": "你走吧",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_kept"
     },
     {
       "id": 22,
@@ -756,9 +756,9 @@
       "gender_hint": "male",
       "pitch_hz": 122.1,
       "asr_text": "甘愿引信埋名",
-      "ocr_text": "来我们公司做一个小职员",
-      "best_text": "来我们公司做一个小职员",
-      "subtitle_source": "ocr_extended"
+      "ocr_text": "甘愿隐姓埋名",
+      "best_text": "甘愿隐姓埋名",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 39,
@@ -792,9 +792,9 @@
       "gender_hint": "male",
       "pitch_hz": 121.2,
       "asr_text": "一次次帮公司填窟窿",
-      "ocr_text": "我隐瞒身份",
+      "ocr_text": "一次次帮公司填窟窿",
       "best_text": "一次次帮公司填窟窿",
-      "subtitle_source": "asr_kept"
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 42,
@@ -912,9 +912,9 @@
       "gender_hint": "male",
       "pitch_hz": 91.4,
       "asr_text": "不用",
-      "ocr_text": "",
+      "ocr_text": "不用",
       "best_text": "不用",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 52,
@@ -936,9 +936,9 @@
       "gender_hint": "male",
       "pitch_hz": 109.6,
       "asr_text": "我回去拿一下",
-      "ocr_text": "",
+      "ocr_text": "我车钥匙落在餐厅了",
       "best_text": "我回去拿一下",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_kept"
     }
   ]
 }
