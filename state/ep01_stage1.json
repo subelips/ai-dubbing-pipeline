@@ -275,20 +275,15 @@
   ],
   "scene_context": "Chữ/phụ đề màn hình (PaddleOCR): [0.8s] 老婆; [2.9s] 你的饭绐狗吃了; [23.2s] 结婚三年; [25.7s] 我的妻子对餐饮要求; [28.0s] 从不吃外卖; [30.1s] 不碰垃圾食品; [32.6s] 给她做最健康卫生的三餐; [36.3s] 都是早上四点; [38.4s] 从莱市场买最新鲜的食材; [40.4s] 三遍; [41.65s] 还用果蔬清洁剂; [42.95s] 浸泡了十五分钟; [46.45s] 你一个行政部的小职员; [47.75s] 跟我这待太久; [49.6s] 会引起别入不必要的揣测",
   "speaker_refs": {
-    "SPEAKER_02": {
-      "ref_asset": "ref_speaker_SPEAKER_02.wav",
+    "SPEAKER_01": {
+      "ref_asset": "ref_speaker_SPEAKER_01.wav",
       "gender_hint": "female",
-      "pitch_hz": 235.3
+      "pitch_hz": 342.9
     },
     "SPEAKER_00": {
       "ref_asset": "ref_speaker_SPEAKER_00.wav",
       "gender_hint": "male",
       "pitch_hz": 118.8
-    },
-    "SPEAKER_01": {
-      "ref_asset": "ref_speaker_SPEAKER_01.wav",
-      "gender_hint": "female",
-      "pitch_hz": 342.9
     }
   },
   "segments": [
@@ -296,7 +291,7 @@
       "id": 0,
       "start": 1.26,
       "end": 1.94,
-      "speaker_id": "SPEAKER_02",
+      "speaker_id": "SPEAKER_01",
       "gender_hint": "female",
       "pitch_hz": 296.3,
       "asr_text": "老婆",
@@ -356,7 +351,7 @@
       "id": 5,
       "start": 7.94,
       "end": 8.76,
-      "speaker_id": "SPEAKER_02",
+      "speaker_id": "SPEAKER_01",
       "gender_hint": "male",
       "pitch_hz": 139.1,
       "asr_text": "吃",
@@ -596,7 +591,7 @@
       "id": 25,
       "start": 50.69,
       "end": 55.22,
-      "speaker_id": "SPEAKER_02",
+      "speaker_id": "SPEAKER_01",
       "gender_hint": "male",
       "pitch_hz": 131.1,
       "asr_text": "好",
