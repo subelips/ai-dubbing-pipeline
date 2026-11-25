@@ -507,6 +507,19 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
+def mark_job_failed(err_text: str):
+    """Ghi FAILED vào state/jobs.json để UI và monitor thấy lỗi thay vì treo ở trạng thái cũ."""
+    try:
+        data, _ = sync.read_json("state/jobs.json")
+        job = data.setdefault("jobs", {}).setdefault(JOB_ID, {})
+        job["status"] = "FAILED_STAGE3"
+        job["error"] = err_text[-800:]
+        job["failed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        sync.write_json("state/jobs.json", data, f"FAILED stage3: {JOB_ID}")
+    except Exception as exc:
+        print(f"[WARN] Không ghi được trạng thái FAILED: {exc}")
+
+
 def main():
     send_telegram(TG_TOKEN, TG_CHAT, f"🎙️ <b>[Stage 3 - VieNeu-TTS]</b> Bắt đầu job <code>{JOB_ID}</code>")
     stage2_data, _ = sync.read_json(f"state/{JOB_ID}_stage2.json")
@@ -563,5 +576,6 @@ if __name__ == "__main__":
         main()
     except Exception:
         err = traceback.format_exc()[-1200:]
+        mark_job_failed(err)
         send_telegram(TG_TOKEN, TG_CHAT, f"❌ <b>[Stage 3 Lỗi]</b> <code>{JOB_ID}</code>:\n<pre>{err}</pre>")
         raise

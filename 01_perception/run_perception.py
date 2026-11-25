@@ -1055,6 +1055,19 @@ def run_demucs_and_ref_voices(audio_44k: str, segments: list[dict], work_dir: st
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
+def mark_job_failed(err_text: str):
+    """Ghi FAILED vào state/jobs.json để UI và monitor thấy lỗi thay vì treo ở trạng thái cũ."""
+    try:
+        data, _ = sync.read_json("state/jobs.json")
+        job = data.setdefault("jobs", {}).setdefault(JOB_ID, {})
+        job["status"] = "FAILED_STAGE1"
+        job["error"] = err_text[-800:]
+        job["failed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        sync.write_json("state/jobs.json", data, f"FAILED stage1: {JOB_ID}")
+    except Exception as exc:
+        print(f"[WARN] Không ghi được trạng thái FAILED: {exc}")
+
+
 def main():
     jobs_data, _ = sync.read_json("state/jobs.json")
     job = jobs_data.get("jobs", {}).get(JOB_ID)
@@ -1139,5 +1152,6 @@ if __name__ == "__main__":
         main()
     except Exception:
         err = traceback.format_exc()[-1200:]
+        mark_job_failed(err)
         send_telegram(TG_TOKEN, TG_CHAT, f"❌ <b>[Stage 1 Lỗi]</b> <code>{JOB_ID}</code>:\n<pre>{err}</pre>")
         raise
