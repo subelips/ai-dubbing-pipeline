@@ -3,12 +3,229 @@
   "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
   "subtitle_roi": {
     "x1": 0.02,
-    "y1": 0.7,
+    "y1": 0.55,
     "x2": 0.98,
-    "y2": 0.98
+    "y2": 0.99
   },
-  "screen_texts": [],
-  "scene_context": "",
+  "screen_texts": [
+    {
+      "time": 7.1,
+      "start": 6.6,
+      "end": 7.6,
+      "text": "该你吃了"
+    },
+    {
+      "time": 25.2,
+      "start": 23.8,
+      "end": 26.6,
+      "text": "我的妻子对餐饮要求"
+    },
+    {
+      "time": 28.9,
+      "start": 28.6,
+      "end": 29.2,
+      "text": "从不吃外卖"
+    },
+    {
+      "time": 32.6,
+      "start": 32.2,
+      "end": 33.0,
+      "text": "给她做最健康卫生的三餐"
+    },
+    {
+      "time": 34.3,
+      "start": 33.0,
+      "end": 35.6,
+      "text": "给她做最健康卫生的三餐"
+    },
+    {
+      "time": 38.4,
+      "start": 37.0,
+      "end": 39.8,
+      "text": "从莱市场买最新鲜的食材"
+    },
+    {
+      "time": 40.4,
+      "start": 39.8,
+      "end": 41.0,
+      "text": "莱擦洗了儿逾"
+    },
+    {
+      "time": 42.3,
+      "start": 41.0,
+      "end": 43.6,
+      "text": "浸泡了十五分钟"
+    },
+    {
+      "time": 44.7,
+      "start": 43.6,
+      "end": 45.8,
+      "text": "你走吧"
+    },
+    {
+      "time": 47.1,
+      "start": 45.8,
+      "end": 48.4,
+      "text": "跟我这待太久"
+    },
+    {
+      "time": 49.6,
+      "start": 48.4,
+      "end": 50.8,
+      "text": "会引起别入乔必要的揣测"
+    },
+    {
+      "time": 62.6,
+      "start": 61.8,
+      "end": 63.4,
+      "text": "亲 炎辰"
+    },
+    {
+      "time": 64.6,
+      "start": 63.4,
+      "end": 65.8,
+      "text": "真是辛苦你了"
+    },
+    {
+      "time": 66.0,
+      "start": 65.8,
+      "end": 66.2,
+      "text": "照顾妻子"
+    },
+    {
+      "time": 67.6,
+      "start": 66.2,
+      "end": 69.0,
+      "text": "只是我作为丈夫的责任"
+    },
+    {
+      "time": 69.8,
+      "start": 69.0,
+      "end": 70.6,
+      "text": "当年要不是你"
+    },
+    {
+      "time": 71.0,
+      "start": 70.6,
+      "end": 71.4,
+      "text": "与我们夏氏商业联姻"
+    },
+    {
+      "time": 71.9,
+      "start": 71.4,
+      "end": 72.4,
+      "text": "与我们夏氏商业联姻"
+    },
+    {
+      "time": 72.9,
+      "start": 72.4,
+      "end": 73.4,
+      "text": "我们夏氏集团"
+    },
+    {
+      "time": 73.8,
+      "start": 73.4,
+      "end": 74.2,
+      "text": "我们夏氏集团"
+    },
+    {
+      "time": 75.2,
+      "start": 74.2,
+      "end": 76.2,
+      "text": "早在三年前就破产了"
+    },
+    {
+      "time": 76.8,
+      "start": 76.2,
+      "end": 77.4,
+      "text": "你堂堂陆氏集团继承人"
+    },
+    {
+      "time": 77.7,
+      "start": 77.4,
+      "end": 78.0,
+      "text": "甘愿隐姓埋名"
+    },
+    {
+      "time": 79.3,
+      "start": 78.0,
+      "end": 80.6,
+      "text": "来我们公司做一个小职员"
+    },
+    {
+      "time": 83.5,
+      "start": 83.0,
+      "end": 84.0,
+      "text": "我隐瞒身份"
+    },
+    {
+      "time": 85.0,
+      "start": 84.0,
+      "end": 86.0,
+      "text": "一是不想让公司上下知道"
+    },
+    {
+      "time": 86.9,
+      "start": 86.0,
+      "end": 87.8,
+      "text": "夏氏靠陆氏撑腰"
+    },
+    {
+      "time": 90.2,
+      "start": 89.4,
+      "end": 91.0,
+      "text": "也是对明瑶的-种考验吧"
+    },
+    {
+      "time": 91.3,
+      "start": 91.0,
+      "end": 91.6,
+      "text": "明瑶她不懂事"
+    },
+    {
+      "time": 93.6,
+      "start": 92.8,
+      "end": 94.4,
+      "text": "不知道你的好"
+    },
+    {
+      "time": 94.8,
+      "start": 94.4,
+      "end": 95.2,
+      "text": "我作为当爸的"
+    },
+    {
+      "time": 95.7,
+      "start": 95.2,
+      "end": 96.2,
+      "text": "真的很感激你啊"
+    },
+    {
+      "time": 96.4,
+      "start": 96.2,
+      "end": 96.6,
+      "text": "真的很感激你啊"
+    },
+    {
+      "time": 101.8,
+      "start": 101.4,
+      "end": 102.2,
+      "text": "我车钥匙落在餐厅了"
+    },
+    {
+      "time": 103.1,
+      "start": 102.2,
+      "end": 104.0,
+      "text": "我回去拿一下"
+    },
+    {
+      "time": 114.4,
+      "start": 112.8,
+      "end": 116.0,
+      "text": "'宇拜"
+    }
+  ],
+  "scene_context": "Chữ/phụ đề màn hình (PaddleOCR): [7.1s] 该你吃了; [25.2s] 我的妻子对餐饮要求; [28.9s] 从不吃外卖; [32.6s] 给她做最健康卫生的三餐; [34.3s] 给她做最健康卫生的三餐; [38.4s] 从莱市场买最新鲜的食材; [40.4s] 莱擦洗了儿逾; [42.3s] 浸泡了十五分钟; [44.7s] 你走吧; [47.1s] 跟我这待太久; [49.6s] 会引起别入乔必要的揣测; [62.6s] 亲 炎辰; [64.6s] 真是辛苦你了; [66.0s] 照顾妻子; [67.6s] 只是我作为丈夫的责任",
   "speaker_refs": {
     "SPEAKER_02": {
       "ref_asset": "ref_speaker_SPEAKER_02.wav",
@@ -71,9 +288,9 @@
       "gender_hint": "female",
       "pitch_hz": 172.0,
       "asr_text": "狗吃完了",
-      "ocr_text": "",
-      "best_text": "狗吃完了",
-      "subtitle_source": "asr_only"
+      "ocr_text": "该你吃了",
+      "best_text": "该你吃了",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 4,
@@ -83,9 +300,9 @@
       "gender_hint": "male",
       "pitch_hz": 78.8,
       "asr_text": "该你吃了",
-      "ocr_text": "",
+      "ocr_text": "该你吃了",
       "best_text": "该你吃了",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 5,
@@ -119,9 +336,9 @@
       "gender_hint": "male",
       "pitch_hz": 105.3,
       "asr_text": "结婚三年",
-      "ocr_text": "",
-      "best_text": "结婚三年",
-      "subtitle_source": "asr_only"
+      "ocr_text": "我的妻子对餐饮要求",
+      "best_text": "我的妻子对餐饮要求",
+      "subtitle_source": "ocr_extended"
     },
     {
       "id": 8,
@@ -131,9 +348,9 @@
       "gender_hint": "male",
       "pitch_hz": 103.9,
       "asr_text": "我的妻子对餐饮要求苛刻到极致",
-      "ocr_text": "",
-      "best_text": "我的妻子对餐饮要求苛刻到极致",
-      "subtitle_source": "asr_only"
+      "ocr_text": "我的妻子对餐饮要求",
+      "best_text": "我的妻子对餐饮要求",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 9,
@@ -143,9 +360,9 @@
       "gender_hint": "male",
       "pitch_hz": 84.7,
       "asr_text": "从不吃外卖",
-      "ocr_text": "",
+      "ocr_text": "从不吃外卖",
       "best_text": "从不吃外卖",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 10,
@@ -167,9 +384,9 @@
       "gender_hint": "male",
       "pitch_hz": 122.1,
       "asr_text": "所以我每天四点起",
-      "ocr_text": "",
-      "best_text": "所以我每天四点起",
-      "subtitle_source": "asr_only"
+      "ocr_text": "给她做最健康卫生的三餐",
+      "best_text": "给她做最健康卫生的三餐",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 12,
@@ -179,9 +396,9 @@
       "gender_hint": "male",
       "pitch_hz": 77.3,
       "asr_text": "给她做最健康卫生的三餐",
-      "ocr_text": "",
+      "ocr_text": "给她做最健康卫生的三餐",
       "best_text": "给她做最健康卫生的三餐",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 13,
@@ -191,9 +408,9 @@
       "gender_hint": "female",
       "pitch_hz": 340.4,
       "asr_text": "今天食材新鲜吗",
-      "ocr_text": "",
-      "best_text": "今天食材新鲜吗",
-      "subtitle_source": "asr_only"
+      "ocr_text": "给她做最健康卫生的三餐 从莱市场买最新鲜的食材",
+      "best_text": "给她做最健康卫生的三餐 从莱市场买最新鲜的食材",
+      "subtitle_source": "ocr_extended"
     },
     {
       "id": 14,
@@ -203,9 +420,9 @@
       "gender_hint": "male",
       "pitch_hz": 114.3,
       "asr_text": "都是早上四点",
-      "ocr_text": "",
-      "best_text": "都是早上四点",
-      "subtitle_source": "asr_only"
+      "ocr_text": "从莱市场买最新鲜的食材",
+      "best_text": "从莱市场买最新鲜的食材",
+      "subtitle_source": "ocr_extended"
     },
     {
       "id": 15,
@@ -215,9 +432,9 @@
       "gender_hint": "male",
       "pitch_hz": 104.6,
       "asr_text": "从菜市场买最新鲜的食材",
-      "ocr_text": "",
-      "best_text": "从菜市场买最新鲜的食材",
-      "subtitle_source": "asr_only"
+      "ocr_text": "从莱市场买最新鲜的食材 莱擦洗了儿逾",
+      "best_text": "从莱市场买最新鲜的食材 莱擦洗了儿逾",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 16,
@@ -227,9 +444,9 @@
       "gender_hint": "female",
       "pitch_hz": 163.3,
       "asr_text": "菜市场洗了几遍",
-      "ocr_text": "",
-      "best_text": "菜市场洗了几遍",
-      "subtitle_source": "asr_only"
+      "ocr_text": "从莱市场买最新鲜的食材 莱擦洗了儿逾",
+      "best_text": "从莱市场买最新鲜的食材 莱擦洗了儿逾",
+      "subtitle_source": "ocr_extended"
     },
     {
       "id": 17,
@@ -239,9 +456,9 @@
       "gender_hint": "male",
       "pitch_hz": 133.3,
       "asr_text": "三遍",
-      "ocr_text": "",
+      "ocr_text": "莱擦洗了儿逾 浸泡了十五分钟",
       "best_text": "三遍",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_kept"
     },
     {
       "id": 18,
@@ -251,9 +468,9 @@
       "gender_hint": "male",
       "pitch_hz": 121.2,
       "asr_text": "还用果蔬清洁剂",
-      "ocr_text": "",
-      "best_text": "还用果蔬清洁剂",
-      "subtitle_source": "asr_only"
+      "ocr_text": "浸泡了十五分钟",
+      "best_text": "浸泡了十五分钟",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 19,
@@ -263,9 +480,9 @@
       "gender_hint": "male",
       "pitch_hz": 113.5,
       "asr_text": "浸泡了十五分钟",
-      "ocr_text": "",
-      "best_text": "浸泡了十五分钟",
-      "subtitle_source": "asr_only"
+      "ocr_text": "浸泡了十五分钟 你走吧",
+      "best_text": "浸泡了十五分钟 你走吧",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 20,
@@ -275,9 +492,9 @@
       "gender_hint": "female",
       "pitch_hz": 307.7,
       "asr_text": "行了",
-      "ocr_text": "",
+      "ocr_text": "浸泡了十五分钟 你走吧",
       "best_text": "行了",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_kept"
     },
     {
       "id": 21,
@@ -287,9 +504,9 @@
       "gender_hint": "female",
       "pitch_hz": 333.3,
       "asr_text": "你走吧",
-      "ocr_text": "",
+      "ocr_text": "你走吧",
       "best_text": "你走吧",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 22,
@@ -299,9 +516,9 @@
       "gender_hint": "female",
       "pitch_hz": 205.1,
       "asr_text": "你一个行政部的小职员",
-      "ocr_text": "",
-      "best_text": "你一个行政部的小职员",
-      "subtitle_source": "asr_only"
+      "ocr_text": "你走吧 跟我这待太久",
+      "best_text": "你走吧 跟我这待太久",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 23,
@@ -311,9 +528,9 @@
       "gender_hint": "male",
       "pitch_hz": 109.6,
       "asr_text": "跟我这儿待待久",
-      "ocr_text": "",
-      "best_text": "跟我这儿待待久",
-      "subtitle_source": "asr_only"
+      "ocr_text": "跟我这待太久 会引起别入乔必要的揣测",
+      "best_text": "跟我这待太久 会引起别入乔必要的揣测",
+      "subtitle_source": "ocr_extended"
     },
     {
       "id": 24,
@@ -323,9 +540,9 @@
       "gender_hint": "male",
       "pitch_hz": 161.6,
       "asr_text": "会引起别人不必要的喘息",
-      "ocr_text": "",
-      "best_text": "会引起别人不必要的喘息",
-      "subtitle_source": "asr_only"
+      "ocr_text": "跟我这待太久 会引起别入乔必要的揣测",
+      "best_text": "跟我这待太久 会引起别入乔必要的揣测",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 25,
@@ -335,9 +552,9 @@
       "gender_hint": "male",
       "pitch_hz": 131.1,
       "asr_text": "好",
-      "ocr_text": "",
+      "ocr_text": "会引起别入乔必要的揣测",
       "best_text": "好",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_kept"
     },
     {
       "id": 26,
@@ -371,9 +588,9 @@
       "gender_hint": "male",
       "pitch_hz": 116.8,
       "asr_text": "言辰",
-      "ocr_text": "",
+      "ocr_text": "亲 炎辰 真是辛苦你了",
       "best_text": "言辰",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "asr_kept"
     },
     {
       "id": 29,
@@ -383,9 +600,9 @@
       "gender_hint": "male",
       "pitch_hz": 134.5,
       "asr_text": "你又去给瑶瑶送饭了",
-      "ocr_text": "",
-      "best_text": "你又去给瑶瑶送饭了",
-      "subtitle_source": "asr_only"
+      "ocr_text": "亲 炎辰 真是辛苦你了",
+      "best_text": "亲 炎辰 真是辛苦你了",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 30,
@@ -395,9 +612,9 @@
       "gender_hint": "male",
       "pitch_hz": 140.4,
       "asr_text": "真是辛苦你了",
-      "ocr_text": "",
-      "best_text": "真是辛苦你了",
-      "subtitle_source": "asr_only"
+      "ocr_text": "真是辛苦你了 照顾妻子 只是我作为丈夫的责任",
+      "best_text": "真是辛苦你了 照顾妻子 只是我作为丈夫的责任",
+      "subtitle_source": "ocr_extended"
     },
     {
       "id": 31,
@@ -407,9 +624,9 @@
       "gender_hint": "male",
       "pitch_hz": 122.1,
       "asr_text": "照顾妻子",
-      "ocr_text": "",
-      "best_text": "照顾妻子",
-      "subtitle_source": "asr_only"
+      "ocr_text": "照顾妻子 只是我作为丈夫的责任",
+      "best_text": "照顾妻子 只是我作为丈夫的责任",
+      "subtitle_source": "ocr_extended"
     },
     {
       "id": 32,
@@ -419,9 +636,9 @@
       "gender_hint": "male",
       "pitch_hz": 125.0,
       "asr_text": "只是我作为丈夫的责任",
-      "ocr_text": "",
-      "best_text": "只是我作为丈夫的责任",
-      "subtitle_source": "asr_only"
+      "ocr_text": "只是我作为丈夫的责任 当年要不是你",
+      "best_text": "只是我作为丈夫的责任 当年要不是你",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 33,
@@ -431,9 +648,9 @@
       "gender_hint": "male",
       "pitch_hz": 122.1,
       "asr_text": "当年要不是你",
-      "ocr_text": "",
-      "best_text": "当年要不是你",
-      "subtitle_source": "asr_only"
+      "ocr_text": "只是我作为丈夫的责任 当年要不是你 与我们夏氏商业联姻",
+      "best_text": "只是我作为丈夫的责任 当年要不是你 与我们夏氏商业联姻",
+      "subtitle_source": "ocr_extended"
     },
     {
       "id": 34,
@@ -443,9 +660,9 @@
       "gender_hint": "male",
       "pitch_hz": 126.0,
       "asr_text": "与我们夏氏商业联姻",
-      "ocr_text": "",
-      "best_text": "与我们夏氏商业联姻",
-      "subtitle_source": "asr_only"
+      "ocr_text": "与我们夏氏商业联姻 我们夏氏集团",
+      "best_text": "与我们夏氏商业联姻 我们夏氏集团",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 35,
@@ -455,9 +672,9 @@
       "gender_hint": "male",
       "pitch_hz": 126.0,
       "asr_text": "我们夏氏集团",
-      "ocr_text": "",
-      "best_text": "我们夏氏集团",
-      "subtitle_source": "asr_only"
+      "ocr_text": "我们夏氏集团 早在三年前就破产了",
+      "best_text": "我们夏氏集团 早在三年前就破产了",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 36,
@@ -467,9 +684,9 @@
       "gender_hint": "male",
       "pitch_hz": 87.0,
       "asr_text": "早在三年前就破产了",
-      "ocr_text": "",
-      "best_text": "早在三年前就破产了",
-      "subtitle_source": "asr_only"
+      "ocr_text": "我们夏氏集团 早在三年前就破产了 你堂堂陆氏集团继承人",
+      "best_text": "我们夏氏集团 早在三年前就破产了 你堂堂陆氏集团继承人",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 37,
@@ -479,9 +696,9 @@
       "gender_hint": "male",
       "pitch_hz": 118.5,
       "asr_text": "你谈谈陆氏集团继承人",
-      "ocr_text": "",
-      "best_text": "你谈谈陆氏集团继承人",
-      "subtitle_source": "asr_only"
+      "ocr_text": "早在三年前就破产了 你堂堂陆氏集团继承人 甘愿隐姓埋名 来我们公司做一个小职员",
+      "best_text": "早在三年前就破产了 你堂堂陆氏集团继承人 甘愿隐姓埋名 来我们公司做一个小职员",
+      "subtitle_source": "ocr_extended"
     },
     {
       "id": 38,
@@ -491,9 +708,9 @@
       "gender_hint": "male",
       "pitch_hz": 122.1,
       "asr_text": "甘愿引信埋名",
-      "ocr_text": "",
-      "best_text": "甘愿引信埋名",
-      "subtitle_source": "asr_only"
+      "ocr_text": "甘愿隐姓埋名 来我们公司做一个小职员",
+      "best_text": "甘愿隐姓埋名 来我们公司做一个小职员",
+      "subtitle_source": "ocr_extended"
     },
     {
       "id": 39,
@@ -503,9 +720,9 @@
       "gender_hint": "male",
       "pitch_hz": 123.1,
       "asr_text": "来我们公司",
-      "ocr_text": "",
-      "best_text": "来我们公司",
-      "subtitle_source": "asr_only"
+      "ocr_text": "来我们公司做一个小职员",
+      "best_text": "来我们公司做一个小职员",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 40,
@@ -515,9 +732,9 @@
       "gender_hint": "male",
       "pitch_hz": 125.0,
       "asr_text": "做一个小职员",
-      "ocr_text": "",
-      "best_text": "做一个小职员",
-      "subtitle_source": "asr_only"
+      "ocr_text": "来我们公司做一个小职员",
+      "best_text": "来我们公司做一个小职员",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 41,
@@ -527,9 +744,9 @@
       "gender_hint": "male",
       "pitch_hz": 121.2,
       "asr_text": "一次次帮公司填窟窿",
-      "ocr_text": "",
-      "best_text": "一次次帮公司填窟窿",
-      "subtitle_source": "asr_only"
+      "ocr_text": "来我们公司做一个小职员 我隐瞒身份",
+      "best_text": "来我们公司做一个小职员 我隐瞒身份",
+      "subtitle_source": "ocr_extended"
     },
     {
       "id": 42,
@@ -539,9 +756,9 @@
       "gender_hint": "male",
       "pitch_hz": 128.0,
       "asr_text": "我隐瞒身份",
-      "ocr_text": "",
+      "ocr_text": "我隐瞒身份",
       "best_text": "我隐瞒身份",
-      "subtitle_source": "asr_only"
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 43,
@@ -551,9 +768,9 @@
       "gender_hint": "female",
       "pitch_hz": 235.3,
       "asr_text": "一是不想让公司上下知道",
-      "ocr_text": "",
-      "best_text": "一是不想让公司上下知道",
-      "subtitle_source": "asr_only"
+      "ocr_text": "我隐瞒身份 一是不想让公司上下知道",
+      "best_text": "我隐瞒身份 一是不想让公司上下知道",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 44,
@@ -563,9 +780,9 @@
       "gender_hint": "male",
       "pitch_hz": 81.2,
       "asr_text": "夏氏靠陆氏撑腰",
-      "ocr_text": "",
-      "best_text": "夏氏靠陆氏撑腰",
-      "subtitle_source": "asr_only"
+      "ocr_text": "一是不想让公司上下知道 夏氏靠陆氏撑腰",
+      "best_text": "一是不想让公司上下知道 夏氏靠陆氏撑腰",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 45,
@@ -575,9 +792,9 @@
       "gender_hint": "male",
       "pitch_hz": 86.0,
       "asr_text": "免得人心浮动",
-      "ocr_text": "",
-      "best_text": "免得人心浮动",
-      "subtitle_source": "asr_only"
+      "ocr_text": "夏氏靠陆氏撑腰",
+      "best_text": "夏氏靠陆氏撑腰",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 46,
@@ -587,9 +804,9 @@
       "gender_hint": "male",
       "pitch_hz": 87.9,
       "asr_text": "二也是对明瑶的一种考验吧",
-      "ocr_text": "",
-      "best_text": "二也是对明瑶的一种考验吧",
-      "subtitle_source": "asr_only"
+      "ocr_text": "也是对明瑶的-种考验吧 明瑶她不懂事",
+      "best_text": "也是对明瑶的-种考验吧 明瑶她不懂事",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 47,
@@ -599,9 +816,9 @@
       "gender_hint": "male",
       "pitch_hz": 131.1,
       "asr_text": "明瑶她不懂事",
-      "ocr_text": "",
-      "best_text": "明瑶她不懂事",
-      "subtitle_source": "asr_only"
+      "ocr_text": "也是对明瑶的-种考验吧 明瑶她不懂事",
+      "best_text": "也是对明瑶的-种考验吧 明瑶她不懂事",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 48,
@@ -611,9 +828,9 @@
       "gender_hint": "male",
       "pitch_hz": 127.0,
       "asr_text": "我知道你的好",
-      "ocr_text": "",
-      "best_text": "我知道你的好",
-      "subtitle_source": "asr_only"
+      "ocr_text": "不知道你的好",
+      "best_text": "不知道你的好",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 49,
@@ -623,9 +840,9 @@
       "gender_hint": "male",
       "pitch_hz": 124.0,
       "asr_text": "我作为当爸的",
-      "ocr_text": "",
-      "best_text": "我作为当爸的",
-      "subtitle_source": "asr_only"
+      "ocr_text": "不知道你的好 我作为当爸的 真的很感激你啊",
+      "best_text": "不知道你的好 我作为当爸的 真的很感激你啊",
+      "subtitle_source": "ocr_extended"
     },
     {
       "id": 50,
@@ -635,9 +852,9 @@
       "gender_hint": "male",
       "pitch_hz": 124.0,
       "asr_text": "真的很感激你啊",
-      "ocr_text": "",
-      "best_text": "真的很感激你啊",
-      "subtitle_source": "asr_only"
+      "ocr_text": "我作为当爸的 真的很感激你啊",
+      "best_text": "我作为当爸的 真的很感激你啊",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 51,
@@ -659,9 +876,9 @@
       "gender_hint": "female",
       "pitch_hz": 225.4,
       "asr_text": "我车钥匙落在餐厅里",
-      "ocr_text": "",
-      "best_text": "我车钥匙落在餐厅里",
-      "subtitle_source": "asr_only"
+      "ocr_text": "我车钥匙落在餐厅了 我回去拿一下",
+      "best_text": "我车钥匙落在餐厅了 我回去拿一下",
+      "subtitle_source": "ocr_corrected"
     },
     {
       "id": 53,
@@ -671,9 +888,9 @@
       "gender_hint": "male",
       "pitch_hz": 109.6,
       "asr_text": "我回去拿一下",
-      "ocr_text": "",
-      "best_text": "我回去拿一下",
-      "subtitle_source": "asr_only"
+      "ocr_text": "我车钥匙落在餐厅了 我回去拿一下",
+      "best_text": "我车钥匙落在餐厅了 我回去拿一下",
+      "subtitle_source": "ocr_corrected"
     }
   ]
 }
