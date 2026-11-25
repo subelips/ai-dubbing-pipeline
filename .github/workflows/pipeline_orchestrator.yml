@@ -132,6 +132,7 @@ jobs:
           GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p ~/.kaggle
           printf "%s" "$KAGGLE_API_TOKEN" > ~/.kaggle/access_token
@@ -147,6 +148,7 @@ jobs:
               "__INJECT_GH_PAT_TOKEN__": os.environ["GH_PAT_TOKEN"],
               "__INJECT_TELEGRAM_BOT_TOKEN__": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
               "__INJECT_TELEGRAM_CHAT_ID__": os.environ.get("TELEGRAM_CHAT_ID", ""),
+              "__INJECT_HF_TOKEN__": os.environ.get("HF_TOKEN", ""),
           }
           for k, v in replacements.items():
               code = code.replace(k, v)
