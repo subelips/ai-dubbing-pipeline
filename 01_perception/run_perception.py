@@ -169,7 +169,10 @@ def _have_module(name: str) -> bool:
 
 
 def _want_gpu_ocr() -> bool:
-    return os.environ.get("OCR_USE_GPU", "1").strip() == "1"
+    # Mặc định TẮT: cài paddlepaddle-gpu kéo nvidia-nccl-cu12 bản khác làm torch chết
+    # ("undefined symbol: ncclCommWindowDeregister") và tốn ~7 phút. Chỉ bật khi
+    # thật sự muốn đánh đổi (OCR_USE_GPU=1).
+    return os.environ.get("OCR_USE_GPU", "0").strip() == "1"
 
 
 def _paddle_has_cuda() -> bool:
@@ -952,6 +955,7 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
 
     candidate_rois = [
         (0.02, 0.70, 0.98, 0.98),
+        (0.02, 0.58, 0.98, 0.86),
         (0.02, 0.55, 0.98, 0.99),
         (0.0, 0.0, 1.0, 1.0),
     ]
@@ -971,12 +975,16 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
             is_easyocr = True
 
         active_frames = []
+        best_pick = None  # (hits, roi, mode, frames) — chọn ROI có nhiều phụ đề THẬT nhất
+        last_frames = []
+        last_roi = candidate_rois[-1]
 
         for idx_roi, roi in enumerate(candidate_rois):
             roi_dir = os.path.join(work_dir, f"ocr_frames_r{idx_roi}")
             frames = _extract_frames_for_roi(video_path, roi_dir, roi, fps)
             if not frames:
                 continue
+            last_frames, last_roi = frames, roi
 
             step = max(1, len(frames) // 12)
             probe_frames = frames[::step][:12]
@@ -1015,12 +1023,35 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
                     break
 
             engine_label = "EasyOCR" if is_easyocr else "PaddleOCR"
-            print(f"[INFO] [{engine_label}] ROI {roi} | mode={matched_mode or 'raw'} | hits={best_hits}/{len(probe_frames)} mẫu.")
-            if best_hits > 0 or idx_roi == len(candidate_rois) - 1:
-                chosen_roi = roi
-                chosen_mode = matched_mode or "raw"
-                active_frames = frames
+            print(f"[INFO] [{engine_label}] ROI {roi} | mode={matched_mode or 'raw'} | hits hợp lệ={best_hits}/{len(probe_frames)} mẫu.")
+            if best_hits > 0 and (best_pick is None or best_hits > best_pick[0]):
+                best_pick = (best_hits, roi, matched_mode or "raw", frames)
+            if best_hits >= 2:
                 break
+
+        if best_pick:
+            _, chosen_roi, chosen_mode, active_frames = best_pick
+        else:
+            # Không ROI nào có phụ đề hợp lệ (video chỉ có watermark) → vẫn chạy full pass
+            # trên ROI cuối để giữ hành vi cũ, nhưng text sẽ bị _clean_ocr_text lọc sạch.
+            chosen_roi, chosen_mode, active_frames = last_roi, "raw", last_frames
+        print(f"[INFO] ROI chọn: {chosen_roi} (mode={chosen_mode}, {len(active_frames)} khung)")
+
+        if os.environ.get("OCR_DIAG_EASYOCR", "1").strip() == "1" and not is_easyocr and active_frames:
+            try:
+                diag_engine = _init_easyocr_fallback()
+                step = max(1, len(active_frames) // 5)
+                samples = active_frames[::step][:5]
+                diag_texts = []
+                for _, p in samples:
+                    t_img = p if chosen_mode == "raw" else _preprocess_hardsub_image(p, chosen_mode)
+                    diag_texts.append(_ocr_single_image(diag_engine, t_img, is_easyocr=True, min_conf=0.25))
+                pretty = " | ".join((x or "")[:28] for x in diag_texts)
+                print(f"[DIAG] EasyOCR(GPU) 5 khung: {pretty}")
+                del diag_engine
+                free_gpu()
+            except Exception as diag_err:
+                print(f"[DIAG] EasyOCR không chạy được: {diag_err}")
 
         last_sig = None
         last_text = ""
