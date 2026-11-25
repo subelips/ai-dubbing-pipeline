@@ -11,14 +11,6 @@ import time
 import traceback
 import requests
 
-for _stream in (sys.stdout, sys.stderr):
-    _reconf = getattr(_stream, "reconfigure", None)  # log realtime, không bị buffer
-    if callable(_reconf):
-        try:
-            _reconf(line_buffering=True)
-        except Exception:
-            pass
-
 
 def get_cfg(key: str, injected: str) -> str:
     env_val = os.environ.get(key, "").strip()
@@ -44,7 +36,7 @@ class GitHubSync:
         self.repo = repo
         self.token = token
         self.state_branch = state_branch
-        self.api_base = f"https://api.github.com/repos/{repo}"
+        self.api_base = f"[https://api.github.com/repos/](https://api.github.com/repos/){repo}"
         self.headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -78,7 +70,7 @@ class GitHubSync:
             r = requests.put(url, headers=self.headers, json=body, timeout=30)
             if r.status_code in (200, 201):
                 return
-            if r.status_code in (409, 429, 500, 502, 503, 504):
+            if r.status_code == 409:
                 time.sleep(1.5 * (attempt + 1))
                 continue
             r.raise_for_status()
@@ -98,31 +90,18 @@ class GitHubSync:
         cr.raise_for_status()
         return cr.json()
 
-    def upload_asset(self, tag: str, file_path: str, max_attempts: int = 5):
-        """Upload asset lên Release, có retry cho 5xx/429 (GitHub hay trả 500/502 khi quá tải)."""
+    def upload_asset(self, tag: str, file_path: str):
+        release = self.ensure_release(tag)
+        upload_url = release["upload_url"].split("{")[0]
         filename = os.path.basename(file_path)
-        last_err = None
-        for attempt in range(max_attempts):
-            try:
-                release = self.ensure_release(tag)
-                upload_url = release["upload_url"].split("{")[0]
-                for asset in release.get("assets", []):
-                    if asset["name"] == filename:
-                        requests.delete(f"{self.api_base}/releases/assets/{asset['id']}", headers=self.headers, timeout=30)
-                up_headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/octet-stream"}
-                with open(file_path, "rb") as f:
-                    r = requests.post(f"{upload_url}?name={filename}", headers=up_headers, data=f.read(), timeout=300)
-                if r.status_code in (200, 201):
-                    return r.json().get("browser_download_url")
-                if r.status_code in (429, 500, 502, 503, 504):
-                    last_err = f"HTTP {r.status_code}"
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                r.raise_for_status()
-            except requests.RequestException as exc:
-                last_err = str(exc)
-                time.sleep(2 * (attempt + 1))
-        raise RuntimeError(f"Upload {filename} thất bại sau {max_attempts} lần: {last_err}")
+        for asset in release.get("assets", []):
+            if asset["name"] == filename:
+                requests.delete(f"{self.api_base}/releases/assets/{asset['id']}", headers=self.headers, timeout=30)
+        up_headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/octet-stream"}
+        with open(file_path, "rb") as f:
+            r = requests.post(f"{upload_url}?name={filename}", headers=up_headers, data=f.read(), timeout=300)
+        r.raise_for_status()
+        return r.json().get("browser_download_url")
 
     def download_asset(self, tag: str, filename: str, dest_path: str):
         release = self.ensure_release(tag)
@@ -146,7 +125,7 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
     clean_chat = str(chat_id).strip()
     try:
         requests.post(
-            f"https://api.telegram.org/bot{clean_token}/sendMessage",
+            f"[https://api.telegram.org/bot](https://api.telegram.org/bot){clean_token}/sendMessage",
             json={"chat_id": clean_chat, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": False},
             timeout=20,
         )
@@ -154,67 +133,20 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
         print(f"[WARN] Gửi Telegram thất bại: {e}")
 
 
-def _have_module(name: str) -> bool:
-    import importlib.util
-    try:
-        return importlib.util.find_spec(name) is not None
-    except Exception:
-        return False
-
-
 def ensure_deps():
     subprocess.run(["apt-get", "-qq", "update"], check=False)
     subprocess.run(["apt-get", "-qq", "install", "-y", "espeak-ng"], check=False)
-    # Không --upgrade numpy: bản mới làm lệch ABI của torch/paddle trong image Kaggle.
-    missing = [spec for mod, spec in (("vieneu", "vieneu"), ("soundfile", "soundfile"), ("gdown", "gdown")) if not _have_module(mod)]
-    if missing:
-        print(f"[INFO] pip install các gói còn thiếu: {missing}")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=True)
-    else:
-        print("[INFO] Đã đủ dependency, bỏ qua pip install.")
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "vieneu", "numpy", "soundfile", "gdown"],
+        check=True,
+    )
 
 
 def _normalize_gdrive_url(url: str) -> str:
     m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url) or re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
     if m:
-        return f"https://drive.google.com/uc?id={m.group(1)}"
+        return f"[https://drive.google.com/uc?id=](https://drive.google.com/uc?id=){m.group(1)}"
     return url
-
-
-def _state_asset_ref(ref: str) -> bool:
-    """True nếu ref trỏ vào file nằm trên nhánh pipeline-state (do web UI upload)."""
-    return ref.startswith("uploads_tmp/") or (ref.startswith("state/") and ref.endswith("manifest.json"))
-
-
-def _state_raw_bytes(sync: "GitHubSync", path: str) -> bytes:
-    headers = dict(sync.headers)
-    headers["Accept"] = "application/vnd.github.raw"
-    r = requests.get(
-        f"{sync.api_base}/contents/{path}",
-        headers=headers,
-        params={"ref": sync.state_branch},
-        timeout=180,
-    )
-    r.raise_for_status()
-    return r.content
-
-
-def download_from_state(sync: "GitHubSync", ref: str, dest_path: str):
-    """Ghép các mảnh upload từ web UI (manifest.json) thành 1 file video hoàn chỉnh."""
-    os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
-    if ref.endswith("manifest.json"):
-        manifest = json.loads(_state_raw_bytes(sync, ref).decode("utf-8"))
-        parts = manifest.get("parts") or []
-        if not parts:
-            raise RuntimeError(f"Manifest {ref} không có danh sách parts")
-        with open(dest_path, "wb") as out:
-            for part in parts:
-                out.write(_state_raw_bytes(sync, part))
-    else:
-        with open(dest_path, "wb") as out:
-            out.write(_state_raw_bytes(sync, ref))
-    if not os.path.exists(dest_path) or os.path.getsize(dest_path) < 1024:
-        raise RuntimeError(f"Tải video từ nhánh {sync.state_branch} thất bại: {ref}")
 
 
 def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
@@ -226,8 +158,6 @@ def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path
             subprocess.run([sys.executable, "-m", "gdown", direct_url, "-O", dest_path], check=True)
         else:
             subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
-    elif _state_asset_ref(ref):
-        download_from_state(sync, ref, dest_path)
     else:
         sync.download_asset(tag, ref, dest_path)
 
@@ -279,7 +209,7 @@ def init_vieneu_engine():
     return Vieneu()
 
 
-def pick_voice_for_gender(tts_engine, gender: str, offset: int = 0) -> str | None:
+def pick_voice_for_gender(tts_engine, gender: str) -> str | None:
     male_default = os.environ.get("VIENEU_MALE_VOICE", "Hải Đăng")
     female_default = os.environ.get("VIENEU_FEMALE_VOICE", "Ngọc Lan")
     target_gender = "male" if str(gender).lower() in ("male", "nam") else "female"
@@ -287,15 +217,19 @@ def pick_voice_for_gender(tts_engine, gender: str, offset: int = 0) -> str | Non
     try:
         voices = tts_engine.list_preset_voices() or []
         names = [v[1] if isinstance(v, (list, tuple)) and len(v) > 1 else str(v) for v in voices]
-        if not names:
-            return male_default if target_gender == "male" else female_default
         if target_gender == "male":
-            pool = [n for n in names if any(k in n.lower() for k in ["nam", "minh", "hải", "đăng", "quân", "adam", "vĩnh"])]
+            if male_default in names:
+                return male_default
+            for n in names:
+                if any(k in n.lower() for k in ["nam", "minh", "hải", "đăng", "quân", "adam", "vĩnh"]):
+                    return n
         else:
-            pool = [n for n in names if any(k in n.lower() for k in ["nữ", "nu", "lan", "mai", "anh", "my", "huyền"])]
-        pool = pool or names
-        # Mỗi speaker nhận một giọng khác nhau trong pool để không lặp giọng
-        return pool[offset % len(pool)]
+            if female_default in names:
+                return female_default
+            for n in names:
+                if any(k in n.lower() for k in ["nữ", "nu", "lan", "mai", "anh", "my", "huyền"]):
+                    return n
+        return names[0] if names else None
     except Exception:
         return male_default if target_gender == "male" else female_default
 
@@ -323,36 +257,69 @@ def _build_atempo_chain(ratio: float) -> str:
     return ",".join(parts)
 
 
-def synth_single_line(
+def _prepare_synth_units(stage2_data: dict) -> list[dict]:
+    """Ưu tiên tổng hợp theo cụm ý (utterances) để tránh đọc rời rạc từng mảnh ngắn."""
+    utterances = stage2_data.get("utterances") or []
+    lines = stage2_data.get("lines") or []
+    if utterances:
+        units = []
+        for idx, u in enumerate(utterances):
+            txt = (u.get("text_vi") or u.get("src_text") or "").strip()
+            if not txt:
+                continue
+            units.append({
+                "id": u.get("id", idx),
+                "start": float(u.get("start", 0.0)),
+                "end": float(u.get("end", float(u.get("start", 0.0)) + 1.0)),
+                "speaker_id": u.get("speaker_id", "SPEAKER_00"),
+                "gender": u.get("gender", "female"),
+                "text_vi": txt,
+                "line_count": len(u.get("segment_ids") or [1]),
+            })
+        if units:
+            return units
+
+    return [
+        {
+            "id": l.get("id", idx),
+            "start": float(l.get("start", 0.0)),
+            "end": float(l.get("end", float(l.get("start", 0.0)) + 1.0)),
+            "speaker_id": l.get("speaker_id", "SPEAKER_00"),
+            "gender": l.get("gender", "female"),
+            "text_vi": (l.get("text_vi") or l.get("src_text") or "").strip(),
+            "line_count": 1,
+        }
+        for idx, l in enumerate(lines)
+        if (l.get("text_vi") or l.get("src_text") or "").strip()
+    ]
+
+
+def synth_single_unit(
     tts_engine,
     lock: threading.Lock,
-    line: dict,
+    unit: dict,
     idx: int,
     work_dir: str,
     target_sr: int,
     speaker_ref_map: dict,
     next_start_t: float | None = None,
-    voice_offset: int = 0,
 ) -> tuple[int, float, str | None]:
     import numpy as np
     import soundfile as sf
 
-    text_vi = (line.get("text_vi") or line.get("src_text") or "").strip()
-    start_t = max(0.0, float(line.get("start", 0.0)))
-    end_t = max(start_t + 0.4, float(line.get("end", start_t + 1.0)))
-    slot_dur = max(0.4, end_t - start_t)
+    text_vi = (unit.get("text_vi") or "").strip()
+    start_t = max(0.0, float(unit.get("start", 0.0)))
+    end_t = max(start_t + 0.5, float(unit.get("end", start_t + 1.2)))
+    slot_dur = max(0.5, end_t - start_t)
 
     if next_start_t is not None and next_start_t > start_t + slot_dur:
-        safe_gap_end = max(start_t + slot_dur, next_start_t - 0.08)
+        safe_gap_end = max(start_t + slot_dur, next_start_t - 0.06)
         slot_dur = min(safe_gap_end - start_t, slot_dur * 1.45)
 
-    if not text_vi:
-        text_vi = f"Câu số {idx + 1}"
-
-    spk_id = line.get("speaker_id", "SPEAKER_00")
-    gender = (line.get("gender") or speaker_ref_map.get(spk_id, {}).get("gender") or "female").lower()
+    spk_id = unit.get("speaker_id", "SPEAKER_00")
+    gender = (unit.get("gender") or speaker_ref_map.get(spk_id, {}).get("gender") or "female").lower()
     ref_wav = speaker_ref_map.get(spk_id, {}).get("ref_path")
-    preset_voice = pick_voice_for_gender(tts_engine, gender, voice_offset)
+    preset_voice = pick_voice_for_gender(tts_engine, gender)
 
     raw_wav = os.path.join(work_dir, f"raw_{idx:04d}.wav")
     aligned_wav = os.path.join(work_dir, f"aligned_{idx:04d}.wav")
@@ -370,16 +337,15 @@ def synth_single_line(
         try:
             audio_arr = _run_infer(use_ref=True)
         except Exception as ref_err:
-            print(f"[WARN] Câu {idx} clone ref_audio lỗi ({ref_err}), thử giọng preset {preset_voice}.")
+            print(f"[WARN] Cụm {idx} clone ref_audio lỗi ({ref_err}), thử giọng preset {preset_voice}.")
             try:
                 audio_arr = _run_infer(use_ref=False)
             except Exception as p_err:
-                print(f"[WARN] Câu {idx} TTS lỗi hoàn toàn: {p_err}")
-                return idx, start_t, None, (0.0, 0.0, 1.0, False)
+                print(f"[WARN] Cụm {idx} TTS lỗi hoàn toàn: {p_err}")
+                return idx, start_t, None
 
         if audio_arr is None:
-            print(f"[WARN] Câu {idx}: TTS trả về None (model không sinh audio).")
-            return idx, start_t, None, (0.0, 0.0, 1.0, False)
+            return idx, start_t, None
 
         if hasattr(tts_engine, "save"):
             tts_engine.save(audio_arr, raw_wav)
@@ -388,8 +354,7 @@ def synth_single_line(
             sf.write(raw_wav, arr_np, 48000)
 
     if not os.path.exists(raw_wav) or os.path.getsize(raw_wav) < 512:
-        print(f"[WARN] Câu {idx}: file TTS rỗng/không tồn tại ({raw_wav}).")
-        return idx, start_t, None, (0.0, 0.0, 1.0, False)
+        return idx, start_t, None
 
     probe_data, src_sr = sf.read(raw_wav)
     if probe_data.ndim > 1:
@@ -397,31 +362,21 @@ def synth_single_line(
     actual_dur = max(0.1, len(probe_data) / float(src_sr or 48000))
 
     tempo = 1.0
-    if actual_dur > slot_dur * 1.03:
-        tempo = min(1.50, actual_dur / slot_dur)
-    elif actual_dur < slot_dur * 0.80:
-        tempo = max(0.95, actual_dur / slot_dur)
+    if actual_dur > slot_dur * 1.05:
+        tempo = min(1.25, actual_dur / slot_dur)
+    elif actual_dur < slot_dur * 0.82:
+        tempo = max(0.90, actual_dur / slot_dur)
 
     af_parts = []
     if abs(tempo - 1.0) > 0.02:
         af_parts.append(_build_atempo_chain(tempo))
 
     est_dur_after_tempo = actual_dur / tempo
-    # Slot rất ngắn (<0.9s) cho phép dài hơn tối đa 0.2s để không cắt giữa từ;
-    # phần dôi ra sẽ lấn nhẹ vào khoảng lặng sau câu.
-    max_allowed_dur = round(max(slot_dur * 1.10, min(slot_dur + 0.35, 1.50)), 3)
-    trimmed = False
+    max_allowed_dur = round(slot_dur * 1.15, 3)
     if est_dur_after_tempo > max_allowed_dur:
-        trimmed = True
         fade_dur = min(0.06, max(0.02, max_allowed_dur * 0.1))
         fade_start = max(0.0, round(max_allowed_dur - fade_dur, 3))
         af_parts.append(f"atrim=0:{max_allowed_dur},afade=t=out:st={fade_start}:d={fade_dur},asetpts=PTS-STARTPTS")
-        print(
-            f"[WARN] Câu {idx}: audio {actual_dur:.2f}s > slot {slot_dur:.2f}s "
-            f"(tempo {tempo:.2f}) → cắt còn {max_allowed_dur:.2f}s"
-        )
-
-    meta = (actual_dur, slot_dur, tempo, trimmed)
 
     ff_cmd = ["ffmpeg", "-y", "-i", raw_wav]
     if af_parts:
@@ -430,11 +385,11 @@ def synth_single_line(
 
     res = subprocess.run(ff_cmd, capture_output=True, text=True)
     if res.returncode != 0 or not os.path.exists(aligned_wav):
-        return idx, start_t, raw_wav, meta
-    return idx, start_t, aligned_wav, meta
+        return idx, start_t, raw_wav
+    return idx, start_t, aligned_wav
 
 
-def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_map: dict, work_dir: str, final_mp4: str):
+def mix_dub_and_mux(video_in: str, bgm_in: str, stage2_data: dict, speaker_ref_map: dict, work_dir: str, final_mp4: str):
     import numpy as np
     import soundfile as sf
 
@@ -445,35 +400,29 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
     total_samples = len(bgm_data)
     voice_track = np.zeros_like(bgm_data, dtype=np.float32)
 
+    units = _prepare_synth_units(stage2_data)
+    total_lines_expected = len(stage2_data.get("lines") or units)
+
     tts_engine = init_vieneu_engine()
     lock = threading.Lock()
     workers = max(1, min(2, int(os.environ.get("TTS_WORKERS", "1"))))
-
-    speakers_order = []
-    for line in lines:
-        spk = line.get("speaker_id", "SPEAKER_00")
-        if spk not in speakers_order:
-            speakers_order.append(spk)
-    voice_offset_map = {spk: i for i, spk in enumerate(speakers_order)}
-    print(f"[INFO] Giọng preset theo speaker: {voice_offset_map}")
 
     results = []
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [
                 pool.submit(
-                    synth_single_line,
+                    synth_single_unit,
                     tts_engine,
                     lock,
-                    line,
+                    unit,
                     i,
                     work_dir,
                     sr,
                     speaker_ref_map,
-                    float(lines[i + 1].get("start", 0.0)) if i + 1 < len(lines) else None,
-                    voice_offset_map.get(line.get("speaker_id"), 0),
+                    float(units[i + 1].get("start", 0.0)) if i + 1 < len(units) else None,
                 )
-                for i, line in enumerate(lines)
+                for i, unit in enumerate(units)
             ]
             for fut in futures:
                 results.append(fut.result())
@@ -487,23 +436,13 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
         free_gpu()
 
     results.sort(key=lambda x: x[0])
-    ok_count = 0
-    skipped = []
-    tempos = []
-    trimmed_lines = []
-    worst_overrun = 0.0
+    ok_units = 0
+    covered_lines = 0
 
     target_rms = 0.11
-    for line_idx, start_t, wav_path, meta in results:
+    for u_idx, (_, start_t, wav_path) in enumerate(results):
         if not wav_path or not os.path.exists(wav_path):
-            skipped.append(line_idx)
             continue
-        actual_dur, slot_dur, tempo, was_trimmed = meta
-        if slot_dur:
-            tempos.append(float(tempo))
-            worst_overrun = max(worst_overrun, float(actual_dur) - float(slot_dur))
-            if was_trimmed:
-                trimmed_lines.append(line_idx)
         seg_audio, seg_sr = sf.read(wav_path)
         if seg_audio.ndim == 1:
             seg_audio = np.stack([seg_audio, seg_audio], axis=-1)
@@ -527,28 +466,18 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
 
         start_sample = int(round(start_t * sr))
         if start_sample >= total_samples:
-            skipped.append(line_idx)
             continue
         end_sample = min(total_samples, start_sample + len(seg_f32))
         copy_len = end_sample - start_sample
         if copy_len > 0:
             voice_track[start_sample:end_sample] += seg_f32[:copy_len]
-            ok_count += 1
+            ok_units += 1
+            covered_lines += int(units[u_idx].get("line_count", 1))
 
-    print(f"[INFO] VieNeu-TTS đã ghép thành công {ok_count}/{len(lines)} câu thoại theo mốc timing.")
-    if tempos:
-        avg_tempo = sum(tempos) / len(tempos)
-        print(
-            f"[INFO] Timing: tempo TB {avg_tempo:.2f} (max {max(tempos):.2f}); "
-            f"{len(trimmed_lines)} câu bị cắt bớt; audio dài hơn slot nhiều nhất {worst_overrun:.2f}s"
-        )
-    if trimmed_lines:
-        preview = ", ".join(str(x) for x in trimmed_lines[:15])
-        print(f"[WARN] Câu bị cắt do dài hơn slot: {preview}{'...' if len(trimmed_lines) > 15 else ''}")
-    if skipped:
-        preview = ", ".join(str(x) for x in skipped[:25])
-        more = "..." if len(skipped) > 25 else ""
-        print(f"[WARN] {len(skipped)} câu không ghép được (id: {preview}{more}) — xem [WARN] phía trên để biết lý do.")
+    print(
+        f"[INFO] VieNeu-TTS hoàn tất {ok_units}/{len(units)} cụm ý "
+        f"(bao phủ ~{min(total_lines_expected, covered_lines)}/{total_lines_expected} câu thoại)."
+    )
 
     raw_voice_active = (np.abs(voice_track).max(axis=-1) > 1e-3).astype(np.float32)
     smooth_active = _smooth_envelope(raw_voice_active, max(1, int(sr * 0.18)))
@@ -580,19 +509,6 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
 
 
 sync = GitHubSync(GH_REPO, GH_TOKEN)
-
-
-def mark_job_failed(err_text: str):
-    """Ghi FAILED vào state/jobs.json để UI và monitor thấy lỗi thay vì treo ở trạng thái cũ."""
-    try:
-        data, _ = sync.read_json("state/jobs.json")
-        job = data.setdefault("jobs", {}).setdefault(JOB_ID, {})
-        job["status"] = "FAILED_STAGE3"
-        job["error"] = err_text[-800:]
-        job["failed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        sync.write_json("state/jobs.json", data, f"FAILED stage3: {JOB_ID}")
-    except Exception as exc:
-        print(f"[WARN] Không ghi được trạng thái FAILED: {exc}")
 
 
 def main():
@@ -628,25 +544,7 @@ def main():
             speaker_ref_map.setdefault(spk_id, {})["ref_path"] = local_ref
 
     ensure_deps()
-    utts = stage2_data.get("utterances") or []
-    if utts:
-        lines = [
-            {
-                "id": u.get("id"),
-                "start": u.get("start"),
-                "end": u.get("end"),
-                "speaker_id": u.get("speaker_id"),
-                "gender": u.get("gender"),
-                "text_vi": (u.get("text_vi") or "").strip(),
-            }
-            for u in utts
-            if (u.get("text_vi") or "").strip()
-        ]
-        print(f"[INFO] Dùng {len(lines)} câu thoại trọn vẹn (utterance) cho TTS.")
-    else:
-        lines = stage2_data.get("lines", [])
-        print(f"[INFO] Fallback: dùng {len(lines)} dòng cũ (line) cho TTS.")
-    mix_dub_and_mux(video_in, bgm_in, lines, speaker_ref_map, out_dir, final_mp4)
+    mix_dub_and_mux(video_in, bgm_in, stage2_data, speaker_ref_map, out_dir, final_mp4)
 
     download_url = sync.upload_asset(JOB_ID, final_mp4)
 
@@ -668,6 +566,5 @@ if __name__ == "__main__":
         main()
     except Exception:
         err = traceback.format_exc()[-1200:]
-        mark_job_failed(err)
         send_telegram(TG_TOKEN, TG_CHAT, f"❌ <b>[Stage 3 Lỗi]</b> <code>{JOB_ID}</code>:\n<pre>{err}</pre>")
         raise
