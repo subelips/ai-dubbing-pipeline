@@ -639,17 +639,26 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
                 clustering = AgglomerativeClustering(n_clusters=k, metric="cosine", linkage="average")
                 anchor_labels = clustering.fit_predict(emb_mat)
             else:
-                clustering = AgglomerativeClustering(
-                    n_clusters=None,
-                    metric="cosine",
-                    linkage="average",
-                    distance_threshold=dist_thresh,
-                )
-                anchor_labels = clustering.fit_predict(emb_mat)
-                uniq = list(dict.fromkeys(int(x) for x in anchor_labels))
-                if len(uniq) > max_spk:
-                    clustering_k = AgglomerativeClustering(n_clusters=max_spk, metric="cosine", linkage="average")
-                    anchor_labels = clustering_k.fit_predict(emb_mat)
+                from sklearn.metrics import silhouette_score
+
+                best_labels, best_score = None, -1.0
+                max_k = min(max_spk, max(2, len(anchor_embs) - 1))
+                for k_try in range(2, max_k + 1):
+                    cl = AgglomerativeClustering(n_clusters=k_try, metric="cosine", linkage="average")
+                    labels_try = cl.fit_predict(emb_mat)
+                    if len(set(int(x) for x in labels_try)) < 2:
+                        continue
+                    try:
+                        sc = float(silhouette_score(emb_mat, labels_try, metric="cosine"))
+                    except Exception:
+                        continue
+                    if sc > best_score:
+                        best_score, best_labels = sc, labels_try
+                if best_labels is None:
+                    cl = AgglomerativeClustering(n_clusters=2, metric="cosine", linkage="average")
+                    best_labels = cl.fit_predict(emb_mat)
+                anchor_labels = best_labels
+                print(f"[INFO] Chọn {len(set(int(x) for x in anchor_labels))} người nói theo silhouette={best_score:.2f}")
 
             cluster_vecs = {}
             for emb, lbl in zip(anchor_embs, anchor_labels):

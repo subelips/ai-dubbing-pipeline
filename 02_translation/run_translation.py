@@ -357,7 +357,7 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
 def fit_text_to_duration(text_vi: str, duration_sec: float) -> str:
     # ~17 ký tự/giây: chấp nhận nhanh hơn nhịp đọc tự nhiên một chút để KHÔNG cắt cụt
     # nghĩa câu; stage 3 sẽ tăng tốc độ đọc (atempo ≤1.5) cho vừa slot.
-    max_chars = max(8, int(round(duration_sec * 17.0)))
+    max_chars = max(8, int(round(duration_sec * 22.0)))
     txt = " ".join(text_vi.split()).strip()
     if len(txt) <= max_chars:
         return txt
@@ -455,6 +455,7 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
         return []
 
     dub_lines = []
+    seen_texts = {}
     batch_size = int(os.environ.get("TRANSLATE_CHUNK", "8"))
     for start_idx in range(0, len(segments), batch_size):
         chunk = segments[start_idx: start_idx + batch_size]
@@ -483,6 +484,13 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
 
             row_obj = translated_map.get(line_id) or {}
             raw_vi = str(row_obj.get("text_vi") or fallback_src).strip()
+            # Model hay trả lặp lại bản dịch của câu trước → dịch lại riêng câu này
+            if raw_vi and raw_vi in seen_texts and seen_texts[raw_vi] != fallback_src:
+                retry_map = _translate_chunk_with_model(model, processor, [s], start_idx + i, scene_context, speakers_meta)
+                alt = str((retry_map.get(line_id) or {}).get("text_vi") or "").strip()
+                if alt and alt != raw_vi:
+                    raw_vi = alt
+            seen_texts[raw_vi] = fallback_src
             fitted_vi = fit_text_to_duration(raw_vi, dur)
             g_out = str(row_obj.get("gender") or speakers_meta.get(spk_id, {}).get("gender") or s.get("gender_hint") or "female").lower()
             if g_out not in ("male", "female"):

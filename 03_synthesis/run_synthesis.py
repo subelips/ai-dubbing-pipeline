@@ -266,7 +266,7 @@ def init_vieneu_engine():
     return Vieneu()
 
 
-def pick_voice_for_gender(tts_engine, gender: str) -> str | None:
+def pick_voice_for_gender(tts_engine, gender: str, offset: int = 0) -> str | None:
     male_default = os.environ.get("VIENEU_MALE_VOICE", "Hải Đăng")
     female_default = os.environ.get("VIENEU_FEMALE_VOICE", "Ngọc Lan")
     target_gender = "male" if str(gender).lower() in ("male", "nam") else "female"
@@ -274,19 +274,15 @@ def pick_voice_for_gender(tts_engine, gender: str) -> str | None:
     try:
         voices = tts_engine.list_preset_voices() or []
         names = [v[1] if isinstance(v, (list, tuple)) and len(v) > 1 else str(v) for v in voices]
+        if not names:
+            return male_default if target_gender == "male" else female_default
         if target_gender == "male":
-            if male_default in names:
-                return male_default
-            for n in names:
-                if any(k in n.lower() for k in ["nam", "minh", "hải", "đăng", "quân", "adam", "vĩnh"]):
-                    return n
+            pool = [n for n in names if any(k in n.lower() for k in ["nam", "minh", "hải", "đăng", "quân", "adam", "vĩnh"])]
         else:
-            if female_default in names:
-                return female_default
-            for n in names:
-                if any(k in n.lower() for k in ["nữ", "nu", "lan", "mai", "anh", "my", "huyền"]):
-                    return n
-        return names[0] if names else None
+            pool = [n for n in names if any(k in n.lower() for k in ["nữ", "nu", "lan", "mai", "anh", "my", "huyền"])]
+        pool = pool or names
+        # Mỗi speaker nhận một giọng khác nhau trong pool để không lặp giọng
+        return pool[offset % len(pool)]
     except Exception:
         return male_default if target_gender == "male" else female_default
 
@@ -323,6 +319,7 @@ def synth_single_line(
     target_sr: int,
     speaker_ref_map: dict,
     next_start_t: float | None = None,
+    voice_offset: int = 0,
 ) -> tuple[int, float, str | None]:
     import numpy as np
     import soundfile as sf
@@ -342,7 +339,7 @@ def synth_single_line(
     spk_id = line.get("speaker_id", "SPEAKER_00")
     gender = (line.get("gender") or speaker_ref_map.get(spk_id, {}).get("gender") or "female").lower()
     ref_wav = speaker_ref_map.get(spk_id, {}).get("ref_path")
-    preset_voice = pick_voice_for_gender(tts_engine, gender)
+    preset_voice = pick_voice_for_gender(tts_engine, gender, voice_offset)
 
     raw_wav = os.path.join(work_dir, f"raw_{idx:04d}.wav")
     aligned_wav = os.path.join(work_dir, f"aligned_{idx:04d}.wav")
@@ -399,7 +396,7 @@ def synth_single_line(
     est_dur_after_tempo = actual_dur / tempo
     # Slot rất ngắn (<0.9s) cho phép dài hơn tối đa 0.2s để không cắt giữa từ;
     # phần dôi ra sẽ lấn nhẹ vào khoảng lặng sau câu.
-    max_allowed_dur = round(max(slot_dur * 1.10, min(slot_dur + 0.20, 1.20)), 3)
+    max_allowed_dur = round(max(slot_dur * 1.10, min(slot_dur + 0.35, 1.50)), 3)
     trimmed = False
     if est_dur_after_tempo > max_allowed_dur:
         trimmed = True
@@ -439,6 +436,14 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
     lock = threading.Lock()
     workers = max(1, min(2, int(os.environ.get("TTS_WORKERS", "1"))))
 
+    speakers_order = []
+    for line in lines:
+        spk = line.get("speaker_id", "SPEAKER_00")
+        if spk not in speakers_order:
+            speakers_order.append(spk)
+    voice_offset_map = {spk: i for i, spk in enumerate(speakers_order)}
+    print(f"[INFO] Giọng preset theo speaker: {voice_offset_map}")
+
     results = []
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -453,6 +458,7 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, lines: list[dict], speaker_ref_m
                     sr,
                     speaker_ref_map,
                     float(lines[i + 1].get("start", 0.0)) if i + 1 < len(lines) else None,
+                    voice_offset_map.get(line.get("speaker_id"), 0),
                 )
                 for i, line in enumerate(lines)
             ]
