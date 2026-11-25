@@ -2,7 +2,9 @@
   "jobs": {
     "ep01": {
       "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
-      "status": "QUEUED_STAGE1"
+      "status": "FAILED_STAGE1",
+      "error": "script.py\", line 1294, in main\n    raw_segments = fut_asr.result()\n  File \"/usr/lib/python3.13/concurrent/futures/_base.py\", line 460, in result\n    return self.__get_result()\n           ~~~~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.13/concurrent/futures/_base.py\", line 402, in __get_result\n    raise self._exception\n  File \"/usr/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/kaggle/src/script.py\", line 373, in run_whisper_asr\n    import torch\n  File \"/usr/local/lib/python3.13/dist-packages/torch/__init__.py\", line 443, in <module>\n    from torch._C import *  # noqa: F403\n    ^^^^^^^^^^^^^^^^^^^^^^\nImportError: /usr/local/lib/python3.13/dist-packages/torch/lib/libtorch_cuda.so: undefined symbol: ncclCommWindowDeregister\n",
+      "failed_at": "2026-11-25T03:34:43Z"
     },
     "ep1": {
       "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
