@@ -1,6 +1,5 @@
 import os
 
-# Tắt PIR / OneDNN trên PaddlePaddle 3.x để tránh lỗi ConvertPirAttribute2RuntimeAttribute khi chạy CPU
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 os.environ.setdefault("FLAGS_use_mkldnn", "0")
 os.environ.setdefault("FLAGS_enable_pir_api", "0")
@@ -21,14 +20,6 @@ import time
 import traceback
 import requests
 
-for _stream in (sys.stdout, sys.stderr):
-    _reconf = getattr(_stream, "reconfigure", None)  # log realtime, không bị buffer
-    if callable(_reconf):
-        try:
-            _reconf(line_buffering=True)
-        except Exception:
-            pass
-
 
 def get_cfg(key: str, injected: str) -> str:
     env_val = os.environ.get(key, "").strip()
@@ -44,11 +35,6 @@ GH_REPO = get_cfg("GH_REPO", "__INJECT_GH_REPO__")
 GH_TOKEN = get_cfg("GH_PAT_TOKEN", "__INJECT_GH_PAT_TOKEN__")
 TG_TOKEN = get_cfg("TELEGRAM_BOT_TOKEN", "__INJECT_TELEGRAM_BOT_TOKEN__")
 TG_CHAT = get_cfg("TELEGRAM_CHAT_ID", "__INJECT_TELEGRAM_CHAT_ID__")
-HF_TOKEN = get_cfg("HF_TOKEN", "__INJECT_HF_TOKEN__")
-if HF_TOKEN:
-    # pyannote đọc token từ biến môi trường này
-    os.environ["HF_TOKEN"] = HF_TOKEN
-    os.environ.setdefault("HUGGINGFACE_HUB_TOKEN", HF_TOKEN)
 
 if not JOB_ID:
     raise RuntimeError("Thiếu JOB_ID khi khởi chạy kernel.")
@@ -93,7 +79,7 @@ class GitHubSync:
             r = requests.put(url, headers=self.headers, json=body, timeout=30)
             if r.status_code in (200, 201):
                 return
-            if r.status_code in (409, 429, 500, 502, 503, 504):
+            if r.status_code == 409:
                 time.sleep(1.5 * (attempt + 1))
                 continue
             r.raise_for_status()
@@ -113,31 +99,18 @@ class GitHubSync:
         cr.raise_for_status()
         return cr.json()
 
-    def upload_asset(self, tag: str, file_path: str, max_attempts: int = 5):
-        """Upload asset lên Release, có retry cho 5xx/429 (GitHub hay trả 500/502 khi quá tải)."""
+    def upload_asset(self, tag: str, file_path: str):
+        release = self.ensure_release(tag)
+        upload_url = release["upload_url"].split("{")[0]
         filename = os.path.basename(file_path)
-        last_err = None
-        for attempt in range(max_attempts):
-            try:
-                release = self.ensure_release(tag)
-                upload_url = release["upload_url"].split("{")[0]
-                for asset in release.get("assets", []):
-                    if asset["name"] == filename:
-                        requests.delete(f"{self.api_base}/releases/assets/{asset['id']}", headers=self.headers, timeout=30)
-                up_headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/octet-stream"}
-                with open(file_path, "rb") as f:
-                    r = requests.post(f"{upload_url}?name={filename}", headers=up_headers, data=f.read(), timeout=300)
-                if r.status_code in (200, 201):
-                    return r.json().get("browser_download_url")
-                if r.status_code in (429, 500, 502, 503, 504):
-                    last_err = f"HTTP {r.status_code}"
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                r.raise_for_status()
-            except requests.RequestException as exc:
-                last_err = str(exc)
-                time.sleep(2 * (attempt + 1))
-        raise RuntimeError(f"Upload {filename} thất bại sau {max_attempts} lần: {last_err}")
+        for asset in release.get("assets", []):
+            if asset["name"] == filename:
+                requests.delete(f"{self.api_base}/releases/assets/{asset['id']}", headers=self.headers, timeout=30)
+        up_headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/octet-stream"}
+        with open(file_path, "rb") as f:
+            r = requests.post(f"{upload_url}?name={filename}", headers=up_headers, data=f.read(), timeout=300)
+        r.raise_for_status()
+        return r.json().get("browser_download_url")
 
     def download_asset(self, tag: str, filename: str, dest_path: str):
         release = self.ensure_release(tag)
@@ -178,133 +151,16 @@ def send_telegram(bot_token: str, chat_id: str, text: str):
         print(f"[WARN] Gửi Telegram thất bại: {e}")
 
 
-def _have_module(name: str) -> bool:
-    import importlib.util
-    try:
-        return importlib.util.find_spec(name) is not None
-    except Exception:
-        return False
-
-
-def _want_gpu_ocr() -> bool:
-    # Mặc định TẮT: cài paddlepaddle-gpu kéo nvidia-nccl-cu12 bản khác làm torch chết
-    # ("undefined symbol: ncclCommWindowDeregister") và tốn ~7 phút. Chỉ bật khi
-    # thật sự muốn đánh đổi (OCR_USE_GPU=1).
-    return os.environ.get("OCR_USE_GPU", "0").strip() == "1"
-
-
-def _paddle_has_cuda() -> bool:
-    try:
-        import paddle
-        return bool(paddle.is_compiled_with_cuda()) and int(paddle.device.cuda.device_count()) > 0
-    except Exception:
-        return False
-
-
-def _ensure_paddle_gpu() -> bool:
-    """Bảo đảm paddle bản GPU. Trả True nếu CUDA dùng được, False để chạy CPU."""
-    if not _want_gpu_ocr():
-        print("[INFO] OCR_USE_GPU=0 → dùng paddle CPU.")
-        return False
-    if _paddle_has_cuda():
-        print("[INFO] Paddle đã có CUDA, OCR sẽ chạy trên GPU.")
-        return True
-
-    print("[INFO] Paddle đang là bản CPU → cài paddlepaddle-gpu cho OCR...")
-    subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "paddlepaddle"], check=False)
-    for index_url in (
-        "https://www.paddlepaddle.org.cn/packages/stable/cu126/",
-        "https://www.paddlepaddle.org.cn/packages/stable/cu118/",
-    ):
-        r = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-q", "paddlepaddle-gpu==3.2.0", "-i", index_url],
-            check=False,
-        )
-        if r.returncode == 0 and _paddle_has_cuda():
-            print(f"[INFO] Cài paddlepaddle-gpu thành công từ {index_url}")
-            return True
-        print(f"[WARN] paddlepaddle-gpu từ {index_url} không dùng được (rc={r.returncode}).")
-
-    print("[WARN] Không cài được paddle GPU → quay lại paddle CPU.")
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "paddlepaddle",
-         "-i", "https://www.paddlepaddle.org.cn/packages/stable/cpu/"],
-        check=False,
-    )
-    return False
-
-
-def _ensure_pyannote() -> bool:
-    """Cài pyannote.audio 4.x mà KHÔNG nâng torch của image Kaggle.
-
-    - pyannote 3.1 gọi torchaudio.set_audio_backend() đã bị xoá ở torchaudio 2.11 → lỗi.
-    - pip install pyannote.audio (có deps) kéo torch 2.15 và phá torchvision/CUDA.
-    → cài --no-deps + các gói phụ thuộc thuần Python, ghim numpy/matplotlib cho khớp.
-    """
-    try:
-        import pyannote.audio as _pa  # noqa: F401
-        print(f"[INFO] pyannote.audio đã có sẵn ({_pa.__version__}).")
-        return True
-    except Exception:
-        pass
-
-    print("[INFO] Cài pyannote.audio 4.x (--no-deps) cho diarization...")
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "--no-deps", "pyannote.audio>=4,<5",
-         "pyannote.core", "pyannote.database", "pyannote.metrics", "pyannote.pipeline",
-         "lightning", "torchmetrics", "safetensors", "rich", "typer", "torch-audiomentations", "asteroid-filterbanks"],
-        check=False,
-    )
-    try:
-        import pyannote.audio as _pa  # noqa: F401
-        print(f"[INFO] pyannote.audio {_pa.__version__} sẵn sàng.")
-        return True
-    except Exception as first_err:
-        print(f"[WARN] pyannote vẫn lỗi import ({first_err}) → ghim numpy/matplotlib.")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "numpy==2.2.6", "matplotlib==3.10.0"], check=False)
-        try:
-            import pyannote.audio as _pa  # noqa: F401
-            print(f"[INFO] pyannote.audio {_pa.__version__} sẵn sàng sau khi ghim numpy.")
-            return True
-        except Exception as second_err:
-            print(f"[WARN] Không cài được pyannote: {second_err}")
-            return False
-
-
 def ensure_deps():
-    """Chỉ cài gói còn thiếu; không --upgrade để tránh phá numpy/pillow của image Kaggle.
-
-    Bản cũ pip install --upgrade 15 gói mỗi lần chạy: mất ~6 phút và kéo numpy/pillow
-    lên bản mới làm numba/paddle/moviepy lệch ABI.
-    """
-    wanted = [
-        ("faster_whisper", "faster-whisper"),
-        ("demucs", "demucs"),
-        ("soundfile", "soundfile"),
-        ("gdown", "gdown"),
-        ("paddleocr", "paddleocr"),
-        ("paddle", "paddlepaddle"),
-        ("speechbrain", "speechbrain"),
-        ("sklearn", "scikit-learn"),
-    ]
-    if os.environ.get("OCR_ENGINE", "easyocr").strip().lower() in ("easyocr",):
-        # EasyOCR (torch, có sẵn GPU) là engine chính → khỏi cài paddle cho nặng
-        wanted = [(m, s) for m, s in wanted if m not in ("paddleocr", "paddle")]
-    missing = [spec for mod, spec in wanted if not _have_module(mod)]
-    if _want_gpu_ocr():
-        # _ensure_paddle_gpu() sẽ cài đúng bản paddle (gpu/cpu), khỏi cài CPU trước rồi gỡ
-        missing = [m for m in missing if m != "paddlepaddle"]
-    if not _have_module("nvidia.cublas"):
-        missing.extend(["nvidia-cublas-cu12", "nvidia-cudnn-cu12"])
-    if missing:
-        print(f"[INFO] pip install các gói còn thiếu: {missing}")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=True)
-    else:
-        print("[INFO] Đã đủ dependency, bỏ qua pip install.")
-    if os.environ.get("OCR_ENGINE", "easyocr").strip().lower() in ("paddle", "auto"):
-        _ensure_paddle_gpu()
-    if (HF_TOKEN or os.environ.get("HF_TOKEN")):
-        _ensure_pyannote()
+    subprocess.run(
+        [
+            sys.executable, "-m", "pip", "install", "-q", "--upgrade",
+            "faster-whisper", "nvidia-cublas-cu12", "nvidia-cudnn-cu12",
+            "demucs", "soundfile", "numpy", "gdown", "transformers", "accelerate",
+            "paddlepaddle", "paddleocr", "speechbrain", "scikit-learn",
+        ],
+        check=True,
+    )
 
 
 def free_gpu():
@@ -325,42 +181,6 @@ def _normalize_gdrive_url(url: str) -> str:
     return url
 
 
-def _state_asset_ref(ref: str) -> bool:
-    """True nếu ref trỏ vào file nằm trên nhánh pipeline-state (do web UI upload)."""
-    return ref.startswith("uploads_tmp/") or (ref.startswith("state/") and ref.endswith("manifest.json"))
-
-
-def _state_raw_bytes(sync: "GitHubSync", path: str) -> bytes:
-    headers = dict(sync.headers)
-    headers["Accept"] = "application/vnd.github.raw"
-    r = requests.get(
-        f"{sync.api_base}/contents/{path}",
-        headers=headers,
-        params={"ref": sync.state_branch},
-        timeout=180,
-    )
-    r.raise_for_status()
-    return r.content
-
-
-def download_from_state(sync: "GitHubSync", ref: str, dest_path: str):
-    """Ghép các mảnh upload từ web UI (manifest.json) thành 1 file video hoàn chỉnh."""
-    os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
-    if ref.endswith("manifest.json"):
-        manifest = json.loads(_state_raw_bytes(sync, ref).decode("utf-8"))
-        parts = manifest.get("parts") or []
-        if not parts:
-            raise RuntimeError(f"Manifest {ref} không có danh sách parts")
-        with open(dest_path, "wb") as out:
-            for part in parts:
-                out.write(_state_raw_bytes(sync, part))
-    else:
-        with open(dest_path, "wb") as out:
-            out.write(_state_raw_bytes(sync, ref))
-    if not os.path.exists(dest_path) or os.path.getsize(dest_path) < 1024:
-        raise RuntimeError(f"Tải video từ nhánh {sync.state_branch} thất bại: {ref}")
-
-
 def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
     ref = (source_ref or "source_input.mp4").strip()
     if ref.startswith(("http://", "https://")):
@@ -370,8 +190,6 @@ def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path
             subprocess.run([sys.executable, "-m", "gdown", direct_url, "-O", dest_path], check=True)
         else:
             subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
-    elif _state_asset_ref(ref):
-        download_from_state(sync, ref, dest_path)
     else:
         sync.download_asset(tag, ref, dest_path)
 
@@ -408,19 +226,15 @@ def estimate_pitch_gender(clip: "np.ndarray", sr: int) -> tuple[float, str]:
 
     if clip is None or len(clip) < sr // 2:
         return 0.0, "unknown"
-    samples = clip[: min(len(clip), sr * 3)].astype(np.float32)
+    samples = clip[: min(len(clip), sr * 6)].astype(np.float32)
     samples = samples - np.mean(samples)
     rms = float(np.sqrt(np.mean(samples ** 2)))
     if rms < 1e-4:
         return 0.0, "unknown"
 
-    # Tự tương quan bằng FFT: O(n log n). np.correlate trực tiếp là O(n^2) —
-    # với đoạn 6 s @16 kHz tốn hàng chục giây cho MỖI câu thoại.
-    n = len(samples)
-    spec = np.fft.rfft(samples, 2 * n)
-    corr = np.fft.irfft(spec * np.conj(spec))[:n]
+    corr = np.correlate(samples, samples, mode="full")[len(samples) - 1:]
     min_lag = max(1, int(sr / 340))
-    max_lag = min(n - 1, int(sr / 75))
+    max_lag = min(len(corr) - 1, int(sr / 75))
     if max_lag <= min_lag:
         return 0.0, "unknown"
 
@@ -432,7 +246,6 @@ def estimate_pitch_gender(clip: "np.ndarray", sr: int) -> tuple[float, str]:
 
 
 def run_whisper_asr(audio_16k: str) -> list[dict]:
-    import numpy as np
     import soundfile as sf
     import torch
 
@@ -580,7 +393,6 @@ def _split_segments_on_speaker_turns(
 
 
 def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: str) -> list[dict]:
-    """Ưu tiên pyannote.audio (nếu có HF_TOKEN), tự động fallback sang SpeechBrain ECAPA-TDNN."""
     if not segments:
         return segments
 
@@ -593,31 +405,13 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
 
     if hf_token:
         try:
-            try:
-                from huggingface_hub import whoami
-
-                info = whoami(token=hf_token)
-                print(f"[INFO] HF token hợp lệ, user={info.get('name')!r}.")
-            except Exception as tok_err:
-                print(f"[WARN] Không xác thực được HF token: {tok_err}")
-
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pyannote.audio"], check=True)
             from pyannote.audio import Pipeline
 
-            model_candidates = [pyannote_model, "pyannote/speaker-diarization-3.1", "pyannote/speaker-diarization-3.0"]
-            pipeline = None
-            for cand in dict.fromkeys(model_candidates):
-                try:
-                    try:
-                        pipeline = Pipeline.from_pretrained(cand, token=hf_token)
-                    except TypeError:
-                        pipeline = Pipeline.from_pretrained(cand, use_auth_token=hf_token)
-                    print(f"[INFO] Nạp được pipeline {cand}.")
-                    break
-                except Exception as load_err:
-                    print(f"[WARN] Không nạp được {cand}: {type(load_err).__name__}: {load_err}")
-                    pipeline = None
-            if pipeline is None:
-                raise RuntimeError("Không nạp được pipeline pyannote nào (kiểm tra license + quyền token).")
+            try:
+                pipeline = Pipeline.from_pretrained(pyannote_model, token=hf_token)
+            except TypeError:
+                pipeline = Pipeline.from_pretrained(pyannote_model, use_auth_token=hf_token)
 
             if torch.cuda.is_available():
                 pipeline.to(torch.device("cuda:0"))
@@ -630,20 +424,8 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
             elif max_spk_raw.isdigit() and int(max_spk_raw) >= 2:
                 diar_kwargs["max_speakers"] = int(max_spk_raw)
 
-            # Đưa waveform vào bộ nhớ để KHÔNG cần torchcodec (bản .so trong image hay lỗi)
-            import soundfile as _sf
-
-            wav_np, wav_sr = _sf.read(audio_16k, dtype="float32")
-            if wav_np.ndim > 1:
-                wav_np = wav_np.mean(axis=-1)
-            audio_in = {"waveform": torch.from_numpy(wav_np).unsqueeze(0), "sample_rate": int(wav_sr)}
-            result = pipeline(audio_in, **diar_kwargs)
-            ann = getattr(result, "speaker_diarization", result)
-
-            turns = []
-            for turn, _, spk in ann.itertracks(yield_label=True):
-                turns.append((float(turn.start), float(turn.end), str(spk)))
-
+            diarization = pipeline(audio_16k, **diar_kwargs)
+            turns = [(float(turn.start), float(turn.end), str(spk)) for turn, _, spk in diarization.itertracks(yield_label=True)]
             del pipeline
             free_gpu()
 
@@ -660,8 +442,6 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
         except Exception as py_err:
             print(f"[WARN] pyannote.audio chưa chạy được ({py_err}), chuyển sang SpeechBrain.")
             free_gpu()
-    else:
-        print("[INFO] Không tìm thấy HF_TOKEN trong môi trường, dùng SpeechBrain diarization.")
 
     try:
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "speechbrain", "scikit-learn"], check=True)
@@ -715,33 +495,24 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
             emb_mat = np.vstack(anchor_embs)
             fixed_k_raw = os.environ.get("NUM_SPEAKERS", "").strip()
             max_spk = max(2, int(os.environ.get("MAX_SPEAKERS", "3")))
-            dist_thresh = float(os.environ.get("DIAR_DIST_THRESHOLD", "0.68"))
+            dist_thresh = float(os.environ.get("DIAR_DIST_THRESHOLD", "0.62"))
 
             if fixed_k_raw.isdigit() and int(fixed_k_raw) >= 1:
                 k = min(int(fixed_k_raw), len(anchor_embs))
                 clustering = AgglomerativeClustering(n_clusters=k, metric="cosine", linkage="average")
                 anchor_labels = clustering.fit_predict(emb_mat)
             else:
-                from sklearn.metrics import silhouette_score
-
-                best_labels, best_score = None, -1.0
-                max_k = min(max_spk, max(2, len(anchor_embs) - 1))
-                for k_try in range(2, max_k + 1):
-                    cl = AgglomerativeClustering(n_clusters=k_try, metric="cosine", linkage="average")
-                    labels_try = cl.fit_predict(emb_mat)
-                    if len(set(int(x) for x in labels_try)) < 2:
-                        continue
-                    try:
-                        sc = float(silhouette_score(emb_mat, labels_try, metric="cosine"))
-                    except Exception:
-                        continue
-                    if sc > best_score:
-                        best_score, best_labels = sc, labels_try
-                if best_labels is None:
-                    cl = AgglomerativeClustering(n_clusters=2, metric="cosine", linkage="average")
-                    best_labels = cl.fit_predict(emb_mat)
-                anchor_labels = best_labels
-                print(f"[INFO] Chọn {len(set(int(x) for x in anchor_labels))} người nói theo silhouette={best_score:.2f}")
+                clustering = AgglomerativeClustering(
+                    n_clusters=None,
+                    metric="cosine",
+                    linkage="average",
+                    distance_threshold=dist_thresh,
+                )
+                anchor_labels = clustering.fit_predict(emb_mat)
+                uniq = list(dict.fromkeys(int(x) for x in anchor_labels))
+                if len(uniq) > max_spk:
+                    clustering_k = AgglomerativeClustering(n_clusters=max_spk, metric="cosine", linkage="average")
+                    anchor_labels = clustering_k.fit_predict(emb_mat)
 
             cluster_vecs = {}
             for emb, lbl in zip(anchor_embs, anchor_labels):
@@ -823,29 +594,19 @@ def _init_paddle_ocr_engine():
     lang = os.environ.get("PADDLE_OCR_LANG", "ch")
     use_gpu = os.environ.get("PADDLE_OCR_GPU", "0").strip() == "1"
 
-    # oneDNN (mkldnn) tăng tốc CPU nhưng bản paddle trong image Kaggle hay lỗi PIR executor
-    # (đã thấy "lỗi runtime executor" → rơi xuống EasyOCR, mất gần hết phụ đề).
-    # Vì vậy mặc định TẮT, chỉ bật khi đặt PADDLE_OCR_MKLDNN=1.
-    use_mkldnn = os.environ.get("PADDLE_OCR_MKLDNN", "0").strip() == "1"
-    device = "gpu:0" if _paddle_has_cuda() else "cpu"
-    print(f"[INFO] PaddleOCR device={device}")
-    attempts = [
-        dict(lang=lang, device=device, enable_mkldnn=use_mkldnn, use_doc_orientation_classify=False,
-             use_doc_unwarping=False, use_textline_orientation=False),
-        dict(lang=lang, device=device, enable_mkldnn=False, use_doc_orientation_classify=False,
-             use_doc_unwarping=False, use_textline_orientation=False),
-        dict(lang=lang, enable_mkldnn=False),
-        dict(use_angle_cls=False, lang=lang, use_gpu=use_gpu, enable_mkldnn=False),
-    ]
-    last_err = None
-    for kwargs in attempts:
+    try:
+        return PaddleOCR(
+            lang=lang,
+            enable_mkldnn=False,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        )
+    except Exception:
         try:
-            engine = PaddleOCR(**kwargs)
-            print(f"[INFO] PaddleOCR khởi tạo với {kwargs}")
-            return engine
-        except Exception as exc:
-            last_err = exc
-    raise last_err or RuntimeError("Không khởi tạo được PaddleOCR với mọi cấu hình.")
+            return PaddleOCR(lang=lang, enable_mkldnn=False)
+        except Exception:
+            return PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=use_gpu, enable_mkldnn=False)
 
 
 def _init_easyocr_fallback():
@@ -897,15 +658,10 @@ def _ocr_single_image(ocr_engine, img_path: str, is_easyocr: bool = False, min_c
                 print(f"[DEBUG] EasyOCR exception ({os.path.basename(img_path)}): {e}")
             return ""
 
-    try:
-        if hasattr(ocr_engine, "predict"):
-            res = list(ocr_engine.predict(img_path))
-        else:
-            res = ocr_engine.ocr(img_path)
-    except Exception as e:
-        if debug:
-            print(f"[DEBUG] PaddleOCR predict exception ({os.path.basename(img_path)}): {e}")
-        raise
+    if hasattr(ocr_engine, "predict"):
+        res = list(ocr_engine.predict(img_path))
+    else:
+        res = ocr_engine.ocr(img_path)
 
     if not res:
         return ""
@@ -950,46 +706,15 @@ def _ocr_single_image(ocr_engine, img_path: str, is_easyocr: bool = False, min_c
     return " ".join(line_texts).strip()
 
 
-def _frame_signature(img_path: str):
-    """Chữ ký rất nhẹ (32x8 grayscale) để bỏ qua các khung phụ đề giống hệt nhau."""
-    try:
-        from PIL import Image
-        with Image.open(img_path) as im:
-            return im.convert("L").resize((32, 8)).tobytes()
-    except Exception:
-        return None
-
-
-def _video_duration(path: str) -> float:
-    try:
-        res = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path],
-            capture_output=True,
-            text=True,
-        )
-        return float((res.stdout or "").strip())
-    except Exception:
-        return 0.0
-
-
 def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, float, float, float], fps: float) -> list[tuple[float, str]]:
     os.makedirs(out_dir, exist_ok=True)
     x1, y1, x2, y2 = roi
     crop_w = max(0.2, x2 - x1)
     crop_h = max(0.10, y2 - y1)
-    # Ảnh càng lớn OCR càng chậm (gần như tuyến tính theo số pixel). 960 đủ nét cho phụ đề.
-    max_w = int(os.environ.get("OCR_MAX_WIDTH", "960"))
-    budget = max(20, int(os.environ.get("OCR_MAX_FRAMES", "150")))
-    duration = _video_duration(video_path)
-    if duration > 0:
-        effective_fps = max(0.1, min(float(fps), budget / duration))
-        if effective_fps < float(fps):
-            print(f"[INFO] Video dài {duration:.0f}s → giảm OCR {fps} fps xuống {effective_fps:.2f} fps để phủ hết video (tối đa {budget} khung).")
-        fps = effective_fps
     if crop_w >= 0.98 and crop_h >= 0.98:
-        vf_expr = f"fps={fps},scale={max_w}:-1"
+        vf_expr = f"fps={fps},scale=1920:-1"
     else:
-        vf_expr = f"fps={fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale={max_w}:-1"
+        vf_expr = f"fps={fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale=1920:-1"
 
     subprocess.run(
         ["ffmpeg", "-y", "-i", video_path, "-vf", vf_expr, os.path.join(out_dir, "f_%04d.jpg")],
@@ -1007,131 +732,7 @@ def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, flo
             idx = len(frames) + 1
         ts = round((idx - 1) * interval, 2)
         frames.append((ts, os.path.join(out_dir, fname)))
-    return frames[:budget]
-
-
-_NOISE_PATTERNS = [
-    re.compile(r"第\s*\d+\s*号"),
-    re.compile(r"(网|广)[^\s]{0,4}(备|字|审)[^\s]{0,4}号"),
-    re.compile(r"许可证|备案|公映|联合出品|出品方|发行方"),
-    re.compile(r"https?://|www\.|\.(com|cn|net|tv)\b", re.I),
-    re.compile(r"百度|腾讯|爱奇艺|优酷|芒果|抖音|快手|西瓜|微博"),
-]
-
-
-def _clean_ocr_text(text: str) -> str:
-    """Loại chữ rác: watermark, giấy phép phim, dòng 1-2 ký tự, dòng toàn số.
-
-    OCR hardsub hay đọc trúng bản quyền/logo (vd '（百度）网微剧备字（2026）第412924号'
-    hoặc '11', 'Z', '0 o bb') và biến chúng thành phụ đề — lọc trước khi dùng.
-    """
-    t = " ".join(str(text or "").split())
-    if not t:
-        return ""
-    for pat in _NOISE_PATTERNS:
-        if pat.search(t):
-            return ""
-    cjk = re.findall(r"[\u4e00-\u9fff]", t)
-    latin = re.findall(r"[A-Za-z]", t)
-    digits = re.findall(r"[0-9]", t)
-    visible = len(t.replace(" ", ""))
-    if len(cjk) == 0 and len(latin) < 3:
-        return ""
-    if len(cjk) < 2 and len(latin) < 4:
-        return ""
-    if visible and len(digits) / visible > 0.4:
-        return ""
-    return t
-
-
-def _extract_frame_at(video_path: str, ts: float, roi: tuple[float, float, float, float], width: int, out_path: str) -> str | None:
-    x1, y1, x2, y2 = roi
-    crop_w = max(0.2, x2 - x1)
-    crop_h = max(0.10, y2 - y1)
-    if crop_w >= 0.98 and crop_h >= 0.98:
-        vf = f"scale={width}:-1"
-    else:
-        vf = f"fps=1,crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale={width}:-1"
-    subprocess.run(
-        ["ffmpeg", "-y", "-ss", f"{max(0.0, ts):.3f}", "-i", video_path, "-vf", vf, "-frames:v", "1", "-q:v", "2", out_path],
-        capture_output=True,
-    )
-    return out_path if os.path.exists(out_path) and os.path.getsize(out_path) > 512 else None
-
-
-def _scan_subtitle_spans(video_path: str, work_dir: str, roi: tuple[float, float, float, float]) -> list[tuple[float, float]]:
-    """Quét khung hình ở tần số cao (mặc định 5 fps) để tìm MỌI mốc phụ đề đổi chữ.
-
-    Khác cách lấy mẫu 1 fps (dễ bỏ sót phụ đề ngắn), ở đây:
-      1. Trích khung 320px ở 5 fps;
-      2. So chữ ký 32x8 giữa 2 khung liên tiếp, chênh > ngưỡng thì coi là mốc đổi;
-      3. Cắt thành các span theo mốc, span quá ngắn (<0.3s) do nhiễu nén thì gộp vào span bên cạnh
-         (gộp chứ không bỏ, nên không mất phụ đề).
-    """
-    scan_dir = os.path.join(work_dir, "ocr_scan")
-    os.makedirs(scan_dir, exist_ok=True)
-    for old in os.listdir(scan_dir):
-        if old.endswith(".jpg"):
-            os.remove(os.path.join(scan_dir, old))
-
-    scan_fps = float(os.environ.get("OCR_SCAN_FPS", "5.0"))
-    max_scan = int(os.environ.get("OCR_SCAN_MAX_FRAMES", "4000"))
-    duration = _video_duration(video_path)
-    if duration > 0:
-        scan_fps = max(0.5, min(scan_fps, max_scan / duration))
-
-    x1, y1, x2, y2 = roi
-    crop_w = max(0.2, x2 - x1)
-    crop_h = max(0.10, y2 - y1)
-    if crop_w >= 0.98 and crop_h >= 0.98:
-        vf = f"fps={scan_fps},scale=320:-1"
-    else:
-        vf = f"fps={scan_fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale=320:-1"
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-vf", vf, "-q:v", "5", os.path.join(scan_dir, "s_%05d.jpg")],
-        capture_output=True,
-    )
-    files = sorted(f for f in os.listdir(scan_dir) if f.endswith(".jpg"))
-    if not files:
-        return []
-
-    import numpy as np
-
-    vecs = []
-    for fname in files:
-        sig = _frame_signature(os.path.join(scan_dir, fname))
-        if sig is None:
-            vecs.append(None)
-        else:
-            vecs.append(np.frombuffer(sig, dtype=np.uint8).astype(np.int16))
-
-    thr = float(os.environ.get("OCR_SPAN_DIFF_THRESHOLD", "6.0"))
-    min_dur = float(os.environ.get("OCR_SPAN_MIN_DUR", "0.30"))
-    bounds = [0]
-    for i in range(1, len(vecs)):
-        a, b = vecs[i - 1], vecs[i]
-        if a is None or b is None:
-            bounds.append(i)
-            continue
-        if float(np.mean(np.abs(a - b))) > thr:
-            bounds.append(i)
-    bounds.append(len(files))
-
-    interval = 1.0 / scan_fps
-    segs = [[bounds[i] * interval, bounds[i + 1] * interval] for i in range(len(bounds) - 1)]
-
-    merged: list[list[float]] = []
-    for s, e in segs:
-        if not merged:
-            merged.append([s, e])
-            continue
-        prev = merged[-1]
-        if (e - s) < min_dur or (prev[1] - prev[0]) < min_dur:
-            prev[1] = e
-        else:
-            merged.append([s, e])
-
-    return [(round(s, 2), round(e, 2)) for s, e in merged if e - s >= 0.20]
+    return frames[:150]
 
 
 def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[float, float, float, float]]:
@@ -1140,118 +741,83 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         return embedded, (0.02, 0.70, 0.98, 0.98)
 
     candidate_rois = [
-        (0.02, 0.70, 0.98, 0.98),
-        (0.02, 0.58, 0.98, 0.86),
-        (0.02, 0.52, 0.98, 0.80),
-        (0.02, 0.55, 0.98, 0.99),
+        (0.02, 0.58, 0.98, 0.96),
         (0.0, 0.0, 1.0, 1.0),
     ]
+    fps = float(os.environ.get("OCR_FPS", "1.0"))
     chosen_roi = candidate_rois[0]
-    ocr_records: list[dict] = []
+    chosen_mode = "raw"
+    ocr_records = []
     ocr_engine = None
     is_easyocr = False
-    _ocr_err_shown = False
-
-    def _ocr_path(path: str, min_conf: float = 0.25) -> str:
-        nonlocal _ocr_err_shown
-        try:
-            return _ocr_single_image(ocr_engine, path, is_easyocr=is_easyocr, min_conf=min_conf)
-        except Exception as exc:
-            if not _ocr_err_shown:
-                _ocr_err_shown = True
-                print(f"[WARN] OCR exception: {type(exc).__name__}: {exc}")
-            return ""
 
     try:
-        engine_pref = os.environ.get("OCR_ENGINE", "easyocr").strip().lower()
-        if engine_pref in ("auto", "easyocr"):
-            try:
-                ocr_engine = _init_easyocr_fallback()
-                is_easyocr = True
-                print("[INFO] OCR engine: EasyOCR (dùng GPU nếu torch thấy CUDA).")
-            except Exception as ee:
-                print(f"[WARN] EasyOCR không khởi tạo được ({ee}) → chuyển PaddleOCR.")
-        if ocr_engine is None:
-            try:
-                ocr_engine = _init_paddle_ocr_engine()
-                print("[INFO] OCR engine: PaddleOCR.")
-            except Exception as pe:
-                print(f"[WARN] PaddleOCR không khởi tạo được ({pe}) → thử lại EasyOCR.")
-                ocr_engine = _init_easyocr_fallback()
-                is_easyocr = True
+        try:
+            ocr_engine = _init_paddle_ocr_engine()
+        except Exception as pe:
+            print(f"[WARN] Khởi tạo PaddleOCR lỗi ({pe}), chuyển sang EasyOCR.")
+            ocr_engine = _init_easyocr_fallback()
+            is_easyocr = True
 
-        # 1) Chọn ROI: chấm điểm bằng số phụ đề HỢP LỆ trên vài khung mẫu
-        best_roi = None
-        best_hits = -1
-        probe_dir = os.path.join(work_dir, "ocr_probe")
-        os.makedirs(probe_dir, exist_ok=True)
+        active_frames = []
+
         for idx_roi, roi in enumerate(candidate_rois):
-            frames = []
-            duration = _video_duration(video_path) or 30.0
-            n_probe = int(os.environ.get("OCR_PROBE_FRAMES", "12"))
-            for k in range(n_probe):
-                ts = duration * (0.05 + 0.90 * k / max(1, n_probe - 1))
-                p = _extract_frame_at(video_path, ts, roi, 960, os.path.join(probe_dir, f"p_{idx_roi}_{k}.jpg"))
-                if p:
-                    frames.append(p)
-            hits = 0
-            samples = []
-            raws = []
-            for k_i, p in enumerate(frames):
-                if k_i == 0 and idx_roi == 0:
-                    raw = _ocr_single_image(ocr_engine, p, is_easyocr=is_easyocr, min_conf=0.15, debug=True)
-                else:
-                    raw = _ocr_path(p, min_conf=0.15)
-                raws.append(raw)
-                cleaned = _clean_ocr_text(raw)
-                if cleaned:
-                    hits += 1
-                    samples.append(cleaned[:16])
-            raw_preview = " | ".join((r or "")[:14] for r in raws[:3])
-            print(f"[INFO] [{('EasyOCR' if is_easyocr else 'PaddleOCR')}] ROI {roi} | phụ đề hợp lệ={hits}/{len(frames)} | raw: {raw_preview}")
-            if hits > best_hits:
-                best_hits, best_roi = hits, roi
-            if hits >= 4:
-                break
-        chosen_roi = best_roi or candidate_rois[0]
-        print(f"[INFO] ROI chọn: {chosen_roi} (hits={max(0, best_hits)})")
-
-        # 2) Quét span phụ đề ở tần số cao rồi OCR đúng 1 khung đại diện mỗi span
-        spans = _scan_subtitle_spans(video_path, work_dir, chosen_roi)
-        print(f"[INFO] Phát hiện {len(spans)} span phụ đề bằng quét {os.environ.get('OCR_SCAN_FPS', '5.0')} fps.")
-        span_dir = os.path.join(work_dir, "ocr_spans")
-        os.makedirs(span_dir, exist_ok=True)
-        for i, (s_t, e_t) in enumerate(spans, 1):
-            mid = (s_t + e_t) / 2.0
-            fracs = (0.25, 0.75) if e_t - s_t >= 0.6 else (0.5,)
-            samples = []
-            for c_i, frac in enumerate(fracs):
-                ts = s_t + (e_t - s_t) * frac
-                img = _extract_frame_at(video_path, ts, chosen_roi, 960, os.path.join(span_dir, f"span_{i:05d}_{c_i}.jpg"))
-                if not img:
-                    continue
-                txt = _clean_ocr_text(_ocr_path(img))
-                if txt:
-                    samples.append((ts, txt))
-            if not samples:
+            roi_dir = os.path.join(work_dir, f"ocr_frames_r{idx_roi}")
+            frames = _extract_frames_for_roi(video_path, roi_dir, roi, fps)
+            if not frames:
                 continue
-            if len(samples) >= 2 and samples[0][1] != samples[1][1]:
-                # Hai nửa span là hai phụ đề khác nhau → tách đôi tại trung điểm
-                ocr_records.append({"time": round(samples[0][0], 2), "start": s_t, "end": round(mid, 2), "text": samples[0][1]})
-                ocr_records.append({"time": round(samples[1][0], 2), "start": round(mid, 2), "end": e_t, "text": samples[1][1]})
-            else:
-                ocr_records.append({"time": round(mid, 2), "start": s_t, "end": e_t, "text": samples[0][1]})
-            if i % 25 == 0 or i == len(spans):
-                print(f"[INFO] OCR span {i}/{len(spans)} → {len(ocr_records)} dòng phụ đề hợp lệ...")
 
-        # Gộp các record liền kề trùng chữ (1 phụ đề bị tách làm 2 span do fade)
-        merged_records = []
-        for rec in ocr_records:
-            if merged_records and rec["text"] == merged_records[-1]["text"] and rec["start"] - merged_records[-1]["end"] <= 0.6:
-                merged_records[-1]["end"] = rec["end"]
-            else:
-                merged_records.append(dict(rec))
-        ocr_records = merged_records
+            step = max(1, len(frames) // 12)
+            probe_frames = frames[::step][:12]
+
+            matched_mode = None
+            best_hits = 0
+            for m_name in ("raw", "contrast", "high_text"):
+                hits = 0
+                for k_i, (_, p) in enumerate(probe_frames):
+                    t_img = p if m_name == "raw" else _preprocess_hardsub_image(p, m_name)
+                    try:
+                        txt_res = _ocr_single_image(
+                            ocr_engine,
+                            t_img,
+                            is_easyocr=is_easyocr,
+                            min_conf=0.25,
+                            debug=(idx_roi == 0 and m_name == "raw" and k_i == 0),
+                        )
+                    except Exception:
+                        if not is_easyocr:
+                            print("[WARN] PaddleOCR gặp lỗi runtime executor, chuyển sang EasyOCR fallback.")
+                            del ocr_engine
+                            free_gpu()
+                            ocr_engine = _init_easyocr_fallback()
+                            is_easyocr = True
+                            txt_res = _ocr_single_image(ocr_engine, t_img, is_easyocr=True, min_conf=0.25)
+                        else:
+                            txt_res = ""
+                    if txt_res:
+                        hits += 1
+                if hits > best_hits:
+                    best_hits = hits
+                    matched_mode = m_name
+                if hits >= 2:
+                    break
+
+            engine_label = "EasyOCR" if is_easyocr else "PaddleOCR"
+            print(f"[INFO] [{engine_label}] ROI {roi} | mode={matched_mode or 'raw'} | hits={best_hits}/{len(probe_frames)} mẫu.")
+            if best_hits > 0 or idx_roi == len(candidate_rois) - 1:
+                chosen_roi = roi
+                chosen_mode = matched_mode or "raw"
+                active_frames = frames
+                break
+
+        for ts, img_path in active_frames:
+            t_img = img_path if chosen_mode == "raw" else _preprocess_hardsub_image(img_path, chosen_mode)
+            try:
+                merged = _ocr_single_image(ocr_engine, t_img, is_easyocr=is_easyocr, min_conf=0.25, debug=False)
+            except Exception:
+                merged = ""
+            if merged:
+                ocr_records.append({"time": ts, "text": merged})
 
         del ocr_engine
         free_gpu()
@@ -1259,78 +825,84 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
         print(f"[WARN] OCR lỗi: {ocr_err}")
         free_gpu()
 
-    print(f"[INFO] OCR xong: ROI {chosen_roi} → {len(ocr_records)} dòng phụ đề có mốc start/end.")
+    print(f"[INFO] Khoanh vùng phụ đề ROI chọn: {chosen_roi} (mode={chosen_mode}) → {len(ocr_records)} mốc phụ đề.")
     return ocr_records, chosen_roi
 
 
-def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> list[dict]:
-    """Ghép phụ đề OCR (đã có start/end) vào từng câu ASR để SỬA CHÍNH TẢ.
+def _clean_ocr_typos(text: str) -> str:
+    replacements = {
+        "绐": "给",
+        "从莱市场": "从菜市场",
+        "莱市场": "菜市场",
+        "别入": "别人",
+        "谈谈": "堂堂",
+        "引信埋名": "隐姓埋名",
+        "匕下": "上下",
+        "落荏": "落在",
+    }
+    cleaned = text
+    for bad, good in replacements.items():
+        cleaned = cleaned.replace(bad, good)
+    return cleaned.strip()
 
-    Nguyên tắc: chỉ dùng chữ OCR khi span phụ đề chồng lấn thời gian với câu thoại;
-    nếu OCR và ASR là cùng một câu (tỉ lệ giống ≥0.5 hoặc độ dài tương đương) thì lấy
-    chữ OCR vì OCR đọc đúng mặt chữ, ASR hay nghe nhầm từ đồng âm.
-    """
+
+def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> list[dict]:
     refined = []
-    corrected_cnt = 0
-    extended_cnt = 0
-    kept_cnt = 0
-    for seg in segments:
-        s_t = float(seg.get("start", 0.0))
-        e_t = float(seg.get("end", s_t + 1.0))
+    verified_cnt = 0
+
+    sorted_segs = sorted(segments, key=lambda x: float(x.get("start", 0.0)))
+    prev_end = 0.0
+
+    for idx_s, seg in enumerate(sorted_segs):
+        raw_s = max(0.0, float(seg.get("start", 0.0)))
+        raw_e = max(raw_s + 0.5, float(seg.get("end", raw_s + 1.0)))
+
+        # Chống chồng mốc thời gian giữa các câu liền tiếp
+        s_t = round(max(raw_s, prev_end + 0.04 if idx_s > 0 else raw_s), 2)
+        e_t = round(max(raw_e, s_t + 0.45), 2)
+        prev_end = e_t
+
         asr_txt = (seg.get("asr_text") or "").strip()
 
-        cands = []
-        for r in ocr_records:
-            r_s = float(r.get("start", r.get("time", 0.0)))
-            r_e = float(r.get("end", r_s + 1.0))
-            if r_e < s_t - 1.2 or r_s > e_t + 1.2:
-                continue
-            cleaned = _clean_ocr_text(r.get("text", ""))
-            if not cleaned:
-                continue
-            ov = max(0.0, min(e_t, r_e) - max(s_t, r_s))
-            ov_ratio = ov / max(0.3, e_t - s_t)
-            sim = SequenceMatcher(None, asr_txt, cleaned).ratio() if asr_txt else 0.0
-            # Điểm kết hợp thời gian + độ giống chữ: ASR và phụ đề thường lệch nhau ~0.5s,
-            # nếu chỉ lấy overlap lớn nhất sẽ vơ phụ đề của câu bên cạnh.
-            score = sim + 0.35 * min(1.0, ov_ratio)
-            cands.append((score, sim, ov_ratio, cleaned))
-        cands.sort(key=lambda x: -x[0])
-        ocr_txt = cands[0][3] if cands else ""
-        best_sim = cands[0][1] if cands else 0.0
-        best_ovr = cands[0][2] if cands else 0.0
+        matched_ocrs = [
+            _clean_ocr_typos(r["text"].strip())
+            for r in ocr_records
+            if (s_t - 0.8) <= float(r["time"]) <= (e_t + 0.8) and r.get("text")
+        ]
+        dedup_ocrs = []
+        for t in matched_ocrs:
+            if t and (not dedup_ocrs or t != dedup_ocrs[-1]):
+                dedup_ocrs.append(t)
+        ocr_txt = " ".join(dedup_ocrs).strip()
 
         best_txt = asr_txt
         source_mode = "asr_only"
         if asr_txt and ocr_txt:
-            len_ratio = len(ocr_txt) / max(1, len(asr_txt))
-            cjk_ocr = len(re.findall(r"[\u4e00-\u9fff]", ocr_txt))
-            if best_sim >= 0.55 or (best_sim >= 0.35 and best_ovr >= 0.45):
-                # Cùng một câu, khác mặt chữ do ASR nghe nhầm → lấy chữ OCR
-                best_txt, source_mode = ocr_txt, "ocr_corrected"
-                corrected_cnt += 1
-            elif cjk_ocr >= 4 and len(asr_txt) > 3 and len_ratio > 1.3 and best_ovr >= 0.6:
-                best_txt, source_mode = ocr_txt, "ocr_extended"
-                extended_cnt += 1
+            ratio = SequenceMatcher(None, asr_txt.lower(), ocr_txt.lower()).ratio()
+            # Chỉ ghi đè OCR khi độ tương đồng cao và độ dài không ngắn hơn quá mức khiến mất vế câu
+            if ratio >= 0.55 and len(ocr_txt) >= int(len(asr_txt) * 0.80):
+                best_txt = ocr_txt
+                source_mode = "ocr_verified"
+                verified_cnt += 1
             else:
-                best_txt, source_mode = asr_txt, "asr_kept"
-                kept_cnt += 1
+                best_txt = asr_txt
+                source_mode = "asr_with_ocr_hint"
         elif ocr_txt and not asr_txt:
-            best_txt, source_mode = ocr_txt, "ocr_only"
-            corrected_cnt += 1
-        else:
-            kept_cnt += 1
+            best_txt = ocr_txt
+            source_mode = "ocr_only"
+            verified_cnt += 1
 
         item = dict(seg)
+        item["id"] = idx_s
+        item["start"] = s_t
+        item["end"] = e_t
+        item["asr_text"] = asr_txt
         item["ocr_text"] = ocr_txt
         item["best_text"] = best_txt
         item["subtitle_source"] = source_mode
         refined.append(item)
 
-    print(
-        f"[INFO] Đối chiếu ASR+OCR: {corrected_cnt} câu lấy chữ OCR (sửa chính tả), "
-        f"{extended_cnt} câu OCR dài hơn, {kept_cnt} câu giữ ASR."
-    )
+    print(f"[INFO] Đối chiếu ASR+OCR: {verified_cnt}/{len(refined)} câu đối chiếu OCR.")
     return refined
 
 
@@ -1364,18 +936,16 @@ def run_demucs_and_ref_voices(audio_44k: str, segments: list[dict], work_dir: st
     if res.returncode == 0:
         for root, _, files in os.walk(demucs_out_dir):
             if "no_vocals.wav" in files and not found_nv:
-                src_nv = os.path.join(root, "no_vocals.wav")
                 subprocess.run(
-                    ["ffmpeg", "-y", "-i", src_nv, "-ac", "2", "-ar", "44100", no_vocals_out],
+                    ["ffmpeg", "-y", "-i", os.path.join(root, "no_vocals.wav"), "-ac", "2", "-ar", "44100", no_vocals_out],
                     check=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
                 found_nv = True
             if "vocals.wav" in files and not found_voc:
-                src_voc = os.path.join(root, "vocals.wav")
                 subprocess.run(
-                    ["ffmpeg", "-y", "-i", src_voc, "-ac", "1", "-ar", "24000", clean_vocals_out],
+                    ["ffmpeg", "-y", "-i", os.path.join(root, "vocals.wav"), "-ac", "1", "-ar", "24000", clean_vocals_out],
                     check=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -1426,7 +996,7 @@ def run_demucs_and_ref_voices(audio_44k: str, segments: list[dict], work_dir: st
             by_speaker.setdefault(spk, []).append(seg)
 
         for spk, spk_segs in by_speaker.items():
-            candidates = [s for s in spk_segs if (float(s["end"]) - float(s["start"])) >= 2.0] or spk_segs
+            candidates = [s for s in spk_segs if (float(s["end"]) - float(s["start"])) >= 1.5] or spk_segs
             best_seg = max(
                 candidates,
                 key=lambda x: float(np.sqrt(np.mean(data[int(float(x["start"]) * sr): max(int(float(x["start"]) * sr) + 1, int(float(x["end"]) * sr))] ** 2)))
@@ -1435,8 +1005,8 @@ def run_demucs_and_ref_voices(audio_44k: str, segments: list[dict], work_dir: st
             )
             if not best_seg:
                 continue
-            start_s = max(0.0, float(best_seg["start"]) + 0.15)
-            end_s = min(len(data) / float(sr), max(start_s + 2.0, min(float(best_seg["end"]) - 0.15, start_s + 6.5)))
+            start_s = max(0.0, float(best_seg["start"]) + 0.1)
+            end_s = min(len(data) / float(sr), max(start_s + 1.5, min(float(best_seg["end"]) - 0.1, start_s + 6.0)))
             if end_s > start_s:
                 clip = data[int(start_s * sr): int(end_s * sr)].astype(np.float32)
                 rms = float(np.sqrt(np.mean(clip ** 2)))
@@ -1459,19 +1029,6 @@ def run_demucs_and_ref_voices(audio_44k: str, segments: list[dict], work_dir: st
 
 
 sync = GitHubSync(GH_REPO, GH_TOKEN)
-
-
-def mark_job_failed(err_text: str):
-    """Ghi FAILED vào state/jobs.json để UI và monitor thấy lỗi thay vì treo ở trạng thái cũ."""
-    try:
-        data, _ = sync.read_json("state/jobs.json")
-        job = data.setdefault("jobs", {}).setdefault(JOB_ID, {})
-        job["status"] = "FAILED_STAGE1"
-        job["error"] = err_text[-800:]
-        job["failed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        sync.write_json("state/jobs.json", data, f"FAILED stage1: {JOB_ID}")
-    except Exception as exc:
-        print(f"[WARN] Không ghi được trạng thái FAILED: {exc}")
 
 
 def main():
@@ -1528,7 +1085,7 @@ def main():
             sync.upload_asset(JOB_ID, os.path.join(work_dir, fname))
 
     ocr_summary = "; ".join(f"[{r['time']}s] {r['text']}" for r in screen_texts[:15])
-    scene_context = f"Chữ/phụ đề màn hình (PaddleOCR): {ocr_summary}" if ocr_summary else ""
+    scene_context = f"Chữ/phụ đề màn hình: {ocr_summary}" if ocr_summary else ""
 
     stage1_payload = {
         "job_id": JOB_ID,
@@ -1558,6 +1115,5 @@ if __name__ == "__main__":
         main()
     except Exception:
         err = traceback.format_exc()[-1200:]
-        mark_job_failed(err)
         send_telegram(TG_TOKEN, TG_CHAT, f"❌ <b>[Stage 1 Lỗi]</b> <code>{JOB_ID}</code>:\n<pre>{err}</pre>")
         raise
