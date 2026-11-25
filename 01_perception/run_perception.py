@@ -21,6 +21,14 @@ import time
 import traceback
 import requests
 
+for _stream in (sys.stdout, sys.stderr):
+    _reconf = getattr(_stream, "reconfigure", None)  # log realtime, không bị buffer
+    if callable(_reconf):
+        try:
+            _reconf(line_buffering=True)
+        except Exception:
+            pass
+
 
 def get_cfg(key: str, injected: str) -> str:
     env_val = os.environ.get(key, "").strip()
@@ -667,19 +675,24 @@ def _init_paddle_ocr_engine():
     lang = os.environ.get("PADDLE_OCR_LANG", "ch")
     use_gpu = os.environ.get("PADDLE_OCR_GPU", "0").strip() == "1"
 
-    try:
-        return PaddleOCR(
-            lang=lang,
-            enable_mkldnn=False,
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-        )
-    except Exception:
+    # oneDNN (mkldnn) tăng tốc CPU 2-3x; nếu image lỗi executor thì fallback như cũ.
+    attempts = [
+        dict(lang=lang, enable_mkldnn=True, use_doc_orientation_classify=False,
+             use_doc_unwarping=False, use_textline_orientation=False),
+        dict(lang=lang, enable_mkldnn=False, use_doc_orientation_classify=False,
+             use_doc_unwarping=False, use_textline_orientation=False),
+        dict(lang=lang, enable_mkldnn=False),
+        dict(use_angle_cls=False, lang=lang, use_gpu=use_gpu, enable_mkldnn=False),
+    ]
+    last_err = None
+    for kwargs in attempts:
         try:
-            return PaddleOCR(lang=lang, enable_mkldnn=False)
-        except Exception:
-            return PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=use_gpu, enable_mkldnn=False)
+            engine = PaddleOCR(**kwargs)
+            print(f"[INFO] PaddleOCR khởi tạo với {kwargs}")
+            return engine
+        except Exception as exc:
+            last_err = exc
+    raise last_err or RuntimeError("Không khởi tạo được PaddleOCR với mọi cấu hình.")
 
 
 def _init_easyocr_fallback():
@@ -794,13 +807,32 @@ def _frame_signature(img_path: str):
         return None
 
 
+def _video_duration(path: str) -> float:
+    try:
+        res = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path],
+            capture_output=True,
+            text=True,
+        )
+        return float((res.stdout or "").strip())
+    except Exception:
+        return 0.0
+
+
 def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, float, float, float], fps: float) -> list[tuple[float, str]]:
     os.makedirs(out_dir, exist_ok=True)
     x1, y1, x2, y2 = roi
     crop_w = max(0.2, x2 - x1)
     crop_h = max(0.10, y2 - y1)
-    # Ảnh càng lớn OCR càng chậm (gần như tuyến tính theo số pixel). 1280 đủ nét cho phụ đề.
-    max_w = int(os.environ.get("OCR_MAX_WIDTH", "1280"))
+    # Ảnh càng lớn OCR càng chậm (gần như tuyến tính theo số pixel). 960 đủ nét cho phụ đề.
+    max_w = int(os.environ.get("OCR_MAX_WIDTH", "960"))
+    budget = max(20, int(os.environ.get("OCR_MAX_FRAMES", "150")))
+    duration = _video_duration(video_path)
+    if duration > 0:
+        effective_fps = max(0.1, min(float(fps), budget / duration))
+        if effective_fps < float(fps):
+            print(f"[INFO] Video dài {duration:.0f}s → giảm OCR {fps} fps xuống {effective_fps:.2f} fps để phủ hết video (tối đa {budget} khung).")
+        fps = effective_fps
     if crop_w >= 0.98 and crop_h >= 0.98:
         vf_expr = f"fps={fps},scale={max_w}:-1"
     else:
@@ -822,7 +854,7 @@ def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, flo
             idx = len(frames) + 1
         ts = round((idx - 1) * interval, 2)
         frames.append((ts, os.path.join(out_dir, fname)))
-    return frames[:150]
+    return frames[:budget]
 
 
 def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[float, float, float, float]]:
@@ -904,7 +936,10 @@ def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[fl
 
         last_sig = None
         last_text = ""
-        for ts, img_path in active_frames:
+        total_frames = len(active_frames)
+        for frame_i, (ts, img_path) in enumerate(active_frames, 1):
+            if frame_i % 20 == 0 or frame_i == total_frames:
+                print(f"[INFO] OCR {frame_i}/{total_frames} khung (t={ts:.0f}s)...")
             sig = _frame_signature(img_path)
             if sig is not None and sig == last_sig:
                 # Phụ đề giữ nguyên giữa 2 khung → không OCR lại, nhưng vẫn ghi mốc thời gian

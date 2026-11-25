@@ -11,6 +11,14 @@ import time
 import traceback
 import requests
 
+for _stream in (sys.stdout, sys.stderr):
+    _reconf = getattr(_stream, "reconfigure", None)  # log realtime, không bị buffer
+    if callable(_reconf):
+        try:
+            _reconf(line_buffering=True)
+        except Exception:
+            pass
+
 
 def get_cfg(key: str, injected: str) -> str:
     env_val = os.environ.get(key, "").strip()
