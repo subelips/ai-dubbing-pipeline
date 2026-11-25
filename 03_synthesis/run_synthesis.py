@@ -388,7 +388,7 @@ def synth_single_line(
 
     tempo = 1.0
     if actual_dur > slot_dur * 1.03:
-        tempo = min(1.45, actual_dur / slot_dur)
+        tempo = min(1.50, actual_dur / slot_dur)
     elif actual_dur < slot_dur * 0.80:
         tempo = max(0.95, actual_dur / slot_dur)
 
@@ -397,7 +397,7 @@ def synth_single_line(
         af_parts.append(_build_atempo_chain(tempo))
 
     est_dur_after_tempo = actual_dur / tempo
-    max_allowed_dur = round(slot_dur * 1.06, 3)
+    max_allowed_dur = round(slot_dur * 1.10, 3)
     trimmed = False
     if est_dur_after_tempo > max_allowed_dur:
         trimmed = True

@@ -355,9 +355,9 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
 
 
 def fit_text_to_duration(text_vi: str, duration_sec: float) -> str:
-    # ~13 ký tự/giây cho tiếng Việt; KHÔNG đặt sàn 18 ký tự như trước — câu thoại
-    # 0,5-0,8s mà ép 18 ký tự sẽ bị TTS đọc dài rồi phải cắt giữa từ.
-    max_chars = max(8, int(round(duration_sec * 13.0)))
+    # ~17 ký tự/giây: chấp nhận nhanh hơn nhịp đọc tự nhiên một chút để KHÔNG cắt cụt
+    # nghĩa câu; stage 3 sẽ tăng tốc độ đọc (atempo ≤1.5) cho vừa slot.
+    max_chars = max(12, int(round(duration_sec * 17.0)))
     txt = " ".join(text_vi.split()).strip()
     if len(txt) <= max_chars:
         return txt
@@ -404,6 +404,8 @@ def _translate_chunk_with_model(model, processor, chunk: list[dict], start_idx: 
                 "4) Mỗi dòng là MỘT câu thoại ngắn, dài ≤ duration_sec × 16 ký tự, "
                 "không gộp nhiều dòng, không thêm chú thích, không dùng ngoặc kép hay markdown.\n"
                 "5) Thành ngữ/tiếng lóng thì dịch nghĩa bóng cho tự nhiên.\n"
+                "6) Giữ đại từ nhất quán: mỗi speaker_id dùng một cặp xưng hô cố định trong cả đoạn "
+                "(vd chồng→vợ: 'anh–em'; vợ→chồng: 'em–anh'), không đổi qua lại 'tôi/bạn/cậu'.\n"
                 "Ví dụ: [{\"id\": 0, \"src_text\": \"你的饭给狗吃了\", \"duration_sec\": 2.1, "
                 "\"text_vi\": \"Cơm của anh đem cho chó ăn rồi.\"}]\n"
                 "Chỉ trả về JSON array với đúng các khoá: id, speaker_id, gender, text_vi."
@@ -453,7 +455,7 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
         return []
 
     dub_lines = []
-    batch_size = 4
+    batch_size = int(os.environ.get("TRANSLATE_CHUNK", "8"))
     for start_idx in range(0, len(segments), batch_size):
         chunk = segments[start_idx: start_idx + batch_size]
         ctx_before = [(s.get("best_text") or s.get("asr_text") or "").strip() for s in segments[max(0, start_idx - 2):start_idx]]
@@ -517,7 +519,7 @@ def mark_job_failed(err_text: str):
 
 
 def main():
-    model_name = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen3-VL-4B-Instruct").strip() or "Qwen/Qwen3-VL-4B-Instruct"
+    model_name = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen3-VL-8B-Instruct").strip() or "Qwen/Qwen3-VL-8B-Instruct"
     send_telegram(TG_TOKEN, TG_CHAT, f"🌐 <b>[Stage 2 - {model_name}]</b> Bắt đầu job <code>{JOB_ID}</code>")
     stage1_data, _ = sync.read_json(f"state/{JOB_ID}_stage1.json")
     segments = stage1_data.get("segments", [])
