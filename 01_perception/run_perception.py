@@ -13,7 +13,6 @@ import json
 import re
 import subprocess
 import sys
-import threading
 import time
 import traceback
 import requests
@@ -249,8 +248,25 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
 
 
 def transcribe_with_faster_whisper(vocals_wav: str) -> list[dict]:
+    import numpy as np
+    import soundfile as sf
     import torch
     from faster_whisper import WhisperModel
+
+    audio_arr, sr = sf.read(vocals_wav, dtype="float32")
+    if audio_arr.ndim > 1:
+        audio_arr = audio_arr.mean(axis=-1)
+    if sr != 16000:
+        wav_16k = vocals_wav + "_16k.wav"
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", vocals_wav, "-ac", "1", "-ar", "16000", wav_16k],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        audio_arr, _ = sf.read(wav_16k, dtype="float32")
+        if audio_arr.ndim > 1:
+            audio_arr = audio_arr.mean(axis=-1)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     compute_type = "float16" if device == "cuda" else "int8"
@@ -259,7 +275,7 @@ def transcribe_with_faster_whisper(vocals_wav: str) -> list[dict]:
 
     model = WhisperModel(model_size, device=device, compute_type=compute_type)
     raw_segments, _ = model.transcribe(
-        vocals_wav,
+        np.ascontiguousarray(audio_arr, dtype=np.float32),
         language=lang,
         beam_size=5,
         vad_filter=True,
@@ -354,7 +370,6 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
         except Exception as e:
             print(f"[WARN] pyannote.audio không chạy được ({e}), dùng dự phòng cao độ/giới tính.")
 
-    # Đo cao độ và gán gender_hint cho từng đoạn thoại
     for seg in segments:
         i0 = max(0, int(float(seg["start"]) * sr))
         i1 = min(len(wav_data), int(float(seg["end"]) * sr))
@@ -377,7 +392,6 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
             seg["speaker_id"] = cur_spk
         print(f"[INFO] Dự phòng gán người nói tạo {len({s['speaker_id'] for s in segments})} nhãn.")
 
-    # Tách nhãn theo giới tính khi một cụm có cả giọng nam và giọng nữ (ví dụ có thêm bố vợ/nhân vật thứ 3)
     for seg in segments:
         base_spk = str(seg.get("speaker_id", "SPEAKER_00"))
         g_hint = str(seg.get("gender_hint", "unknown")).lower()
@@ -439,11 +453,58 @@ def _extract_ocr_texts(ocr_result) -> list[str]:
     return texts
 
 
+def _score_ocr_texts(texts: list[str]) -> float:
+    joined = "".join(t.strip() for t in texts if str(t).strip())
+    if not joined:
+        return 0.0
+    meaningful = re.findall(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7afA-Za-zÀ-ỹ0-9]", joined)
+    return float(len(meaningful)) + 0.25 * len(texts)
+
+
+def _create_ocr_engine(lang: str):
+    from paddleocr import PaddleOCR
+
+    kwargs_list = [
+        dict(
+            lang=lang,
+            enable_mkldnn=False,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        ),
+        dict(
+            lang=lang,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        ),
+    ]
+    last_err = None
+    for kw in kwargs_list:
+        try:
+            return PaddleOCR(**kw)
+        except TypeError as e:
+            last_err = e
+            continue
+    raise last_err
+
+
+def _run_ocr_predict(ocr_engine, img) -> list[str]:
+    try:
+        if hasattr(ocr_engine, "predict"):
+            return _extract_ocr_texts(ocr_engine.predict(img))
+    except Exception:
+        pass
+    try:
+        return _extract_ocr_texts(ocr_engine.ocr(img))
+    except Exception:
+        return []
+
+
 def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict]]:
     roi = {"x1": 0.02, "y1": 0.58, "x2": 0.98, "y2": 0.96}
     try:
         import cv2
-        from paddleocr import PaddleOCR
 
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
@@ -451,15 +512,7 @@ def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict]]:
         duration = total_frames / fps if fps > 0 else 60.0
 
         sample_times = [round(duration * k / 7.0, 2) for k in range(1, 7)]
-        ocr = PaddleOCR(
-            lang="ch",
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-        )
-
-        hits = 0
-        screen_texts = []
+        frames_crops = []
         for ts in sample_times:
             cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
             ok, frame = cap.read()
@@ -472,14 +525,61 @@ def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict]]:
             gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
             boosted = cv2.convertScaleAbs(gray, alpha=1.6, beta=15)
             boosted_bgr = cv2.cvtColor(boosted, cv2.COLOR_GRAY2BGR)
+            frames_crops.append((ts, crop, boosted_bgr))
+        cap.release()
 
-            found = _extract_ocr_texts(ocr.ocr(crop)) or _extract_ocr_texts(ocr.ocr(boosted_bgr))
+        if not frames_crops:
+            return roi, []
+
+        forced_lang = os.environ.get("OCR_LANG", "").strip()
+        if forced_lang:
+            candidates = [forced_lang]
+        else:
+            src_lang = os.environ.get("SOURCE_LANG", "").strip().lower()
+            base_order = ["ch", "en", "vi", "japan", "korean"]
+            if src_lang in ("zh", "cn", "ch"):
+                candidates = ["ch", "en", "vi"]
+            elif src_lang in ("ja", "jp", "japan"):
+                candidates = ["japan", "ch", "en"]
+            elif src_lang in ("ko", "kr", "korean"):
+                candidates = ["korean", "ch", "en"]
+            elif src_lang in ("vi", "vie"):
+                candidates = ["vi", "en", "ch"]
+            elif src_lang in ("en",):
+                candidates = ["en", "ch", "vi"]
+            else:
+                candidates = base_order
+
+        best_lang = candidates[0]
+        best_score = -1.0
+        engines_cache = {}
+        _, probe_crop, probe_boost = frames_crops[0]
+
+        for lang_cand in candidates:
+            try:
+                eng = _create_ocr_engine(lang_cand)
+                engines_cache[lang_cand] = eng
+                t1 = _run_ocr_predict(eng, probe_crop)
+                t2 = _run_ocr_predict(eng, probe_boost) if not t1 else []
+                sc = max(_score_ocr_texts(t1), _score_ocr_texts(t2))
+                if sc > best_score:
+                    best_score = sc
+                    best_lang = lang_cand
+                if best_score >= 4.0 and not forced_lang:
+                    break
+            except Exception as e:
+                print(f"[WARN] OCR thử ngôn ngữ '{lang_cand}' lỗi: {e}")
+
+        ocr = engines_cache.get(best_lang) or _create_ocr_engine(best_lang)
+        hits = 0
+        screen_texts = []
+        for ts, crop, boosted_bgr in frames_crops:
+            found = _run_ocr_predict(ocr, crop) or _run_ocr_predict(ocr, boosted_bgr)
             if found:
                 hits += 1
                 screen_texts.append({"time": ts, "texts": found})
 
-        cap.release()
-        print(f"[INFO] [PaddleOCR] ROI {tuple(roi.values())} | hits={hits}/{len(sample_times)} mẫu.")
+        print(f"[INFO] [PaddleOCR] lang={best_lang} | ROI {tuple(roi.values())} | hits={hits}/{len(frames_crops)} mẫu.")
         return roi, screen_texts
     except Exception as e:
         print(f"[WARN] PaddleOCR bỏ qua: {e}")
