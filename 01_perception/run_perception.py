@@ -218,6 +218,7 @@ def ensure_deps():
         ("demucs", "demucs"),
         ("soundfile", "soundfile"),
         ("numpy", "numpy"),
+        ("scipy", "scipy"),
         ("gdown", "gdown"),
         ("paddle", "paddlepaddle"),
         ("paddleocr", "paddleocr"),
@@ -294,30 +295,60 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
     return vocals_wav, bgm_wav
 
 
-def _refine_segment_timestamps(raw_segments, audio_arr, sr: int) -> list[dict]:
+def _split_and_refine_segments(raw_segments, audio_arr, sr: int) -> list[dict]:
     import numpy as np
 
-    segments = []
-    for idx, seg in enumerate(raw_segments):
+    # Tách nhỏ các câu ghép dựa trên word_timestamps (dấu ngắt câu hoặc khoảng lặng >= 0.26s)
+    atomic_items: list[tuple[float, float, str]] = []
+    punct_chars = set(",.?!;，。？！；、")
+
+    for seg in raw_segments:
         txt = (seg.text or "").strip()
         if not txt:
             continue
 
-        s_t = float(seg.start)
-        e_t = float(seg.end)
-
-        # Lấy mốc chuẩn xác theo word_timestamps để loại khoảng im lặng chuyển cảnh
         words = getattr(seg, "words", None) or []
-        valid_words = [w for w in words if getattr(w, "start", None) is not None and getattr(w, "end", None) is not None]
-        if valid_words:
-            s_t = max(s_t, float(valid_words[0].start))
-            e_t = min(e_t, float(valid_words[-1].end))
+        valid_words = [
+            w for w in words
+            if getattr(w, "start", None) is not None
+            and getattr(w, "end", None) is not None
+            and (getattr(w, "word", "") or "").strip()
+        ]
+
+        if not valid_words:
+            atomic_items.append((float(seg.start), float(seg.end), txt))
+            continue
+
+        cur_words = [valid_words[0]]
+        for w in valid_words[1:]:
+            prev_w = cur_words[-1]
+            prev_str = (prev_w.word or "").strip()
+            gap = float(w.start) - float(prev_w.end)
+            ends_with_punct = bool(prev_str) and (prev_str[-1] in punct_chars)
+
+            if (ends_with_punct and gap >= 0.08) or gap >= 0.26:
+                clause_txt = "".join(x.word for x in cur_words).strip(" ,.?!;，。？！；、")
+                if clause_txt:
+                    atomic_items.append((float(cur_words[0].start), float(prev_w.end), clause_txt))
+                cur_words = [w]
+            else:
+                cur_words.append(w)
+
+        if cur_words:
+            clause_txt = "".join(x.word for x in cur_words).strip(" ,.?!;，。？！；、")
+            if clause_txt:
+                atomic_items.append((float(cur_words[0].start), float(cur_words[-1].end), clause_txt))
+
+    segments = []
+    for idx, (raw_s, raw_e, txt) in enumerate(atomic_items):
+        s_t = float(raw_s)
+        e_t = float(raw_e)
 
         # Cắt bỏ khoảng lặng đầu/cuối dựa trên năng lượng thực tế của vocals
         i0 = max(0, int(s_t * sr))
         i1 = min(len(audio_arr), int(e_t * sr))
-        if i1 - i0 > int(0.3 * sr):
-            win = max(1, int(0.02 * sr))
+        if i1 - i0 > int(0.25 * sr):
+            win = max(1, int(0.015 * sr))
             chunk = np.abs(audio_arr[i0:i1])
             peak = float(np.max(chunk)) if len(chunk) > 0 else 0.0
             if peak > 1e-4:
@@ -326,19 +357,18 @@ def _refine_segment_timestamps(raw_segments, audio_arr, sr: int) -> list[dict]:
                 if len(active_idx) > 0:
                     trim_s = s_t + max(0.0, (active_idx[0] - win) / float(sr))
                     trim_e = s_t + min((i1 - i0) / float(sr), (active_idx[-1] + win) / float(sr))
-                    if trim_e - trim_s >= 0.25:
+                    if trim_e - trim_s >= 0.22:
                         s_t, e_t = trim_s, trim_e
 
-        # Chặn trường hợp đoạn thoại ngắn bị kéo dài bất thường (vd: 1 câu 6 chữ kéo dài 14s)
         char_len = max(1, len(re.sub(r"\s+", "", txt)))
-        max_plausible_dur = max(1.4, char_len * 0.45 + 0.6)
+        max_plausible_dur = max(1.3, char_len * 0.42 + 0.5)
         if (e_t - s_t) > max_plausible_dur:
             e_t = s_t + max_plausible_dur
 
         segments.append({
             "id": idx,
             "start": round(s_t, 2),
-            "end": round(max(s_t + 0.25, e_t), 2),
+            "end": round(max(s_t + 0.22, e_t), 2),
             "speaker_id": "SPEAKER_00",
             "gender_hint": "unknown",
             "pitch_hz": None,
@@ -349,12 +379,11 @@ def _refine_segment_timestamps(raw_segments, audio_arr, sr: int) -> list[dict]:
             "subtitle_source": "asr_only",
         })
 
-    # Đảm bảo không chồng lấn timestamp giữa 2 câu liên tiếp (giữ khoảng hở tối thiểu 0.04s)
     for i in range(len(segments) - 1):
         cur_end = segments[i]["end"]
         nxt_start = segments[i + 1]["start"]
         if cur_end > nxt_start - 0.04:
-            segments[i]["end"] = round(max(segments[i]["start"] + 0.22, nxt_start - 0.04), 2)
+            segments[i]["end"] = round(max(segments[i]["start"] + 0.20, nxt_start - 0.04), 2)
 
     return segments
 
@@ -400,10 +429,10 @@ def transcribe_with_faster_whisper(vocals_wav: str) -> list[dict]:
                 beam_size=5,
                 word_timestamps=True,
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=220, speech_pad_ms=80),
+                vad_parameters=dict(min_silence_duration_ms=200, speech_pad_ms=60),
             )
-            segments = _refine_segment_timestamps(list(raw_segments), audio_contiguous, 16000)
-            print(f"[INFO] Faster-Whisper ({model_size}, {device}/{compute_type}) nhận diện {len(segments)} câu (word_timestamps=True).")
+            segments = _split_and_refine_segments(list(raw_segments), audio_contiguous, 16000)
+            print(f"[INFO] Faster-Whisper ({model_size}, {device}/{compute_type}) nhận diện {len(segments)} câu thoại chuẩn nhịp.")
             break
         except Exception as e:
             last_err = e
@@ -419,57 +448,74 @@ def transcribe_with_faster_whisper(vocals_wav: str) -> list[dict]:
     return segments
 
 
-def _estimate_pitch_and_timbre(samples, sr: int) -> tuple[float | None, float]:
+def _extract_voice_features(samples, sr: int) -> tuple[float | None, "np.ndarray | None"]:
     import numpy as np
 
-    if samples is None or len(samples) < max(64, sr // 6):
-        return None, 0.0
+    if samples is None or len(samples) < max(64, sr // 8):
+        return None, None
     s = samples.astype(np.float32)
     s = s - np.mean(s)
     energy = float(np.sqrt(np.mean(s ** 2)))
     if energy < 1e-4:
-        return None, 0.0
+        return None, None
 
-    # Tính spectral centroid để phân biệt chất giọng nam trẻ vs nam trung niên
-    spec = np.abs(np.fft.rfft(s * np.hanning(len(s))))
-    freqs = np.fft.rfftfreq(len(s), d=1.0 / sr)
-    spec_sum = float(np.sum(spec))
-    centroid = float(np.sum(freqs * spec) / spec_sum) if spec_sum > 0 else 0.0
-
-    corr = np.correlate(s, s, mode="full")[len(s) - 1:]
+    # Đo cao độ F0 qua từng khung 40ms có tiếng nói và lấy trung vị (median) để chống nhiễu
+    frame_len = max(128, int(0.04 * sr))
+    hop = max(64, frame_len // 2)
     min_lag = max(1, int(sr / 450.0))
-    max_lag = min(len(corr) - 1, int(sr / 75.0))
-    if max_lag <= min_lag:
-        return None, centroid
-    window = corr[min_lag:max_lag]
-    best_idx = int(np.argmax(window)) + min_lag
-    if corr[0] <= 0 or corr[best_idx] / corr[0] < 0.22:
-        return None, centroid
-    return round(float(sr) / float(best_idx), 1), round(centroid, 1)
+    max_lag = min(frame_len - 1, int(sr / 75.0))
+    frame_pitches = []
+    spectra = []
+
+    for start in range(0, len(s) - frame_len + 1, hop):
+        fr = s[start: start + frame_len]
+        rms = float(np.sqrt(np.mean(fr ** 2)))
+        if rms < energy * 0.35:
+            continue
+        win_fr = fr * np.hanning(frame_len)
+        spec = np.abs(np.fft.rfft(win_fr, n=512))
+        log_spec = np.log1p(spec[:160])
+        norm = float(np.linalg.norm(log_spec))
+        if norm > 1e-6:
+            spectra.append(log_spec / norm)
+
+        corr = np.correlate(fr, fr, mode="full")[frame_len - 1:]
+        if corr[0] > 0 and max_lag > min_lag:
+            sub_c = corr[min_lag:max_lag]
+            b_idx = int(np.argmax(sub_c)) + min_lag
+            if corr[b_idx] / corr[0] >= 0.28:
+                frame_pitches.append(float(sr) / float(b_idx))
+
+    pitch_med = round(float(np.median(frame_pitches)), 1) if frame_pitches else None
+    emb = np.mean(spectra, axis=0) if spectra else None
+    if emb is not None:
+        n_emb = float(np.linalg.norm(emb))
+        if n_emb > 1e-6:
+            emb = emb / n_emb
+    return pitch_med, emb
 
 
 def apply_speaker_diarization(vocals_wav: str, segments: list[dict], work_dir: str) -> dict:
     import numpy as np
+    from scipy.cluster.hierarchy import fcluster, linkage
     import soundfile as sf
 
     wav_data, sr = sf.read(vocals_wav)
     if wav_data.ndim > 1:
         wav_data = wav_data.mean(axis=-1)
 
-    centroids = []
+    embeddings: list["np.ndarray | None"] = []
     for seg in segments:
         i0 = max(0, int(float(seg["start"]) * sr))
         i1 = min(len(wav_data), int(float(seg["end"]) * sr))
-        pitch, centroid = _estimate_pitch_and_timbre(wav_data[i0:i1], sr) if i1 > i0 else (None, 0.0)
+        pitch, emb = _extract_voice_features(wav_data[i0:i1], sr) if i1 > i0 else (None, None)
         seg["pitch_hz"] = pitch
-        centroids.append(centroid)
+        embeddings.append(emb)
         if pitch is not None:
-            # Ngưỡng 195 Hz để không nhận nhầm giọng nam trung/cao thành nữ
             seg["gender_hint"] = "female" if pitch >= 195.0 else "male"
         else:
             seg["gender_hint"] = "unknown"
 
-    # Kế thừa gender_hint cho câu ngắn không đo được pitch
     last_known_g = "male"
     for seg in segments:
         if seg["gender_hint"] in ("male", "female"):
@@ -477,29 +523,35 @@ def apply_speaker_diarization(vocals_wav: str, segments: list[dict], work_dir: s
         else:
             seg["gender_hint"] = last_known_g
 
-    # Lọc nhiễu 1 câu lẻ loi bị nhảy giới tính giữa hai câu cùng giới tính
-    if len(segments) >= 3:
-        smoothed_g = [s["gender_hint"] for s in segments]
-        for i in range(1, len(segments) - 1):
-            if segments[i - 1]["gender_hint"] == segments[i + 1]["gender_hint"]:
-                dur_i = float(segments[i]["end"]) - float(segments[i]["start"])
-                if dur_i < 1.2 and segments[i]["gender_hint"] != segments[i - 1]["gender_hint"]:
-                    smoothed_g[i] = segments[i - 1]["gender_hint"]
-        for i, g in enumerate(smoothed_g):
-            segments[i]["gender_hint"] = g
+    # Phân cụm giọng nam bằng Agglomerative Clustering trên log-spectrum embedding (tối đa 2 giọng nam)
+    male_valid = [(i, embeddings[i]) for i, s in enumerate(segments) if s["gender_hint"] == "male" and embeddings[i] is not None]
+    male_cluster_map: dict[int, int] = {}
+    if len(male_valid) >= 4:
+        mat = np.vstack([e for _, e in male_valid])
+        Z = linkage(mat, method="ward")
+        labels = fcluster(Z, t=2, criterion="maxclust")
+        # Cụm nào xuất hiện sớm hơn ở đầu video được gán là SPEAKER_00_M (nhân vật chính)
+        first_seen: dict[int, int] = {}
+        for (seg_idx, _), lbl in zip(male_valid, labels):
+            lbl_int = int(lbl)
+            if lbl_int not in first_seen:
+                first_seen[lbl_int] = seg_idx
+        ordered_lbls = sorted(first_seen.keys(), key=lambda k: first_seen[k])
+        remap = {old_l: new_i for new_i, old_l in enumerate(ordered_lbls)}
+        for (seg_idx, _), lbl in zip(male_valid, labels):
+            male_cluster_map[seg_idx] = remap[int(lbl)]
 
-    # Phân cụm 2 giọng nam (nếu có cả chồng và bố vợ) dựa trên spectral centroid
-    male_indices = [i for i, s in enumerate(segments) if s["gender_hint"] == "male" and centroids[i] > 0]
-    male_split_thresh = float(np.median([centroids[i] for i in male_indices])) if len(male_indices) >= 6 else 0.0
-
+    last_male_spk = "SPEAKER_00_M"
     for i, seg in enumerate(segments):
         if seg["gender_hint"] == "female":
             seg["speaker_id"] = "SPEAKER_01_F"
         else:
-            if male_split_thresh > 0 and centroids[i] > male_split_thresh * 1.08:
-                seg["speaker_id"] = "SPEAKER_02_M"
+            if i in male_cluster_map:
+                spk = "SPEAKER_00_M" if male_cluster_map[i] == 0 else "SPEAKER_02_M"
+                last_male_spk = spk
             else:
-                seg["speaker_id"] = "SPEAKER_00_M"
+                spk = last_male_spk
+            seg["speaker_id"] = spk
 
     speaker_refs = {}
     spk_groups: dict[str, list[tuple[float, float]]] = {}
@@ -541,12 +593,24 @@ def _extract_ocr_texts(ocr_result) -> list[str]:
     if not ocr_result:
         return texts
     for item in ocr_result:
+        # Chuyển đổi object kết quả PaddleX 3.x sang dict nếu cần
+        if not isinstance(item, (dict, list, tuple)):
+            try:
+                if hasattr(item, "res") and isinstance(item.res, dict):
+                    item = item.res
+                elif hasattr(item, "json") and isinstance(item.json, dict):
+                    item = item.json.get("res", item.json)
+                else:
+                    item = dict(item)
+            except Exception:
+                pass
+
         if isinstance(item, dict):
             rec_texts = item.get("rec_texts") or []
             for t in rec_texts:
                 if str(t).strip():
                     texts.append(str(t).strip())
-        elif isinstance(item, list):
+        elif isinstance(item, (list, tuple)):
             for entry in item:
                 if isinstance(entry, (list, tuple)) and len(entry) >= 2:
                     info = entry[1]
@@ -558,7 +622,6 @@ def _extract_ocr_texts(ocr_result) -> list[str]:
 def _create_single_ocr_engine(lang: str):
     from paddleocr import PaddleOCR
 
-    # Khởi tạo duy nhất 1 lần để tránh lỗi "PDX has already been initialized"
     for kw in [
         dict(lang=lang, use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False),
         dict(lang=lang),
@@ -573,15 +636,23 @@ def _create_single_ocr_engine(lang: str):
 def _run_ocr_predict(ocr_engine, img) -> list[str]:
     if ocr_engine is None:
         return []
+    # Ưu tiên ocr() truyền thống trước vì trả về list tuple trực tiếp, sau đó mới fallback predict()
     try:
-        if hasattr(ocr_engine, "predict"):
-            return _extract_ocr_texts(ocr_engine.predict(img))
+        res = ocr_engine.ocr(img)
+        got = _extract_ocr_texts(res)
+        if got:
+            return got
     except Exception:
         pass
     try:
-        return _extract_ocr_texts(ocr_engine.ocr(img))
+        if hasattr(ocr_engine, "predict"):
+            res_p = list(ocr_engine.predict(img))
+            got_p = _extract_ocr_texts(res_p)
+            if got_p:
+                return got_p
     except Exception:
-        return []
+        pass
+    return []
 
 
 def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict], object]:
@@ -671,6 +742,11 @@ def align_ocr_with_segments(video_path: str, roi: dict, ocr_engine, segments: li
                 if crop.size == 0:
                     continue
                 found = _run_ocr_predict(ocr_engine, crop)
+                if not found:
+                    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                    boosted_bgr = cv2.cvtColor(cv2.convertScaleAbs(gray, alpha=1.6, beta=15), cv2.COLOR_GRAY2BGR)
+                    found = _run_ocr_predict(ocr_engine, boosted_bgr)
+
                 for t in found:
                     t_clean = " ".join(str(t).split()).strip()
                     if len(re.findall(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7afA-Za-zÀ-ỹ0-9]", t_clean)) >= 2:
@@ -737,7 +813,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
             continue
         idx_out += 1
         start_t = float(seg.get("start", 0.0))
-        end_t = max(start_t + 0.25, float(seg.get("end", start_t + 0.8)))
+        end_t = max(start_t + 0.22, float(seg.get("end", start_t + 0.8)))
         spk = seg.get("speaker_id", "SPEAKER_00")
         src_tag = seg.get("subtitle_source", "asr_only")
         blocks.append(
