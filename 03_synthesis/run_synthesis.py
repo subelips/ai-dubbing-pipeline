@@ -299,38 +299,37 @@ def _build_atempo_chain(ratio: float) -> str:
 
 
 def _prepare_synth_units(stage2_data: dict) -> list[dict]:
-    utterances = stage2_data.get("utterances") or []
     lines = stage2_data.get("lines") or []
-    if utterances:
-        units = []
-        for idx, u in enumerate(utterances):
-            txt = (u.get("text_vi") or u.get("src_text") or "").strip()
-            if not txt:
-                continue
-            units.append({
-                "id": u.get("id", idx),
-                "start": float(u.get("start", 0.0)),
-                "end": float(u.get("end", float(u.get("start", 0.0)) + 1.0)),
-                "speaker_id": u.get("speaker_id", "SPEAKER_00"),
-                "gender": u.get("gender", "female"),
-                "text_vi": txt,
-                "line_count": len(u.get("segment_ids") or [1]),
-            })
+    if lines:
+        units = [
+            {
+                "id": l.get("id", idx),
+                "start": float(l.get("start", 0.0)),
+                "end": float(l.get("end", float(l.get("start", 0.0)) + 0.8)),
+                "speaker_id": l.get("speaker_id", "SPEAKER_00"),
+                "gender": l.get("gender", "female"),
+                "text_vi": (l.get("text_vi") or l.get("src_text") or "").strip(),
+                "line_count": 1,
+            }
+            for idx, l in enumerate(lines)
+            if (l.get("text_vi") or l.get("src_text") or "").strip()
+        ]
         if units:
             return units
 
+    utterances = stage2_data.get("utterances") or []
     return [
         {
-            "id": l.get("id", idx),
-            "start": float(l.get("start", 0.0)),
-            "end": float(l.get("end", float(l.get("start", 0.0)) + 1.0)),
-            "speaker_id": l.get("speaker_id", "SPEAKER_00"),
-            "gender": l.get("gender", "female"),
-            "text_vi": (l.get("text_vi") or l.get("src_text") or "").strip(),
+            "id": u.get("id", idx),
+            "start": float(u.get("start", 0.0)),
+            "end": float(u.get("end", float(u.get("start", 0.0)) + 0.8)),
+            "speaker_id": u.get("speaker_id", "SPEAKER_00"),
+            "gender": u.get("gender", "female"),
+            "text_vi": (u.get("text_vi") or u.get("src_text") or "").strip(),
             "line_count": 1,
         }
-        for idx, l in enumerate(lines)
-        if (l.get("text_vi") or l.get("src_text") or "").strip()
+        for idx, u in enumerate(utterances)
+        if (u.get("text_vi") or u.get("src_text") or "").strip()
     ]
 
 
@@ -349,12 +348,12 @@ def synth_single_unit(
 
     text_vi = (unit.get("text_vi") or "").strip()
     start_t = max(0.0, float(unit.get("start", 0.0)))
-    end_t = max(start_t + 0.5, float(unit.get("end", start_t + 1.2)))
-    slot_dur = max(0.5, end_t - start_t)
+    end_t = max(start_t + 0.4, float(unit.get("end", start_t + 1.0)))
+    slot_dur = max(0.4, end_t - start_t)
 
     if next_start_t is not None and next_start_t > start_t + slot_dur:
-        safe_gap_end = max(start_t + slot_dur, next_start_t - 0.06)
-        slot_dur = min(safe_gap_end - start_t, slot_dur * 1.45)
+        safe_gap_end = max(start_t + slot_dur, next_start_t - 0.04)
+        slot_dur = min(safe_gap_end - start_t, slot_dur * 1.35)
 
     spk_id = unit.get("speaker_id", "SPEAKER_00")
     gender = (unit.get("gender") or speaker_ref_map.get(spk_id, {}).get("gender") or "female").lower()
@@ -377,11 +376,11 @@ def synth_single_unit(
         try:
             audio_arr = _run_infer(use_ref=True)
         except Exception as ref_err:
-            print(f"[WARN] Cụm {idx} clone ref_audio lỗi ({ref_err}), thử giọng preset {preset_voice}.")
+            print(f"[WARN] Câu {idx} clone ref_audio lỗi ({ref_err}), thử giọng preset {preset_voice}.")
             try:
                 audio_arr = _run_infer(use_ref=False)
             except Exception as p_err:
-                print(f"[WARN] Cụm {idx} TTS lỗi hoàn toàn: {p_err}")
+                print(f"[WARN] Câu {idx} TTS lỗi hoàn toàn: {p_err}")
                 return idx, start_t, None
 
         if audio_arr is None:
@@ -402,9 +401,9 @@ def synth_single_unit(
     actual_dur = max(0.1, len(probe_data) / float(src_sr or 48000))
 
     tempo = 1.0
-    if actual_dur > slot_dur * 1.05:
-        tempo = min(1.25, actual_dur / slot_dur)
-    elif actual_dur < slot_dur * 0.82:
+    if actual_dur > slot_dur * 1.03:
+        tempo = min(1.30, actual_dur / slot_dur)
+    elif actual_dur < slot_dur * 0.80:
         tempo = max(0.90, actual_dur / slot_dur)
 
     af_parts = []
@@ -412,9 +411,9 @@ def synth_single_unit(
         af_parts.append(_build_atempo_chain(tempo))
 
     est_dur_after_tempo = actual_dur / tempo
-    max_allowed_dur = round(slot_dur * 1.15, 3)
+    max_allowed_dur = round(slot_dur * 1.12, 3)
     if est_dur_after_tempo > max_allowed_dur:
-        fade_dur = min(0.06, max(0.02, max_allowed_dur * 0.1))
+        fade_dur = min(0.05, max(0.02, max_allowed_dur * 0.1))
         fade_start = max(0.0, round(max_allowed_dur - fade_dur, 3))
         af_parts.append(f"atrim=0:{max_allowed_dur},afade=t=out:st={fade_start}:d={fade_dur},asetpts=PTS-STARTPTS")
 
@@ -477,10 +476,9 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, stage2_data: dict, speaker_ref_m
 
     results.sort(key=lambda x: x[0])
     ok_units = 0
-    covered_lines = 0
 
     target_rms = 0.11
-    for u_idx, (_, start_t, wav_path) in enumerate(results):
+    for _, start_t, wav_path in results:
         if not wav_path or not os.path.exists(wav_path):
             continue
         seg_audio, seg_sr = sf.read(wav_path)
@@ -512,12 +510,8 @@ def mix_dub_and_mux(video_in: str, bgm_in: str, stage2_data: dict, speaker_ref_m
         if copy_len > 0:
             voice_track[start_sample:end_sample] += seg_f32[:copy_len]
             ok_units += 1
-            covered_lines += int(units[u_idx].get("line_count", 1))
 
-    print(
-        f"[INFO] VieNeu-TTS hoàn tất {ok_units}/{len(units)} cụm ý "
-        f"(bao phủ ~{min(total_lines_expected, covered_lines)}/{total_lines_expected} câu thoại)."
-    )
+    print(f"[INFO] VieNeu-TTS hoàn tất {ok_units}/{total_lines_expected} câu thoại theo đúng timestamp gốc.")
 
     raw_voice_active = (np.abs(voice_track).max(axis=-1) > 1e-3).astype(np.float32)
     smooth_active = _smooth_envelope(raw_voice_active, max(1, int(sr * 0.18)))
