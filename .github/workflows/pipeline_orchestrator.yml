@@ -1,229 +1,236 @@
-name: Video Dubbing Pipeline Orchestrator
+name: AI Video Dubbing Pipeline
 
 on:
   workflow_dispatch:
     inputs:
       job_id:
-        description: "Mã định danh job (vd: ep01)"
+        description: "Job ID cần chạy"
         required: true
-        type: string
+        default: "ep01"
       video_asset:
-        description: "Tên file video trong Release của job (mặc định: source_input.mp4)"
+        description: "Link video (.mp4 / Google Drive) hoặc tên file asset"
         required: false
-        default: "source_input.mp4"
-        type: string
+        default: ""
+      stage:
+        description: "Giai đoạn chạy (stage1 | stage2 | stage3)"
+        required: false
+        default: "stage1"
   repository_dispatch:
     types: [stage1_completed, stage2_completed]
 
+permissions:
+  contents: write
+
+env:
+  GH_REPO: ${{ github.repository }}
+  GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN || github.token }}
+  NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+  NTFY_SERVER: ${{ secrets.NTFY_SERVER || 'https://ntfy.sh' }}
+  NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
 jobs:
-  run_stage:
+  run-pipeline-stage:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Determine active stage & job payload
-        id: meta
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            ASSET="${{ inputs.video_asset }}"
-            if [ -z "$ASSET" ]; then ASSET="source_input.mp4"; fi
-            echo "stage=perception" >> $GITHUB_OUTPUT
-            echo "job_id=${{ inputs.job_id }}" >> $GITHUB_OUTPUT
-            echo "video_asset=$ASSET" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event.action }}" = "stage1_completed" ]; then
-            echo "stage=translation" >> $GITHUB_OUTPUT
-            echo "job_id=${{ github.event.client_payload.job_id }}" >> $GITHUB_OUTPUT
-            echo "video_asset=" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event.action }}" = "stage2_completed" ]; then
-            echo "stage=synthesis" >> $GITHUB_OUTPUT
-            echo "job_id=${{ github.event.client_payload.job_id }}" >> $GITHUB_OUTPUT
-            echo "video_asset=" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Setup Python & Kaggle CLI
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies into target Python
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --no-cache-dir --upgrade six requests kaggle
-
-          KAGGLE_BIN="$(command -v kaggle || true)"
-          if [ -n "$KAGGLE_BIN" ] && [ -f "$KAGGLE_BIN" ]; then
-            SHEBANG_PY="$(head -n 1 "$KAGGLE_BIN" | sed 's/^#!//')"
-            if [ -n "$SHEBANG_PY" ] && [ -x "$SHEBANG_PY" ]; then
-              "$SHEBANG_PY" -m pip install --no-cache-dir --upgrade six requests kaggle
-            fi
-          fi
-
-      - name: Register initial job in pipeline-state branch (Stage 1 only)
-        if: steps.meta.outputs.stage == 'perception'
+      - name: Xác định Job ID, Stage & cập nhật state/jobs.json
+        id: ctx
         env:
-          GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          JOB_ID: ${{ steps.meta.outputs.job_id }}
-          VIDEO_ASSET: ${{ steps.meta.outputs.video_asset }}
+          INPUT_JOB_ID: ${{ github.event.inputs.job_id || github.event.client_payload.job_id || 'ep01' }}
+          INPUT_VIDEO_ASSET: ${{ github.event.inputs.video_asset || github.event.client_payload.video_asset || '' }}
+          INPUT_STAGE: ${{ github.event.inputs.stage || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action || '' }}
         run: |
-          python - <<'EOF'
-          import base64
-          import json
-          import os
-          import time
-          import requests
+          python3 - << 'PY'
+          import base64, json, os, requests
 
           repo = os.environ["GH_REPO"]
           token = os.environ["GH_PAT_TOKEN"]
-          job_id = os.environ["JOB_ID"]
-          video_asset = os.environ["VIDEO_ASSET"] or "source_input.mp4"
-          branch = "pipeline-state"
-          path = "state/jobs.json"
-          url = f"https://api.github.com/repos/{repo}/contents/{path}"
+          job_id = os.environ["INPUT_JOB_ID"].strip()
+          video_asset = os.environ["INPUT_VIDEO_ASSET"].strip()
+          event_name = os.environ["EVENT_NAME"]
+          action = os.environ["EVENT_ACTION"]
+          raw_stage = os.environ["INPUT_STAGE"].strip().lower()
+
+          if event_name == "repository_dispatch":
+              if action == "stage1_completed":
+                  target_stage = "stage2"
+              elif action == "stage2_completed":
+                  target_stage = "stage3"
+              else:
+                  target_stage = "stage1"
+          else:
+              target_stage = raw_stage if raw_stage in ("stage1", "stage2", "stage3") else "stage1"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"job_id={job_id}\n")
+              out.write(f"stage={target_stage}\n")
+
+          # Đảm bảo nhánh pipeline-state và file state/jobs.json tồn tại
+          api = f"https://api.github.com/repos/{repo}"
           headers = {
               "Authorization": f"Bearer {token}",
               "Accept": "application/vnd.github+json",
               "X-GitHub-Api-Version": "2022-11-28",
           }
 
-          for attempt in range(5):
-              r = requests.get(url, headers=headers, params={"ref": branch}, timeout=30)
-              if r.status_code == 404:
-                  data, sha = {"jobs": {}}, None
-              else:
-                  r.raise_for_status()
-                  resp = r.json()
-                  raw = base64.b64decode(resp["content"]).decode("utf-8").strip()
-                  data = json.loads(raw) if raw else {"jobs": {}}
-                  sha = resp["sha"]
+          # Kiểm tra nhánh pipeline-state, tạo nếu chưa có
+          br = requests.get(f"{api}/git/ref/heads/pipeline-state", headers=headers, timeout=20)
+          if br.status_code == 404:
+              main_ref = requests.get(f"{api}/git/ref/heads/main", headers=headers, timeout=20)
+              if main_ref.status_code != 200:
+                  main_ref = requests.get(f"{api}/git/ref/heads/master", headers=headers, timeout=20)
+              sha = main_ref.json()["object"]["sha"]
+              requests.post(
+                  f"{api}/git/refs",
+                  headers=headers,
+                  json={"ref": "refs/heads/pipeline-state", "sha": sha},
+                  timeout=20,
+              ).raise_for_status()
 
-              data.setdefault("jobs", {})[job_id] = {
-                  "video_asset": video_asset,
-                  "status": "QUEUED_STAGE1",
-              }
-              payload = {
-                  "message": f"queue job {job_id}",
-                  "content": base64.b64encode(
-                      json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-                  ).decode("utf-8"),
-                  "branch": branch,
-              }
-              if sha:
-                  payload["sha"] = sha
+          # Đọc hoặc khởi tạo state/jobs.json
+          jobs_url = f"{api}/contents/state/jobs.json"
+          r = requests.get(jobs_url, headers=headers, params={"ref": "pipeline-state"}, timeout=20)
+          file_sha = None
+          if r.status_code == 200:
+              info = r.json()
+              file_sha = info["sha"]
+              raw_txt = base64.b64decode(info["content"]).decode("utf-8").strip()
+              data = json.loads(raw_txt) if raw_txt else {"jobs": {}}
+          else:
+              data = {"jobs": {}}
 
-              put_r = requests.put(url, headers=headers, json=payload, timeout=30)
-              if put_r.status_code in (200, 201):
-                  break
-              if put_r.status_code == 409:
-                  time.sleep(1.5 * (attempt + 1))
-                  continue
-              put_r.raise_for_status()
-          EOF
+          jobs = data.setdefault("jobs", {})
+          job_entry = jobs.setdefault(job_id, {})
+          if video_asset:
+              job_entry["video_asset"] = video_asset
+          elif "video_asset" not in job_entry:
+              job_entry["video_asset"] = "source_input.mp4"
 
-      - name: Push Stage 1 Kernel (Perception)
-        if: steps.meta.outputs.stage == 'perception'
+          if target_stage == "stage1":
+              job_entry["status"] = "STAGE1_RUNNING"
+          elif target_stage == "stage2":
+              job_entry["status"] = "STAGE2_RUNNING"
+          elif target_stage == "stage3":
+              job_entry["status"] = "STAGE3_RUNNING"
+
+          body = {
+              "message": f"init/update job {job_id} ({target_stage})",
+              "content": base64.b64encode(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")).decode("utf-8"),
+              "branch": "pipeline-state",
+          }
+          if file_sha:
+              body["sha"] = file_sha
+          requests.put(jobs_url, headers=headers, json=body, timeout=20).raise_for_status()
+          print(f"[INFO] Đã sẵn sàng job={job_id}, stage={target_stage}")
+          PY
+
+      - name: Cài đặt Kaggle CLI
+        run: pip install -q kaggle
+
+      - name: Chuẩn bị script & đẩy Kernel lên Kaggle
         env:
-          KAGGLE_USERNAME: ${{ secrets.PERCEPTION_KAGGLE_USER }}
-          KAGGLE_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
-          KAGGLE_API_TOKEN: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
-          JOB_ID: ${{ steps.meta.outputs.job_id }}
-          GH_REPO: ${{ github.repository }}
-          GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          JOB_ID: ${{ steps.ctx.outputs.job_id }}
+          STAGE: ${{ steps.ctx.outputs.stage }}
+          KAGGLE_USERNAME_S1: ${{ secrets.KAGGLE_USERNAME_S1 || secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY_S1: ${{ secrets.KAGGLE_KEY_S1 || secrets.KAGGLE_KEY }}
+          KAGGLE_USERNAME_S2: ${{ secrets.KAGGLE_USERNAME_S2 || secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY_S2: ${{ secrets.KAGGLE_KEY_S2 || secrets.KAGGLE_KEY }}
+          KAGGLE_USERNAME_S3: ${{ secrets.KAGGLE_USERNAME_S3 || secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY_S3: ${{ secrets.KAGGLE_KEY_S3 || secrets.KAGGLE_KEY }}
         run: |
-          mkdir -p ~/.kaggle
-          printf "%s" "$KAGGLE_API_TOKEN" > ~/.kaggle/access_token
-          chmod 600 ~/.kaggle/access_token
-          python - <<'EOF'
-          import os
-          p = "01_perception/run_perception.py"
-          with open(p, "r", encoding="utf-8") as f:
+          python3 - << 'PY'
+          import json, os, shutil, subprocess
+
+          stage = os.environ["STAGE"]
+          job_id = os.environ["JOB_ID"]
+
+          stage_map = {
+              "stage1": ("01_perception/run_perception.py", "dubbing-stage1-perception", "KAGGLE_USERNAME_S1", "KAGGLE_KEY_S1"),
+              "stage2": ("02_translation/run_translation.py", "dubbing-stage2-translation", "KAGGLE_USERNAME_S2", "KAGGLE_KEY_S2"),
+              "stage3": ("03_synthesis/run_synthesis.py", "dubbing-stage3-synthesis", "KAGGLE_USERNAME_S3", "KAGGLE_KEY_S3"),
+          }
+          src_file, slug_suffix, u_key, k_key = stage_map[stage]
+          k_user = os.environ.get(u_key, "").strip()
+          k_secret = os.environ.get(k_key, "").strip()
+          if not k_user or not k_secret:
+              raise RuntimeError(f"Thiếu secret Kaggle cho {stage} ({u_key} / {k_key}).")
+
+          os.makedirs(os.path.expanduser("~/.kaggle"), exist_ok=True)
+          cred_path = os.path.expanduser("~/.kaggle/kaggle.json")
+          with open(cred_path, "w", encoding="utf-8") as f:
+              json.dump({"username": k_user, "key": k_secret}, f)
+          os.chmod(cred_path, 0o600)
+
+          with open(src_file, "r", encoding="utf-8") as f:
               code = f.read()
+
           replacements = {
-              "__INJECT_JOB_ID__": os.environ["JOB_ID"],
-              "__INJECT_GH_REPO__": os.environ["GH_REPO"],
-              "__INJECT_GH_PAT_TOKEN__": os.environ["GH_PAT_TOKEN"],
-              "__INJECT_TELEGRAM_BOT_TOKEN__": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-              "__INJECT_TELEGRAM_CHAT_ID__": os.environ.get("TELEGRAM_CHAT_ID", ""),
-              "__INJECT_HF_TOKEN__": os.environ.get("HF_TOKEN", ""),
+              "__INJECT_JOB_ID__": job_id,
+              "__INJECT_GH_REPO__": os.environ.get("GH_REPO", ""),
+              "__INJECT_GH_PAT_TOKEN__": os.environ.get("GH_PAT_TOKEN", ""),
+              "__INJECT_NTFY_TOPIC__": os.environ.get("NTFY_TOPIC", ""),
+              "__INJECT_NTFY_SERVER__": os.environ.get("NTFY_SERVER", "https://ntfy.sh"),
+              "__INJECT_NTFY_TOKEN__": os.environ.get("NTFY_TOKEN", ""),
           }
           for k, v in replacements.items():
               code = code.replace(k, v)
-          with open(p, "w", encoding="utf-8") as f:
-              f.write(code)
-          EOF
-          kaggle kernels push -p 01_perception
-          git checkout -- 01_perception/run_perception.py
 
-      - name: Push Stage 2 Kernel (Translation)
-        if: steps.meta.outputs.stage == 'translation'
-        env:
-          KAGGLE_USERNAME: ${{ secrets.TRANSLATION_KAGGLE_USER }}
-          KAGGLE_KEY: ${{ secrets.TRANSLATION_KAGGLE_KEY }}
-          KAGGLE_API_TOKEN: ${{ secrets.TRANSLATION_KAGGLE_KEY }}
-          JOB_ID: ${{ steps.meta.outputs.job_id }}
-          GH_REPO: ${{ github.repository }}
-          GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          mkdir -p ~/.kaggle
-          printf "%s" "$KAGGLE_API_TOKEN" > ~/.kaggle/access_token
-          chmod 600 ~/.kaggle/access_token
-          python - <<'EOF'
-          import os
-          p = "02_translation/run_translation.py"
-          with open(p, "r", encoding="utf-8") as f:
-              code = f.read()
-          replacements = {
-              "__INJECT_JOB_ID__": os.environ["JOB_ID"],
-              "__INJECT_GH_REPO__": os.environ["GH_REPO"],
-              "__INJECT_GH_PAT_TOKEN__": os.environ["GH_PAT_TOKEN"],
-              "__INJECT_TELEGRAM_BOT_TOKEN__": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-              "__INJECT_TELEGRAM_CHAT_ID__": os.environ.get("TELEGRAM_CHAT_ID", ""),
-          }
-          for k, v in replacements.items():
-              code = code.replace(k, v)
-          with open(p, "w", encoding="utf-8") as f:
-              f.write(code)
-          EOF
-          kaggle kernels push -p 02_translation
-          git checkout -- 02_translation/run_translation.py
+          # Truyền HF_TOKEN vào đầu script để pyannote.audio & Hugging Face dùng trực tiếp
+          hf_tok = os.environ.get("HF_TOKEN", "").strip()
+          if hf_tok:
+              code = f'import os\nos.environ["HF_TOKEN"] = {json.dumps(hf_tok)}\n' + code
 
-      - name: Push Stage 3 Kernel (Synthesis)
-        if: steps.meta.outputs.stage == 'synthesis'
-        env:
-          KAGGLE_USERNAME: ${{ secrets.SYNTHESIS_KAGGLE_USER }}
-          KAGGLE_KEY: ${{ secrets.SYNTHESIS_KAGGLE_KEY }}
-          KAGGLE_API_TOKEN: ${{ secrets.SYNTHESIS_KAGGLE_KEY }}
-          JOB_ID: ${{ steps.meta.outputs.job_id }}
-          GH_REPO: ${{ github.repository }}
-          GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          mkdir -p ~/.kaggle
-          printf "%s" "$KAGGLE_API_TOKEN" > ~/.kaggle/access_token
-          chmod 600 ~/.kaggle/access_token
-          python - <<'EOF'
-          import os
-          p = "03_synthesis/run_synthesis.py"
-          with open(p, "r", encoding="utf-8") as f:
-              code = f.read()
-          replacements = {
-              "__INJECT_JOB_ID__": os.environ["JOB_ID"],
-              "__INJECT_GH_REPO__": os.environ["GH_REPO"],
-              "__INJECT_GH_PAT_TOKEN__": os.environ["GH_PAT_TOKEN"],
-              "__INJECT_TELEGRAM_BOT_TOKEN__": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-              "__INJECT_TELEGRAM_CHAT_ID__": os.environ.get("TELEGRAM_CHAT_ID", ""),
-          }
-          for k, v in replacements.items():
-              code = code.replace(k, v)
-          with open(p, "w", encoding="utf-8") as f:
+          build_dir = f"/tmp/kaggle_{stage}"
+          if os.path.exists(build_dir):
+              shutil.rmtree(build_dir)
+          os.makedirs(build_dir, exist_ok=True)
+
+          out_script = os.path.join(build_dir, "script.py")
+          with open(out_script, "w", encoding="utf-8") as f:
               f.write(code)
-          EOF
-          kaggle kernels push -p 03_synthesis
-          git checkout -- 03_synthesis/run_synthesis.py
+
+          meta = {
+              "id": f"{k_user}/{slug_suffix}",
+              "title": slug_suffix,
+              "code_file": "script.py",
+              "language": "python",
+              "kernel_type": "script",
+              "is_private": True,
+              "enable_gpu": True,
+              "enable_internet": True,
+              "dataset_sources": [],
+              "competition_sources": [],
+              "kernel_sources": [],
+          }
+          with open(os.path.join(build_dir, "kernel-metadata.json"), "w", encoding="utf-8") as f:
+              json.dump(meta, f, indent=2)
+
+          subprocess.run(["kaggle", "kernels", "push", "-p", build_dir], check=True)
+          print(f"[INFO] Đã đẩy kernel {k_user}/{slug_suffix} cho job {job_id}")
+          PY
+
+      - name: Gửi thông báo kích hoạt Kaggle qua ntfy
+        if: always()
+        env:
+          JOB_ID: ${{ steps.ctx.outputs.job_id }}
+          STAGE: ${{ steps.ctx.outputs.stage }}
+          STEP_STATUS: ${{ job.status }}
+        run: |
+          if [ -z "$NTFY_TOPIC" ]; then
+            exit 0
+          fi
+          MSG="Job: ${JOB_ID} | Stage: ${STAGE} | Workflow status: ${STEP_STATUS}"
+          AUTH_HEADER=()
+          if [ -n "$NTFY_TOKEN" ]; then
+            AUTH_HEADER=(-H "Authorization: Bearer ${NTFY_TOKEN}")
+          fi
+          curl -fsSL -X POST "${NTFY_SERVER%/}/${NTFY_TOPIC}" \
+            -H "Title: Kaggle Push (${STAGE}) - ${JOB_ID}" \
+            -H "Tags: rocket" \
+            "${AUTH_HEADER[@]}" \
+            --data-binary "$MSG" || true
