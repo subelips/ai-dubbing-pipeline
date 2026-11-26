@@ -137,11 +137,11 @@ jobs:
           JOB_ID: ${{ steps.ctx.outputs.job_id }}
           STAGE: ${{ steps.ctx.outputs.stage }}
           PERCEPTION_KAGGLE_USER: ${{ secrets.PERCEPTION_KAGGLE_USER || secrets.KAGGLE_USERNAME }}
-          PERCEPTION_KAGGLE_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY || secrets.KAGGLE_KEY }}
+          PERCEPTION_KAGGLE_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY || secrets.KAGGLE_API_TOKEN }}
           TRANSLATION_KAGGLE_USER: ${{ secrets.TRANSLATION_KAGGLE_USER || secrets.KAGGLE_USERNAME }}
-          TRANSLATION_KAGGLE_KEY: ${{ secrets.TRANSLATION_KAGGLE_KEY || secrets.KAGGLE_KEY }}
+          TRANSLATION_KAGGLE_KEY: ${{ secrets.TRANSLATION_KAGGLE_KEY || secrets.KAGGLE_API_TOKEN }}
           SYNTHESIS_KAGGLE_USER: ${{ secrets.SYNTHESIS_KAGGLE_USER || secrets.KAGGLE_USERNAME }}
-          SYNTHESIS_KAGGLE_KEY: ${{ secrets.SYNTHESIS_KAGGLE_KEY || secrets.KAGGLE_KEY }}
+          SYNTHESIS_KAGGLE_KEY: ${{ secrets.SYNTHESIS_KAGGLE_KEY || secrets.KAGGLE_API_TOKEN }}
         run: |
           python3 - << 'PY'
           import json, os, shutil, subprocess
