@@ -8,7 +8,9 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 import base64
 from concurrent.futures import ThreadPoolExecutor
+import ctypes
 import gc
+import glob
 import json
 import re
 import subprocess
@@ -174,6 +176,39 @@ def _is_installed(pkg_name: str) -> bool:
         return False
 
 
+def _preload_cuda12_libs():
+    try:
+        import nvidia  # type: ignore
+        nvidia_roots = list(getattr(nvidia, "__path__", []))
+    except Exception:
+        nvidia_roots = []
+
+    search_dirs = []
+    for root in nvidia_roots:
+        search_dirs.extend(glob.glob(os.path.join(root, "*", "lib")))
+    for sp in sys.path:
+        if sp and os.path.isdir(sp):
+            search_dirs.extend(glob.glob(os.path.join(sp, "nvidia", "*", "lib")))
+
+    patterns = ["libcublasLt.so.12*", "libcublas.so.12*", "libcudnn*.so.9*"]
+    loaded_dirs = []
+    for d in dict.fromkeys(search_dirs):
+        if not os.path.isdir(d):
+            continue
+        loaded_dirs.append(d)
+        for pat in patterns:
+            for so_path in sorted(glob.glob(os.path.join(d, pat))):
+                try:
+                    ctypes.CDLL(so_path, mode=ctypes.RTLD_GLOBAL)
+                except Exception:
+                    pass
+
+    if loaded_dirs:
+        cur_ld = os.environ.get("LD_LIBRARY_PATH", "")
+        extra = ":".join(loaded_dirs)
+        os.environ["LD_LIBRARY_PATH"] = f"{extra}:{cur_ld}".strip(":")
+
+
 def ensure_deps():
     wanted = [
         ("faster_whisper", "faster-whisper"),
@@ -187,6 +222,16 @@ def ensure_deps():
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
     if missing:
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=False)
+
+    # Cài runtime CUDA 12 cho ctranslate2 / faster-whisper trên các image CUDA 13
+    try:
+        ctypes.CDLL("libcublas.so.12")
+    except OSError:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "nvidia-cublas-cu12", "nvidia-cudnn-cu12"],
+            check=False,
+        )
+    _preload_cuda12_libs()
 
 
 def free_gpu():
@@ -253,6 +298,8 @@ def transcribe_with_faster_whisper(vocals_wav: str) -> list[dict]:
     import torch
     from faster_whisper import WhisperModel
 
+    _preload_cuda12_libs()
+
     audio_arr, sr = sf.read(vocals_wav, dtype="float32")
     if audio_arr.ndim > 1:
         audio_arr = audio_arr.mean(axis=-1)
@@ -268,40 +315,56 @@ def transcribe_with_faster_whisper(vocals_wav: str) -> list[dict]:
         if audio_arr.ndim > 1:
             audio_arr = audio_arr.mean(axis=-1)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    compute_type = "float16" if device == "cuda" else "int8"
+    audio_contiguous = np.ascontiguousarray(audio_arr, dtype=np.float32)
     model_size = os.environ.get("WHISPER_MODEL", "large-v3").strip() or "large-v3"
     lang = os.environ.get("SOURCE_LANG", "zh").strip() or None
 
-    model = WhisperModel(model_size, device=device, compute_type=compute_type)
-    raw_segments, _ = model.transcribe(
-        np.ascontiguousarray(audio_arr, dtype=np.float32),
-        language=lang,
-        beam_size=5,
-        vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=250),
-    )
-
+    candidates = [("cuda", "float16"), ("cpu", "int8")] if torch.cuda.is_available() else [("cpu", "int8")]
     segments = []
-    for idx, seg in enumerate(raw_segments):
-        txt = (seg.text or "").strip()
-        if not txt:
-            continue
-        segments.append({
-            "id": idx,
-            "start": round(float(seg.start), 2),
-            "end": round(float(seg.end), 2),
-            "speaker_id": "SPEAKER_00",
-            "gender_hint": "unknown",
-            "pitch_hz": None,
-            "asr_text": txt,
-            "ocr_text": "",
-            "best_text": txt,
-            "subtitle_source": "asr_only",
-        })
+    last_err = None
 
-    del model
-    free_gpu()
+    for device, compute_type in candidates:
+        model = None
+        try:
+            model = WhisperModel(model_size, device=device, compute_type=compute_type)
+            raw_segments, _ = model.transcribe(
+                audio_contiguous,
+                language=lang,
+                beam_size=5,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=250),
+            )
+            tmp_segments = []
+            for idx, seg in enumerate(raw_segments):
+                txt = (seg.text or "").strip()
+                if not txt:
+                    continue
+                tmp_segments.append({
+                    "id": idx,
+                    "start": round(float(seg.start), 2),
+                    "end": round(float(seg.end), 2),
+                    "speaker_id": "SPEAKER_00",
+                    "gender_hint": "unknown",
+                    "pitch_hz": None,
+                    "asr_text": txt,
+                    "ocr_text": "",
+                    "best_text": txt,
+                    "subtitle_source": "asr_only",
+                })
+            segments = tmp_segments
+            print(f"[INFO] Faster-Whisper ({model_size}, {device}/{compute_type}) nhận diện {len(segments)} câu.")
+            break
+        except Exception as e:
+            last_err = e
+            print(f"[WARN] Faster-Whisper trên {device}/{compute_type} lỗi ({e}), thử chế độ dự phòng...")
+        finally:
+            if model is not None:
+                del model
+            free_gpu()
+
+    if not segments and last_err is not None:
+        raise RuntimeError(f"Faster-Whisper thất bại hoàn toàn: {last_err}")
+
     return segments
 
 
@@ -536,19 +599,18 @@ def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict]]:
             candidates = [forced_lang]
         else:
             src_lang = os.environ.get("SOURCE_LANG", "").strip().lower()
-            base_order = ["ch", "en", "vi", "japan", "korean"]
             if src_lang in ("zh", "cn", "ch"):
-                candidates = ["ch", "en", "vi"]
+                candidates = ["ch", "en"]
             elif src_lang in ("ja", "jp", "japan"):
                 candidates = ["japan", "ch", "en"]
             elif src_lang in ("ko", "kr", "korean"):
                 candidates = ["korean", "ch", "en"]
             elif src_lang in ("vi", "vie"):
-                candidates = ["vi", "en", "ch"]
+                candidates = ["vi", "en"]
             elif src_lang in ("en",):
-                candidates = ["en", "ch", "vi"]
+                candidates = ["en", "ch"]
             else:
-                candidates = base_order
+                candidates = ["ch", "en", "vi", "japan", "korean"]
 
         best_lang = candidates[0]
         best_score = -1.0
