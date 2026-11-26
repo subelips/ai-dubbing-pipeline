@@ -738,6 +738,40 @@ def align_ocr_with_segments(video_path: str, roi: dict, ocr_engine, segments: li
         print(f"[WARN] Sửa ASR theo OCR bỏ qua: {e}")
 
 
+def _format_srt_time(seconds: float) -> str:
+    ms_total = max(0, int(round(float(seconds or 0.0) * 1000.0)))
+    hours = ms_total // 3_600_000
+    rem = ms_total % 3_600_000
+    minutes = rem // 60_000
+    rem = rem % 60_000
+    secs = rem // 1000
+    millis = rem % 1000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
+    blocks = []
+    idx_out = 0
+    for seg in segments:
+        txt = (seg.get("best_text") or seg.get("asr_text") or seg.get("ocr_text") or "").strip()
+        if not txt:
+            continue
+        idx_out += 1
+        start_t = float(seg.get("start", 0.0))
+        end_t = max(start_t + 0.25, float(seg.get("end", start_t + 0.8)))
+        spk = seg.get("speaker_id", "SPEAKER_00")
+        src_tag = seg.get("subtitle_source", "asr_only")
+        blocks.append(
+            f"{idx_out}\n"
+            f"{_format_srt_time(start_t)} --> {_format_srt_time(end_t)}\n"
+            f"[{spk} | {src_tag}] {txt}\n"
+        )
+    with open(out_srt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(blocks).strip() + ("\n" if blocks else ""))
+    print(f"[INFO] Đã xuất file kiểm định timestamp Stage 1: {out_srt_path} ({idx_out} dòng)")
+    return out_srt_path
+
+
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
@@ -765,6 +799,10 @@ def main():
     segments = transcribe_with_faster_whisper(vocals_wav)
     align_ocr_with_segments(video_path, subtitle_roi, ocr_engine, segments)
     speaker_refs = apply_speaker_diarization(vocals_wav, segments, work_dir)
+
+    srt_s1_path = os.path.join(work_dir, f"{JOB_ID}_stage1.srt")
+    export_stage1_srt(segments, srt_s1_path)
+    sync.upload_asset(JOB_ID, srt_s1_path)
 
     sync.upload_asset(JOB_ID, bgm_wav)
     for ref_info in speaker_refs.values():
