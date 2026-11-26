@@ -298,7 +298,6 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
 def _split_and_refine_segments(raw_segments, audio_arr, sr: int) -> list[dict]:
     import numpy as np
 
-    # Chỉ tách câu tại dấu ngắt câu hoặc khoảng lặng thực sự >= 0.55s để không chẻ vụn từ tiếng Trung
     atomic_items: list[tuple[float, float, str]] = []
     punct_chars = set(",.?!;，。？！；、")
 
@@ -340,7 +339,6 @@ def _split_and_refine_segments(raw_segments, audio_arr, sr: int) -> list[dict]:
             if clause_txt:
                 atomic_items.append((float(cur_words[0].start), float(cur_words[-1].end), clause_txt))
 
-    # Gộp các mảnh đơn âm tiết (1 ký tự) bị tách lẻ vào câu liền kề nếu khoảng cách < 0.6s
     merged_items: list[tuple[float, float, str]] = []
     i = 0
     while i < len(atomic_items):
@@ -366,15 +364,14 @@ def _split_and_refine_segments(raw_segments, audio_arr, sr: int) -> list[dict]:
         s_t = float(raw_s)
         e_t = float(raw_e)
 
-        # Cắt bỏ khoảng lặng đầu/cuối dựa trên năng lượng thực tế của vocals
         i0 = max(0, int(s_t * sr))
         i1 = min(len(audio_arr), int(e_t * sr))
-        if i1 - i0 > int(0.30 * sr):
+        if i1 - i0 > int(0.25 * sr):
             win = max(1, int(0.015 * sr))
             chunk = np.abs(audio_arr[i0:i1])
             peak = float(np.max(chunk)) if len(chunk) > 0 else 0.0
             if peak > 1e-4:
-                thresh = max(1e-4, peak * 0.06)
+                thresh = max(1e-3, peak * 0.12)
                 active_idx = np.where(chunk >= thresh)[0]
                 if len(active_idx) > 0:
                     trim_s = s_t + max(0.0, (active_idx[0] - win) / float(sr))
@@ -383,9 +380,9 @@ def _split_and_refine_segments(raw_segments, audio_arr, sr: int) -> list[dict]:
                         s_t, e_t = trim_s, trim_e
 
         char_len = max(1, len(re.sub(r"\s+", "", txt)))
-        max_plausible_dur = max(1.4, char_len * 0.42 + 0.5)
+        max_plausible_dur = max(1.1, char_len * 0.35 + 0.35)
         if (e_t - s_t) > max_plausible_dur:
-            e_t = s_t + max_plausible_dur
+            s_t = max(s_t, e_t - max_plausible_dur)
 
         segments.append({
             "id": idx,
@@ -544,7 +541,6 @@ def apply_speaker_diarization(vocals_wav: str, segments: list[dict], work_dir: s
         else:
             seg["gender_hint"] = last_known_g
 
-    # Làm mượt giới tính cho câu ngắn nằm giữa 2 câu cùng giới tính
     if len(segments) >= 3:
         smoothed_g = [s["gender_hint"] for s in segments]
         for i in range(1, len(segments) - 1):
@@ -555,8 +551,16 @@ def apply_speaker_diarization(vocals_wav: str, segments: list[dict], work_dir: s
         for i, g in enumerate(smoothed_g):
             segments[i]["gender_hint"] = g
 
-    male_valid = [(i, embeddings[i]) for i, s in enumerate(segments) if s["gender_hint"] == "male" and embeddings[i] is not None]
+    male_valid = [
+        (i, embeddings[i])
+        for i, s in enumerate(segments)
+        if s["gender_hint"] == "male"
+        and embeddings[i] is not None
+        and (float(s["end"]) - float(s["start"])) >= 0.70
+        and (s.get("pitch_hz") is None or 65.0 <= float(s["pitch_hz"]) <= 185.0)
+    ]
     male_cluster_map: dict[int, int] = {}
+    centroids_by_cluster: dict[int, "np.ndarray"] = {}
     if len(male_valid) >= 4:
         mat = np.vstack([e for _, e in male_valid])
         Z = linkage(mat, method="ward")
@@ -568,8 +572,19 @@ def apply_speaker_diarization(vocals_wav: str, segments: list[dict], work_dir: s
                 first_seen[lbl_int] = seg_idx
         ordered_lbls = sorted(first_seen.keys(), key=lambda k: first_seen[k])
         remap = {old_l: new_i for new_i, old_l in enumerate(ordered_lbls)}
-        for (seg_idx, _), lbl in zip(male_valid, labels):
-            male_cluster_map[seg_idx] = remap[int(lbl)]
+        for (seg_idx, emb), lbl in zip(male_valid, labels):
+            c_id = remap[int(lbl)]
+            male_cluster_map[seg_idx] = c_id
+            centroids_by_cluster.setdefault(c_id, []).append(emb)
+        for c_id, emb_list in list(centroids_by_cluster.items()):
+            mean_e = np.mean(np.vstack(emb_list), axis=0)
+            centroids_by_cluster[c_id] = mean_e / max(1e-6, float(np.linalg.norm(mean_e)))
+
+    for i, s in enumerate(segments):
+        if s["gender_hint"] == "male" and i not in male_cluster_map and embeddings[i] is not None and len(centroids_by_cluster) == 2:
+            sim0 = float(np.dot(embeddings[i], centroids_by_cluster[0]))
+            sim1 = float(np.dot(embeddings[i], centroids_by_cluster[1]))
+            male_cluster_map[i] = 0 if sim0 >= sim1 else 1
 
     last_male_spk = "SPEAKER_00_M"
     for i, seg in enumerate(segments):
@@ -623,23 +638,25 @@ def _extract_ocr_texts(ocr_result) -> list[str]:
     if not ocr_result:
         return texts
     for item in ocr_result:
-        if not isinstance(item, (dict, list, tuple)):
-            try:
-                if hasattr(item, "res") and isinstance(item.res, dict):
-                    item = item.res
-                elif hasattr(item, "json") and isinstance(item.json, dict):
-                    item = item.json.get("res", item.json)
-                else:
-                    item = dict(item)
-            except Exception:
-                pass
-
+        rec_texts = None
         if isinstance(item, dict):
-            rec_texts = item.get("rec_texts") or []
+            rec_texts = item.get("rec_texts") or (item.get("res") or {}).get("rec_texts")
+        elif hasattr(item, "rec_texts"):
+            rec_texts = getattr(item, "rec_texts", None)
+        elif hasattr(item, "res") and isinstance(item.res, dict):
+            rec_texts = item.res.get("rec_texts")
+        elif hasattr(item, "json"):
+            j = item.json() if callable(item.json) else item.json
+            if isinstance(j, dict):
+                rec_texts = j.get("rec_texts") or (j.get("res") or {}).get("rec_texts")
+
+        if rec_texts is not None:
             for t in rec_texts:
                 if str(t).strip():
                     texts.append(str(t).strip())
-        elif isinstance(item, (list, tuple)):
+            continue
+
+        if isinstance(item, (list, tuple)):
             for entry in item:
                 if isinstance(entry, (list, tuple)) and len(entry) >= 2:
                     info = entry[1]
@@ -688,11 +705,10 @@ def _prep_ocr_variants(crop):
 
     variants = [crop]
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    boosted = cv2.convertScaleAbs(gray, alpha=1.6, beta=15)
+    boosted = cv2.convertScaleAbs(gray, alpha=1.7, beta=10)
     variants.append(cv2.cvtColor(boosted, cv2.COLOR_GRAY2BGR))
-    # Lọc chữ phụ đề trắng sáng nổi bật
-    _, white_mask = cv2.threshold(gray, 210, 255, cv2.THRESH_BINARY)
-    variants.append(cv2.cvtColor(white_mask, cv2.COLOR_GRAY2BGR))
+    _, bright_mask = cv2.threshold(gray, 185, 255, cv2.THRESH_BINARY)
+    variants.append(cv2.cvtColor(bright_mask, cv2.COLOR_GRAY2BGR))
     return variants
 
 
