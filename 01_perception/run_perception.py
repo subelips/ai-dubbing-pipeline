@@ -185,6 +185,7 @@ def ensure_deps():
         ("soundfile", "soundfile"),
         ("numpy", "numpy"),
         ("gdown", "gdown"),
+        ("paddle", "paddlepaddle"),
         ("paddleocr", "paddleocr"),
     ]
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
@@ -468,7 +469,8 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
                 diar_kwargs["max_speakers"] = int(max_spk_raw)
 
             diarization = pipeline(audio_16k, **diar_kwargs)
-            turns = [(float(turn.start), float(turn.end), str(spk)) for turn, _, spk in diarization.itertracks(yield_label=True)]
+            ann = getattr(diarization, "speaker_diarization", diarization)
+            turns = [(float(turn.start), float(turn.end), str(spk)) for turn, _, spk in ann.itertracks(yield_label=True)]
             del pipeline
             free_gpu()
 
