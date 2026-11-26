@@ -32,12 +32,34 @@ def get_cfg(key: str, injected: str) -> str:
 
 JOB_ID = get_cfg("JOB_ID", "__INJECT_JOB_ID__")
 GH_REPO = get_cfg("GH_REPO", "__INJECT_GH_REPO__")
-GH_TOKEN = get_cfg("GH_PAT_TOKEN", "__INJECT_GH_PAT_TOKEN__")
-TG_TOKEN = get_cfg("TELEGRAM_BOT_TOKEN", "__INJECT_TELEGRAM_BOT_TOKEN__")
-TG_CHAT = get_cfg("TELEGRAM_CHAT_ID", "__INJECT_TELEGRAM_CHAT_ID__")
+GH_TOKEN = get_cfg("GH_PAT_TOKEN", "__INJECT_GH_PAT_TOKEN__") or get_cfg("GH_TOKEN", "__INJECT_GH_TOKEN__")
+NTFY_TOPIC = get_cfg("NTFY_TOPIC", "__INJECT_NTFY_TOPIC__")
+NTFY_SERVER = (get_cfg("NTFY_SERVER", "__INJECT_NTFY_SERVER__") or "https://ntfy.sh").rstrip("/")
+NTFY_TOKEN = get_cfg("NTFY_TOKEN", "__INJECT_NTFY_TOKEN__")
 
 if not JOB_ID:
     raise RuntimeError("Thiếu JOB_ID khi khởi chạy kernel.")
+
+
+def send_ntfy(title: str, message: str, tags: str = "microphone", priority: str = "default"):
+    topic = _clean_url_or_str(NTFY_TOPIC)
+    server = _clean_url_or_str(NTFY_SERVER).rstrip("/") or "https://ntfy.sh"
+    if not topic:
+        return
+    clean_msg = re.sub(r"<[^>]+>", "", str(message or "")).strip()[:3800]
+    clean_title = re.sub(r"<[^>]+>", "", str(title or "Dubbing Pipeline")).strip()[:200]
+    headers = {
+        "Title": clean_title.encode("utf-8").decode("latin-1", errors="ignore") or "Dubbing Pipeline",
+        "Tags": tags,
+        "Priority": priority,
+    }
+    if NTFY_TOKEN:
+        headers["Authorization"] = f"Bearer {_clean_url_or_str(NTFY_TOKEN)}"
+    try:
+        r = requests.post(f"{server}/{topic}", data=clean_msg.encode("utf-8"), headers=headers, timeout=20)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"[WARN] Gửi ntfy thất bại: {e}")
 
 
 class GitHubSync:
@@ -111,7 +133,7 @@ class GitHubSync:
         with open(file_path, "rb") as f:
             r = requests.post(f"{upload_url}?name={filename}", headers=up_headers, data=f.read(), timeout=300)
         r.raise_for_status()
-        return r.json().get("browser_download_url")
+        return _clean_url_or_str(r.json().get("browser_download_url", ""))
 
     def download_asset(self, tag: str, filename: str, dest_path: str):
         release = self.ensure_release(tag)
@@ -129,27 +151,20 @@ class GitHubSync:
         raise FileNotFoundError(f"Không tìm thấy asset {filename} trong release {tag}")
 
 
-def send_telegram(bot_token: str, chat_id: str, text: str):
-    clean_token = _clean_url_or_str(bot_token)
-    clean_chat = _clean_url_or_str(chat_id)
-    if not clean_token or not clean_chat:
-        return
+def _is_installed(pkg_name: str) -> bool:
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{clean_token}/sendMessage",
-            json={"chat_id": clean_chat, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": False},
-            timeout=20,
-        )
-    except Exception as e:
-        print(f"[WARN] Gửi Telegram thất bại: {e}")
+        __import__(pkg_name)
+        return True
+    except Exception:
+        return False
 
 
 def ensure_deps():
     subprocess.run(["apt-get", "-qq", "update"], check=False)
     subprocess.run(["apt-get", "-qq", "install", "-y", "espeak-ng"], check=False)
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "vieneu", "numpy", "soundfile", "gdown"],
-        check=True,
+        [sys.executable, "-m", "pip", "install", "-q", "vieneu", "numpy", "soundfile", "gdown"],
+        check=False,
     )
 
 
@@ -165,7 +180,8 @@ def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path
     ref = _clean_url_or_str(source_ref) or "source_input.mp4"
     if ref.startswith(("http://", "https://")):
         if "drive.google.com" in ref:
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=True)
+            if not _is_installed("gdown"):
+                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=False)
             direct_url = _normalize_gdrive_url(ref)
             subprocess.run([sys.executable, "-m", "gdown", direct_url, "-O", dest_path], check=True)
         else:
@@ -523,7 +539,7 @@ sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
 def main():
-    send_telegram(TG_TOKEN, TG_CHAT, f"🎙️ <b>[Stage 3 - VieNeu-TTS]</b> Bắt đầu job <code>{JOB_ID}</code>")
+    send_ntfy(f"[Stage 3] {JOB_ID}", f"Bắt đầu tổng hợp giọng nói VieNeu-TTS cho job {JOB_ID}.", tags="microphone")
     stage2_data, _ = sync.read_json(f"state/{JOB_ID}_stage2.json")
 
     out_dir = "/kaggle/working/out"
@@ -565,10 +581,10 @@ def main():
         updated_jobs["jobs"][JOB_ID]["output_url"] = download_url
         sync.write_json("state/jobs.json", updated_jobs, f"completed job: {JOB_ID}")
 
-    send_telegram(
-        TG_TOKEN,
-        TG_CHAT,
-        f"🎉 <b>Hoàn tất lồng tiếng!</b> Job: <code>{JOB_ID}</code>\n🔗 Link tải MP4: {download_url}",
+    send_ntfy(
+        f"[Hoàn tất] {JOB_ID}",
+        f"Lồng tiếng hoàn tất cho {JOB_ID}. Link tải: {download_url}",
+        tags="tada",
     )
 
 
@@ -577,5 +593,5 @@ if __name__ == "__main__":
         main()
     except Exception:
         err = traceback.format_exc()[-1200:]
-        send_telegram(TG_TOKEN, TG_CHAT, f"❌ <b>[Stage 3 Lỗi]</b> <code>{JOB_ID}</code>:\n<pre>{err}</pre>")
+        send_ntfy(f"[Stage 3 Lỗi] {JOB_ID}", err, tags="x", priority="high")
         raise
