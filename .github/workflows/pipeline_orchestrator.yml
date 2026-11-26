@@ -149,9 +149,9 @@ jobs:
           job_id = os.environ["JOB_ID"]
 
           stage_map = {
-              "stage1": ("01_perception/run_perception.py", "dubbing-stage1-perception", "PERCEPTION_KAGGLE_USER", "PERCEPTION_KAGGLE_KEY"),
-              "stage2": ("02_translation/run_translation.py", "dubbing-stage2-translation", "TRANSLATION_KAGGLE_USER", "TRANSLATION_KAGGLE_KEY"),
-              "stage3": ("03_synthesis/run_synthesis.py", "dubbing-stage3-synthesis", "SYNTHESIS_KAGGLE_USER", "SYNTHESIS_KAGGLE_KEY"),
+              "stage1": ("01_perception/run_perception.py", "dubbing-perception", "PERCEPTION_KAGGLE_USER", "PERCEPTION_KAGGLE_KEY"),
+              "stage2": ("02_translation/run_translation.py", "dubbing-translation", "TRANSLATION_KAGGLE_USER", "TRANSLATION_KAGGLE_KEY"),
+              "stage3": ("03_synthesis/run_synthesis.py", "dubbing-synthesis", "SYNTHESIS_KAGGLE_USER", "SYNTHESIS_KAGGLE_KEY"),
           }
           src_file, slug_suffix, u_key, k_key = stage_map[stage]
           k_user = os.environ.get(u_key, "").strip()
