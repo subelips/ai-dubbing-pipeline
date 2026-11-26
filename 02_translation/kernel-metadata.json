@@ -1,6 +1,6 @@
 {
-  "id": "minhphucdang/dubbing-02-translation",
-  "title": "dubbing-02-translation",
+  "id": "minhphucdang/dubbing-translation",
+  "title": "dubbing-translation",
   "code_file": "run_translation.py",
   "language": "python",
   "kernel_type": "script",
