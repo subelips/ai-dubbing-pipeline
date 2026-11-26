@@ -541,12 +541,16 @@ def apply_speaker_diarization(vocals_wav: str, segments: list[dict], work_dir: s
         else:
             seg["gender_hint"] = last_known_g
 
+    # Chỉ làm mượt câu ngắn khi pitch không rõ ràng (< 230 Hz), không ghi đè giọng nữ rõ rệt
     if len(segments) >= 3:
         smoothed_g = [s["gender_hint"] for s in segments]
         for i in range(1, len(segments) - 1):
+            p_val = segments[i].get("pitch_hz")
+            if p_val is not None and float(p_val) >= 230.0:
+                continue
             if segments[i - 1]["gender_hint"] == segments[i + 1]["gender_hint"]:
                 dur_i = float(segments[i]["end"]) - float(segments[i]["start"])
-                if dur_i < 1.1 and segments[i]["gender_hint"] != segments[i - 1]["gender_hint"]:
+                if dur_i < 1.0 and segments[i]["gender_hint"] != segments[i - 1]["gender_hint"]:
                     smoothed_g[i] = segments[i - 1]["gender_hint"]
         for i, g in enumerate(smoothed_g):
             segments[i]["gender_hint"] = g
@@ -598,6 +602,16 @@ def apply_speaker_diarization(vocals_wav: str, segments: list[dict], work_dir: s
                 spk = last_male_spk
             seg["speaker_id"] = spk
 
+    # Đồng bộ cụm thoại liên tục cho các câu nam ngắn nối tiếp nhau (< 0.30s)
+    for i in range(1, len(segments)):
+        prev_s = segments[i - 1]
+        cur_s = segments[i]
+        if prev_s["gender_hint"] == "male" and cur_s["gender_hint"] == "male":
+            gap = float(cur_s["start"]) - float(prev_s["end"])
+            dur_cur = float(cur_s["end"]) - float(cur_s["start"])
+            if gap < 0.30 and dur_cur < 1.2:
+                cur_s["speaker_id"] = prev_s["speaker_id"]
+
     speaker_refs = {}
     spk_groups: dict[str, list[tuple[float, float]]] = {}
     for seg in segments:
@@ -639,16 +653,19 @@ def _extract_ocr_texts(ocr_result) -> list[str]:
         return texts
     for item in ocr_result:
         rec_texts = None
-        if isinstance(item, dict):
-            rec_texts = item.get("rec_texts") or (item.get("res") or {}).get("rec_texts")
-        elif hasattr(item, "rec_texts"):
-            rec_texts = getattr(item, "rec_texts", None)
-        elif hasattr(item, "res") and isinstance(item.res, dict):
-            rec_texts = item.res.get("rec_texts")
-        elif hasattr(item, "json"):
-            j = item.json() if callable(item.json) else item.json
-            if isinstance(j, dict):
-                rec_texts = j.get("rec_texts") or (j.get("res") or {}).get("rec_texts")
+        for getter in (
+            lambda x: x["rec_texts"],
+            lambda x: x.get("rec_texts"),
+            lambda x: x.res["rec_texts"],
+            lambda x: getattr(x, "rec_texts", None),
+        ):
+            try:
+                val = getter(item)
+                if val is not None:
+                    rec_texts = val
+                    break
+            except Exception:
+                continue
 
         if rec_texts is not None:
             for t in rec_texts:
@@ -688,8 +705,8 @@ def _run_ocr_predict(ocr_engine, img) -> list[str]:
             got_p = _extract_ocr_texts(res_p)
             if got_p:
                 return got_p
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] ocr.predict lỗi: {e}")
     try:
         res = ocr_engine.ocr(img)
         got = _extract_ocr_texts(res)
