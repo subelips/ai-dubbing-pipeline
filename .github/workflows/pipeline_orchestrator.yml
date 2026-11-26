@@ -136,12 +136,12 @@ jobs:
         env:
           JOB_ID: ${{ steps.ctx.outputs.job_id }}
           STAGE: ${{ steps.ctx.outputs.stage }}
-          KAGGLE_USERNAME_S1: ${{ secrets.KAGGLE_USERNAME_S1 || secrets.KAGGLE_USERNAME }}
-          KAGGLE_KEY_S1: ${{ secrets.KAGGLE_KEY_S1 || secrets.KAGGLE_KEY }}
-          KAGGLE_USERNAME_S2: ${{ secrets.KAGGLE_USERNAME_S2 || secrets.KAGGLE_USERNAME }}
-          KAGGLE_KEY_S2: ${{ secrets.KAGGLE_KEY_S2 || secrets.KAGGLE_KEY }}
-          KAGGLE_USERNAME_S3: ${{ secrets.KAGGLE_USERNAME_S3 || secrets.KAGGLE_USERNAME }}
-          KAGGLE_KEY_S3: ${{ secrets.KAGGLE_KEY_S3 || secrets.KAGGLE_KEY }}
+          PERCEPTION_KAGGLE_USER: ${{ secrets.PERCEPTION_KAGGLE_USER || secrets.KAGGLE_USERNAME }}
+          PERCEPTION_KAGGLE_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY || secrets.KAGGLE_KEY }}
+          TRANSLATION_KAGGLE_USER: ${{ secrets.TRANSLATION_KAGGLE_USER || secrets.KAGGLE_USERNAME }}
+          TRANSLATION_KAGGLE_KEY: ${{ secrets.TRANSLATION_KAGGLE_KEY || secrets.KAGGLE_KEY }}
+          SYNTHESIS_KAGGLE_USER: ${{ secrets.SYNTHESIS_KAGGLE_USER || secrets.KAGGLE_USERNAME }}
+          SYNTHESIS_KAGGLE_KEY: ${{ secrets.SYNTHESIS_KAGGLE_KEY || secrets.KAGGLE_KEY }}
         run: |
           python3 - << 'PY'
           import json, os, shutil, subprocess
@@ -150,9 +150,9 @@ jobs:
           job_id = os.environ["JOB_ID"]
 
           stage_map = {
-              "stage1": ("01_perception/run_perception.py", "dubbing-stage1-perception", "KAGGLE_USERNAME_S1", "KAGGLE_KEY_S1"),
-              "stage2": ("02_translation/run_translation.py", "dubbing-stage2-translation", "KAGGLE_USERNAME_S2", "KAGGLE_KEY_S2"),
-              "stage3": ("03_synthesis/run_synthesis.py", "dubbing-stage3-synthesis", "KAGGLE_USERNAME_S3", "KAGGLE_KEY_S3"),
+              "stage1": ("01_perception/run_perception.py", "dubbing-stage1-perception", "PERCEPTION_KAGGLE_USER", "PERCEPTION_KAGGLE_KEY"),
+              "stage2": ("02_translation/run_translation.py", "dubbing-stage2-translation", "TRANSLATION_KAGGLE_USER", "TRANSLATION_KAGGLE_KEY"),
+              "stage3": ("03_synthesis/run_synthesis.py", "dubbing-stage3-synthesis", "SYNTHESIS_KAGGLE_USER", "SYNTHESIS_KAGGLE_KEY"),
           }
           src_file, slug_suffix, u_key, k_key = stage_map[stage]
           k_user = os.environ.get(u_key, "").strip()
