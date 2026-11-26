@@ -249,11 +249,19 @@ def load_qwen3_vl():
 
 def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_refs: dict, fallback_context: str) -> tuple[str, dict]:
     updated_speakers = {k: dict(v) for k, v in (speaker_refs or {}).items()}
+    for spk_id, info in updated_speakers.items():
+        pitch = float(info.get("pitch_hz") or 0.0)
+        hint = str(info.get("gender_hint", "unknown")).lower()
+        if pitch >= 175.0:
+            info["gender"] = "female"
+        elif 0.0 < pitch <= 155.0:
+            info["gender"] = "male"
+        elif hint in ("male", "female"):
+            info["gender"] = hint
+
     if not frame_paths:
-        for spk_id, info in updated_speakers.items():
-            if "gender" not in info:
-                hint = info.get("gender_hint", "unknown")
-                info["gender"] = hint if hint in ("male", "female") else "female"
+        for info in updated_speakers.values():
+            info.setdefault("gender", "female")
         return fallback_context or "", updated_speakers
 
     import torch
@@ -264,11 +272,9 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
     content.append({
         "type": "text",
         "text": (
-            "Hãy gắn nhãn chi tiết cho đoạn video này bằng tiếng Việt ngắn gọn: "
-            "1) Bối cảnh, cảm xúc và mối quan hệ xưng hô nhân vật; "
-            "2) Ước lượng giới tính ('male' hoặc 'female') cho từng speaker nếu có thể. "
-            f"Gợi ý thông số âm thanh từ Stage 1: {json.dumps(speaker_refs, ensure_ascii=False)}. "
-            "Trả về JSON thuần dạng: {\"scene_label\": \"...\", \"speakers\": {\"SPEAKER_00\": \"male|female\"}}."
+            "Hãy mô tả ngắn gọn bối cảnh và mối quan hệ nhân vật trong đoạn phim này bằng tiếng Việt "
+            "(ví dụ: vợ chồng trẻ, cha vợ và con rể, đồng nghiệp công sở...). "
+            "Trả về JSON thuần: {\"scene_label\": \"...\", \"speakers\": {\"SPEAKER_00\": \"male|female\"}}."
         ),
     })
 
@@ -279,7 +285,7 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.inference_mode():
-        out_ids = model.generate(**inputs, max_new_tokens=220, do_sample=False)
+        out_ids = model.generate(**inputs, max_new_tokens=200, do_sample=False)
     trimmed = [out[len(inp):] for inp, out in zip(inputs["input_ids"], out_ids)]
     raw_out = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
 
@@ -288,9 +294,7 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
 
     scene_label = fallback_context or ""
     try:
-        clean_json = raw_out
-        if "```" in clean_json:
-            clean_json = clean_json.split("```json")[-1].split("```")[0].strip()
+        clean_json = raw_out.split("```json")[-1].split("```")[0].strip() if "```" in raw_out else raw_out
         parsed = json.loads(clean_json)
         if isinstance(parsed, dict):
             if parsed.get("scene_label"):
@@ -299,6 +303,8 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
             spk_map = parsed.get("speakers") or {}
             if isinstance(spk_map, dict):
                 for spk_id, g_val in spk_map.items():
+                    if updated_speakers.get(spk_id, {}).get("gender") in ("male", "female"):
+                        continue
                     g_norm = str(g_val).lower().strip()
                     if g_norm in ("male", "nam"):
                         updated_speakers.setdefault(spk_id, {})["gender"] = "male"
@@ -308,15 +314,17 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
         if raw_out:
             scene_label = f"{raw_out} | {fallback_context}".strip(" |") if fallback_context else raw_out
 
-    for spk_id, info in updated_speakers.items():
-        if "gender" not in info:
-            hint = info.get("gender_hint", "unknown")
-            info["gender"] = hint if hint in ("male", "female") else "female"
+    for info in updated_speakers.values():
+        info.setdefault("gender", "female")
 
     return scene_label, updated_speakers
 
 
-def _clean_vietnamese_translation(text_vi: str, fallback_src: str) -> str:
+def _has_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
+
+
+def _clean_vietnamese_translation(text_vi: str, fallback_src: str = "") -> str:
     txt = " ".join(str(text_vi or "").split()).strip()
     txt = re.sub(r"[\u4e00-\u9fff]+", "", txt)
     txt = re.sub(r"\s+([,.!?;:])", r"\1", txt)
@@ -325,7 +333,7 @@ def _clean_vietnamese_translation(text_vi: str, fallback_src: str) -> str:
     txt = re.sub(r"\bMinh Nhu\b", "Minh Dao", txt)
     txt = re.sub(r"\bLạc thị\b", "Lục thị", txt, flags=re.IGNORECASE)
 
-    if len(txt) < 2 and fallback_src:
+    if len(txt) < 1 and fallback_src:
         return fallback_src
     return txt
 
@@ -399,11 +407,11 @@ def _translate_utterance_batch(model, processor, batch_groups: list[list[dict]],
         {
             "role": "system",
             "content": (
-                "Bạn là biên kịch lồng tiếng phim tiếng Việt tự nhiên, sát nghĩa, không cắt cụt ý. "
+                "Bạn là biên kịch lồng tiếng phim tiếng Việt tự nhiên, sát nghĩa, chuẩn xưng hô nhân vật. "
                 "Quy tắc bắt buộc:\n"
                 "1) Dịch trọn vẹn từng ý thoại sang tiếng Việt tự nhiên, đủ vế, không bỏ sót ý hay cắt nửa chừng.\n"
-                "2) Thống nhất tên riêng & thuật ngữ: giữ 'Lục thị', 'Hạ thị', 'Ngôn Thần', 'Minh Dao' (hoặc 'Dao Dao').\n"
-                "3) Giữ xưng hô nhất quán theo ngữ cảnh nhân vật.\n"
+                "2) Xưng hô chuẩn theo giới tính & ngữ cảnh: nếu người nói có gender='male' gọi '老婆' thì dịch là 'Vợ ơi' hoặc 'Em à', tuyệt đối không dịch '老婆' thành 'Chồng ơi'; hạn chế dùng 'bạn - tôi' gượng gạo trong hội thoại gia đình.\n"
+                "3) Thống nhất tên riêng & thuật ngữ: giữ 'Lục thị', 'Hạ thị', 'Ngôn Thần', 'Minh Dao'.\n"
                 "4) Không chèn chữ Hán vào câu dịch tiếng Việt.\n"
                 "Chỉ trả về mảng JSON thuần các object có khóa: utt_id, text_vi."
             ),
@@ -423,7 +431,7 @@ def _translate_utterance_batch(model, processor, batch_groups: list[list[dict]],
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.inference_mode():
-        out_ids = model.generate(**inputs, max_new_tokens=1200, do_sample=False)
+        out_ids = model.generate(**inputs, max_new_tokens=1400, do_sample=False)
     trimmed = [out[len(inp):] for inp, out in zip(inputs["input_ids"], out_ids)]
     raw_reply = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
 
@@ -432,9 +440,7 @@ def _translate_utterance_batch(model, processor, batch_groups: list[list[dict]],
 
     result_map: dict[int, str] = {}
     try:
-        clean_json = raw_reply
-        if "```" in clean_json:
-            clean_json = clean_json.split("```json")[-1].split("```")[0].strip()
+        clean_json = raw_reply.split("```json")[-1].split("```")[0].strip() if "```" in raw_reply else raw_reply
         parsed = json.loads(clean_json)
         if isinstance(parsed, list):
             for row in parsed:
@@ -459,12 +465,13 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
         for local_i, vi_txt in got.items():
             utt_translations[start_g + local_i] = vi_txt
 
-        for local_i, grp in enumerate(sub_groups):
-            g_id = start_g + local_i
-            if not utt_translations.get(g_id):
-                single_got = _translate_utterance_batch(model, processor, [grp], scene_context, speakers_meta)
-                if 0 in single_got:
-                    utt_translations[g_id] = single_got[0]
+    # Dịch bù từng cụm còn thiếu hoặc còn chứa chữ Hán
+    for g_id, grp in enumerate(groups):
+        cur_txt = utt_translations.get(g_id, "")
+        if not cur_txt or _has_cjk(cur_txt):
+            retry_got = _translate_utterance_batch(model, processor, [grp], scene_context, speakers_meta)
+            if 0 in retry_got and retry_got[0].strip():
+                utt_translations[g_id] = retry_got[0].strip()
 
     utterances_out = []
     seg_text_map: dict[int, str] = {}
