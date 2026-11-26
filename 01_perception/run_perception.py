@@ -1,22 +1,19 @@
 import os
 
-# Tắt PIR / OneDNN trên PaddlePaddle 3.x để tránh lỗi ConvertPirAttribute2RuntimeAttribute khi chạy CPU
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-os.environ.setdefault("FLAGS_use_mkldnn", "0")
-os.environ.setdefault("FLAGS_enable_pir_api", "0")
-os.environ.setdefault("FLAGS_enable_pir_in_executor", "0")
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 import base64
 from concurrent.futures import ThreadPoolExecutor
-import ctypes
-from difflib import SequenceMatcher
 import gc
-import glob
 import json
 import re
-import site
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import requests
@@ -51,7 +48,7 @@ if not JOB_ID:
     raise RuntimeError("Thiếu JOB_ID khi khởi chạy kernel.")
 
 
-def send_ntfy(title: str, message: str, tags: str = "movie_camera", priority: str = "default"):
+def send_ntfy(title: str, message: str, tags: str = "film_frames", priority: str = "default"):
     topic = _clean_url_or_str(NTFY_TOPIC)
     server = _clean_url_or_str(NTFY_SERVER).rstrip("/") or "https://ntfy.sh"
     if not topic:
@@ -216,8 +213,6 @@ def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path
     ref = _clean_url_or_str(source_ref) or "source_input.mp4"
     if ref.startswith(("http://", "https://")):
         if "drive.google.com" in ref:
-            if not _is_installed("gdown"):
-                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=False)
             direct_url = _normalize_gdrive_url(ref)
             subprocess.run([sys.executable, "-m", "gdown", direct_url, "-O", dest_path], check=True)
         else:
@@ -226,765 +221,310 @@ def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path
         sync.download_asset(tag, ref, dest_path)
 
 
-def _preload_cuda12_libs():
-    search_roots = list(site.getsitepackages())
-    if site.getusersitepackages():
-        search_roots.append(site.getusersitepackages())
-
-    extra_dirs = []
-    for root in search_roots:
-        for pattern in [
-            os.path.join(root, "nvidia", "cublas", "lib", "libcublas.so.12*"),
-            os.path.join(root, "nvidia", "cublas", "lib", "libcublasLt.so.12*"),
-            os.path.join(root, "nvidia", "cudnn", "lib", "libcudnn*.so.9*"),
-            os.path.join(root, "nvidia", "cudnn", "lib", "libcudnn*.so.8*"),
-        ]:
-            for so_path in sorted(glob.glob(pattern)):
-                lib_dir = os.path.dirname(so_path)
-                if lib_dir not in extra_dirs:
-                    extra_dirs.append(lib_dir)
-                try:
-                    ctypes.CDLL(so_path, mode=ctypes.RTLD_GLOBAL)
-                except Exception:
-                    pass
-
-    if extra_dirs:
-        current_ld = os.environ.get("LD_LIBRARY_PATH", "")
-        os.environ["LD_LIBRARY_PATH"] = ":".join(extra_dirs + ([current_ld] if current_ld else []))
+def extract_audio_16k(video_path: str, out_wav: str):
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", out_wav],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
-def estimate_pitch_gender(clip: "np.ndarray", sr: int) -> tuple[float, str]:
-    import numpy as np
-
-    if clip is None or len(clip) < sr // 2:
-        return 0.0, "unknown"
-    samples = clip[: min(len(clip), sr * 6)].astype(np.float32)
-    samples = samples - np.mean(samples)
-    rms = float(np.sqrt(np.mean(samples ** 2)))
-    if rms < 1e-4:
-        return 0.0, "unknown"
-
-    corr = np.correlate(samples, samples, mode="full")[len(samples) - 1:]
-    min_lag = max(1, int(sr / 340))
-    max_lag = min(len(corr) - 1, int(sr / 75))
-    if max_lag <= min_lag:
-        return 0.0, "unknown"
-
-    best_lag = min_lag + int(np.argmax(corr[min_lag:max_lag]))
-    f0 = float(sr) / float(best_lag)
-    if f0 < 162.0:
-        return round(f0, 1), "male"
-    return round(f0, 1), "female"
-
-
-def run_whisper_asr(audio_16k: str) -> list[dict]:
-    import soundfile as sf
+def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
+    demucs_out = os.path.join(work_dir, "demucs_out")
+    os.makedirs(demucs_out, exist_ok=True)
+    cmd = ["demucs", "-n", "htdemucs", "--two-stems", "vocals", "-o", demucs_out, audio_16k]
     import torch
+    if not torch.cuda.is_available():
+        cmd.extend(["-d", "cpu"])
+    subprocess.run(cmd, check=True)
+    free_gpu()
 
-    audio_np, sr = sf.read(audio_16k, dtype="float32")
-    if audio_np.ndim > 1:
-        audio_np = audio_np.mean(axis=-1)
+    stem_dir = os.path.join(demucs_out, "htdemucs", os.path.splitext(os.path.basename(audio_16k))[0])
+    vocals_wav = os.path.join(stem_dir, "vocals.wav")
+    bgm_wav = os.path.join(stem_dir, "no_vocals.wav")
+    if not os.path.exists(vocals_wav) or not os.path.exists(bgm_wav):
+        raise FileNotFoundError("Demucs không tạo đủ vocals.wav và no_vocals.wav")
+    return vocals_wav, bgm_wav
 
-    model_size = os.environ.get("WHISPER_MODEL", "large-v3")
+
+def transcribe_with_faster_whisper(vocals_wav: str) -> list[dict]:
+    import torch
+    from faster_whisper import WhisperModel
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    compute_type = "float16" if device == "cuda" else "int8"
+    model_size = os.environ.get("WHISPER_MODEL", "large-v3").strip() or "large-v3"
+    lang = os.environ.get("SOURCE_LANG", "zh").strip() or None
+
+    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+    raw_segments, _ = model.transcribe(
+        vocals_wav,
+        language=lang,
+        beam_size=5,
+        vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=250),
+    )
+
     segments = []
+    for idx, seg in enumerate(raw_segments):
+        txt = (seg.text or "").strip()
+        if not txt:
+            continue
+        segments.append({
+            "id": idx,
+            "start": round(float(seg.start), 2),
+            "end": round(float(seg.end), 2),
+            "speaker_id": "SPEAKER_00",
+            "gender_hint": "unknown",
+            "pitch_hz": None,
+            "asr_text": txt,
+            "ocr_text": "",
+            "best_text": txt,
+            "subtitle_source": "asr_only",
+        })
 
-    try:
-        _preload_cuda12_libs()
-        from faster_whisper import WhisperModel
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        compute_type = "float16" if device == "cuda" else "int8"
-        model = WhisperModel(model_size, device=device, compute_type=compute_type)
-        raw_segments, _ = model.transcribe(audio_np, beam_size=3, vad_filter=True)
-
-        for idx, seg in enumerate(raw_segments):
-            txt = (seg.text or "").strip()
-            if not txt:
-                continue
-            start_t = round(float(seg.start), 2)
-            end_t = round(max(float(seg.end), start_t + 0.5), 2)
-            clip = audio_np[int(start_t * sr): int(end_t * sr)]
-            f0, gender_hint = estimate_pitch_gender(clip, sr)
-            segments.append({
-                "id": idx,
-                "start": start_t,
-                "end": end_t,
-                "speaker_id": "SPEAKER_00",
-                "gender_hint": gender_hint,
-                "pitch_hz": f0,
-                "asr_text": txt,
-            })
-
-        del model
-        free_gpu()
-    except Exception as fw_err:
-        print(f"[WARN] faster-whisper fallback sang PyTorch Whisper do: {fw_err}")
-        free_gpu()
-
-        from transformers import pipeline
-
-        hf_model = f"openai/whisper-{model_size}" if "/" not in model_size else model_size
-        asr_pipe = pipeline(
-            "automatic-speech-recognition",
-            model=hf_model,
-            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            device=0 if torch.cuda.is_available() else -1,
-        )
-        result = asr_pipe(
-            {"array": audio_np, "sampling_rate": sr},
-            chunk_length_s=30,
-            batch_size=8,
-            return_timestamps=True,
-        )
-
-        for idx, chunk in enumerate(result.get("chunks", [])):
-            txt = (chunk.get("text") or "").strip()
-            ts = chunk.get("timestamp") or (0.0, 0.0)
-            start_t = round(float(ts[0]) if ts[0] is not None else 0.0, 2)
-            end_t = round(max(float(ts[1]) if ts[1] is not None else start_t + 2.0, start_t + 0.5), 2)
-            if not txt:
-                continue
-            clip = audio_np[int(start_t * sr): int(end_t * sr)]
-            f0, gender_hint = estimate_pitch_gender(clip, sr)
-            segments.append({
-                "id": idx,
-                "start": start_t,
-                "end": end_t,
-                "speaker_id": "SPEAKER_00",
-                "gender_hint": gender_hint,
-                "pitch_hz": f0,
-                "asr_text": txt,
-            })
-
-        del asr_pipe
-        free_gpu()
-
+    del model
+    free_gpu()
     return segments
 
 
-def _split_segments_on_speaker_turns(
-    raw_segs: list[dict],
-    turns: list[tuple[float, float, str]],
-    order_map: dict,
-) -> list[dict]:
-    out_segs = []
-    next_id = 0
+def _estimate_pitch_hz(samples, sr: int) -> float | None:
+    import numpy as np
 
-    for seg in raw_segs:
-        s_t = float(seg.get("start", 0.0))
-        e_t = max(s_t + 0.3, float(seg.get("end", s_t + 0.5)))
-        dur = e_t - s_t
-        pad = min(0.15, dur * 0.2)
-        c_start = s_t + pad
-        c_end = max(c_start + 0.1, e_t - pad)
+    if samples is None or len(samples) < sr // 4:
+        return None
+    s = samples.astype(np.float32)
+    s = s - np.mean(s)
+    energy = float(np.sqrt(np.mean(s ** 2)))
+    if energy < 1e-4:
+        return None
 
-        spk_durations: dict[str, float] = {}
-        overlapping_turns: list[tuple[float, float, str]] = []
-        for t_s, t_e, raw_spk in turns:
-            ov = max(0.0, min(c_end, t_e) - max(c_start, t_s))
-            if ov > 0.05:
-                spk_name = order_map.get(raw_spk, "SPEAKER_00")
-                spk_durations[spk_name] = spk_durations.get(spk_name, 0.0) + ov
-                overlapping_turns.append((max(s_t, t_s), min(e_t, t_e), spk_name))
-
-        significant_spks = [k for k, v in spk_durations.items() if v >= 0.45]
-        txt = (seg.get("asr_text") or "").strip()
-        words = txt.split()
-
-        if len(significant_spks) >= 2 and len(words) >= 4 and len(overlapping_turns) >= 2:
-            overlapping_turns.sort(key=lambda x: x[0])
-            total_ov = sum(max(0.05, b - a) for a, b, _ in overlapping_turns)
-            word_cursor = 0
-            for idx_t, (sub_s, sub_e, spk_name) in enumerate(overlapping_turns):
-                sub_dur = max(0.1, sub_e - sub_s)
-                if idx_t == len(overlapping_turns) - 1:
-                    sub_words = words[word_cursor:]
-                else:
-                    take_w = max(1, int(round(len(words) * (sub_dur / total_ov))))
-                    sub_words = words[word_cursor: word_cursor + take_w]
-                    word_cursor += take_w
-                if not sub_words:
-                    continue
-                item = dict(seg)
-                item["id"] = next_id
-                item["start"] = round(sub_s, 2)
-                item["end"] = round(max(sub_s + 0.4, sub_e), 2)
-                item["speaker_id"] = spk_name
-                item["asr_text"] = " ".join(sub_words)
-                out_segs.append(item)
-                next_id += 1
-        else:
-            best_spk = max(spk_durations.items(), key=lambda x: x[1])[0] if spk_durations else "SPEAKER_00"
-            item = dict(seg)
-            item["id"] = next_id
-            item["speaker_id"] = best_spk
-            out_segs.append(item)
-            next_id += 1
-
-    return out_segs
+    corr = np.correlate(s, s, mode="full")[len(s) - 1:]
+    min_lag = max(1, int(sr / 450.0))
+    max_lag = min(len(corr) - 1, int(sr / 65.0))
+    if max_lag <= min_lag:
+        return None
+    window = corr[min_lag:max_lag]
+    best_idx = int(np.argmax(window)) + min_lag
+    if corr[0] <= 0 or corr[best_idx] / corr[0] < 0.25:
+        return None
+    return round(float(sr) / float(best_idx), 1)
 
 
-def _get_hf_token() -> str:
-    token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or "").strip()
-    if token:
-        return token
-    try:
-        from kaggle_secrets import UserSecretsClient
-        token = (UserSecretsClient().get_secret("HF_TOKEN") or "").strip()
-    except Exception:
-        token = ""
-    return token
+def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: str) -> dict:
+    import numpy as np
+    import soundfile as sf
 
+    wav_data, sr = sf.read(audio_16k)
+    if wav_data.ndim > 1:
+        wav_data = wav_data.mean(axis=-1)
 
-def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: str) -> list[dict]:
-    if not segments:
-        return segments
+    hf_token = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or "").strip()
+    used_pyannote = False
 
-    import torch
-
-    hf_token = _get_hf_token()
-    pyannote_model = os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip()
-    use_pyannote = os.environ.get("USE_PYANNOTE", "1").strip() != "0"
-
-    if hf_token and use_pyannote:
+    if hf_token:
         try:
-            if not _is_installed("pyannote"):
-                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pyannote.audio"], check=True)
+            import torch
             from pyannote.audio import Pipeline
 
-            try:
-                pipeline = Pipeline.from_pretrained(pyannote_model, token=hf_token)
-            except TypeError:
-                pipeline = Pipeline.from_pretrained(pyannote_model, use_auth_token=hf_token)
-
+            pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=hf_token)
             if torch.cuda.is_available():
-                pipeline.to(torch.device("cuda:0"))
-
-            diar_kwargs = {}
-            fixed_k_raw = os.environ.get("NUM_SPEAKERS", "").strip()
-            max_spk_raw = os.environ.get("MAX_SPEAKERS", "").strip()
-            if fixed_k_raw.isdigit() and int(fixed_k_raw) >= 1:
-                diar_kwargs["num_speakers"] = int(fixed_k_raw)
-            elif max_spk_raw.isdigit() and int(max_spk_raw) >= 2:
-                diar_kwargs["max_speakers"] = int(max_spk_raw)
-
-            diarization = pipeline(audio_16k, **diar_kwargs)
+                pipeline.to(torch.device("cuda"))
+            diarization = pipeline(audio_16k)
             ann = getattr(diarization, "speaker_diarization", diarization)
             turns = [(float(turn.start), float(turn.end), str(spk)) for turn, _, spk in ann.itertracks(yield_label=True)]
             del pipeline
             free_gpu()
 
             if turns:
-                order_map = {}
-                for _, _, raw_spk in sorted(turns, key=lambda x: x[0]):
-                    if raw_spk not in order_map:
-                        order_map[raw_spk] = f"SPEAKER_{len(order_map):02d}"
+                for seg in segments:
+                    s_t = float(seg["start"])
+                    e_t = float(seg["end"])
+                    best_spk = "SPEAKER_00"
+                    best_ov = 0.0
+                    for t_s, t_e, spk in turns:
+                        ov = max(0.0, min(e_t, t_e) - max(s_t, t_s))
+                        if ov > best_ov:
+                            best_ov = ov
+                            best_spk = spk
+                    seg["speaker_id"] = best_spk
+                used_pyannote = True
+                print(f"[INFO] pyannote.audio diarization phát hiện {len({t[2] for t in turns})} cụm ban đầu.")
+        except Exception as e:
+            print(f"[WARN] pyannote.audio không chạy được ({e}), dùng dự phòng cao độ/giới tính.")
 
-                refined_segs = _split_segments_on_speaker_turns(segments, turns, order_map)
-                detected_list = list(dict.fromkeys(s["speaker_id"] for s in refined_segs))
-                print(f"[INFO] pyannote.audio diarization ({pyannote_model}) phát hiện {len(detected_list)} người nói: {detected_list}")
-                return refined_segs
-        except Exception as py_err:
-            print(f"[WARN] pyannote.audio không chạy được ({py_err}), dùng dự phòng cao độ/giới tính.")
-            free_gpu()
-    else:
-        print("[INFO] Thiếu HF_TOKEN hoặc USE_PYANNOTE=0, dùng dự phòng cao độ/giới tính.")
-
-    gender_to_spk = {"male": "SPEAKER_00", "female": "SPEAKER_01"}
+    # Đo cao độ và gán gender_hint cho từng đoạn thoại
     for seg in segments:
-        g = str(seg.get("gender_hint", "unknown")).lower()
-        seg["speaker_id"] = gender_to_spk.get(g, "SPEAKER_00")
+        i0 = max(0, int(float(seg["start"]) * sr))
+        i1 = min(len(wav_data), int(float(seg["end"]) * sr))
+        pitch = _estimate_pitch_hz(wav_data[i0:i1], sr) if i1 > i0 else None
+        seg["pitch_hz"] = pitch
+        if pitch is not None:
+            seg["gender_hint"] = "female" if pitch >= 175.0 else ("male" if pitch <= 155.0 else "female")
+        else:
+            seg["gender_hint"] = "unknown"
 
-    detected_list = list(dict.fromkeys(s["speaker_id"] for s in segments))
-    print(f"[INFO] Dự phòng gán người nói tạo {len(detected_list)} nhãn: {detected_list}")
-    return segments
+    if not used_pyannote:
+        cur_spk = "SPEAKER_00"
+        prev_g = None
+        for seg in segments:
+            g = seg["gender_hint"]
+            if g in ("male", "female") and prev_g in ("male", "female") and g != prev_g:
+                cur_spk = "SPEAKER_01" if cur_spk == "SPEAKER_00" else "SPEAKER_00"
+            if g in ("male", "female"):
+                prev_g = g
+            seg["speaker_id"] = cur_spk
+        print(f"[INFO] Dự phòng gán người nói tạo {len({s['speaker_id'] for s in segments})} nhãn.")
+
+    # Tách nhãn theo giới tính khi một cụm có cả giọng nam và giọng nữ (ví dụ có thêm bố vợ/nhân vật thứ 3)
+    for seg in segments:
+        base_spk = str(seg.get("speaker_id", "SPEAKER_00"))
+        g_hint = str(seg.get("gender_hint", "unknown")).lower()
+        if g_hint == "female":
+            seg["speaker_id"] = f"{base_spk}_F"
+        elif g_hint == "male":
+            seg["speaker_id"] = f"{base_spk}_M"
+
+    speaker_refs = {}
+    spk_groups: dict[str, list[tuple[float, float]]] = {}
+    for seg in segments:
+        spk = seg["speaker_id"]
+        spk_groups.setdefault(spk, []).append((float(seg["start"]), float(seg["end"])))
+
+    for spk, intervals in spk_groups.items():
+        chunks = []
+        total_len = 0
+        for t0, t1 in sorted(intervals, key=lambda x: x[1] - x[0], reverse=True):
+            a0 = max(0, int(t0 * sr))
+            a1 = min(len(wav_data), int(t1 * sr))
+            if a1 > a0:
+                chunks.append(wav_data[a0:a1])
+                total_len += a1 - a0
+            if total_len >= sr * 5:
+                break
+        ref_name = f"ref_speaker_{spk}.wav"
+        ref_path = os.path.join(work_dir, ref_name)
+        merged_wav = np.concatenate(chunks)[: sr * 6] if chunks else np.zeros(sr, dtype=np.float32)
+        sf.write(ref_path, merged_wav, sr)
+
+        pitches = [float(s["pitch_hz"]) for s in segments if s["speaker_id"] == spk and s.get("pitch_hz")]
+        avg_pitch = round(float(np.mean(pitches)), 1) if pitches else None
+        g_hint = "female" if spk.endswith("_F") else ("male" if spk.endswith("_M") else "unknown")
+        speaker_refs[spk] = {
+            "ref_asset": ref_name,
+            "gender_hint": g_hint,
+            "pitch_hz": avg_pitch,
+        }
+
+    return speaker_refs
 
 
-def extract_embedded_subtitles(video_path: str, work_dir: str) -> list[dict]:
-    srt_path = os.path.join(work_dir, "embedded_subs.srt")
-    res = subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-map", "0:s:0", srt_path],
-        capture_output=True,
-        text=True,
-    )
-    if res.returncode != 0 or not os.path.exists(srt_path) or os.path.getsize(srt_path) < 10:
-        return []
-
-    with open(srt_path, "r", encoding="utf-8", errors="ignore") as f:
-        raw_srt = f.read()
-
-    pattern = re.compile(
-        r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*\n(.*?)(?=\n\s*\n|\Z)",
-        re.DOTALL,
-    )
-    records = []
-    for m in pattern.finditer(raw_srt):
-        h1, m1, s1, ms1, h2, m2, s2, ms2, body = m.groups()
-        t_start = int(h1) * 3600 + int(m1) * 60 + int(s1) + int(ms1) / 1000.0
-        t_end = int(h2) * 3600 + int(m2) * 60 + int(s2) + int(ms2) / 1000.0
-        clean_txt = re.sub(r"<[^>]+>", "", body).replace("\n", " ").strip()
-        if clean_txt:
-            mid_t = round((t_start + t_end) * 0.5, 2)
-            records.append({"time": mid_t, "start": round(t_start, 2), "end": round(t_end, 2), "text": clean_txt})
-
-    if records:
-        print(f"[INFO] Phát hiện và trích xuất thành công {len(records)} dòng phụ đề mềm (softsub) trong video.")
-    return records
+def _extract_ocr_texts(ocr_result) -> list[str]:
+    texts = []
+    if not ocr_result:
+        return texts
+    for item in ocr_result:
+        if isinstance(item, dict):
+            rec_texts = item.get("rec_texts") or []
+            for t in rec_texts:
+                if str(t).strip():
+                    texts.append(str(t).strip())
+        elif isinstance(item, list):
+            for entry in item:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    info = entry[1]
+                    if isinstance(info, (list, tuple)) and info and str(info[0]).strip():
+                        texts.append(str(info[0]).strip())
+    return texts
 
 
-def _init_paddle_ocr_engine():
-    from paddleocr import PaddleOCR
-
-    lang = os.environ.get("PADDLE_OCR_LANG", "ch")
+def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict]]:
+    roi = {"x1": 0.02, "y1": 0.58, "x2": 0.98, "y2": 0.96}
     try:
-        return PaddleOCR(
-            lang=lang,
+        import cv2
+        from paddleocr import PaddleOCR
+
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        duration = total_frames / fps if fps > 0 else 60.0
+
+        sample_times = [round(duration * k / 7.0, 2) for k in range(1, 7)]
+        ocr = PaddleOCR(
+            lang="ch",
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
         )
-    except Exception:
-        return PaddleOCR(lang=lang)
 
-
-def _preprocess_hardsub_image(img_path: str, mode: str = "contrast") -> str:
-    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
-
-    out_path = f"{img_path}_{mode}.jpg"
-    try:
-        img = Image.open(img_path).convert("RGB")
-        if mode == "contrast":
-            img = ImageOps.autocontrast(img, cutoff=1)
-            img = ImageEnhance.Contrast(img).enhance(1.65)
-            img = img.filter(ImageFilter.SHARPEN)
-        elif mode == "high_text":
-            gray = ImageOps.grayscale(img)
-            gray = ImageOps.autocontrast(gray, cutoff=2)
-            gray = gray.filter(ImageFilter.SHARPEN)
-            img = gray.convert("RGB")
-        img.save(out_path, quality=92)
-        return out_path
-    except Exception:
-        return img_path
-
-
-def _ocr_single_image(ocr_engine, img_path: str, min_conf: float = 0.25) -> str:
-    line_texts = []
-    if hasattr(ocr_engine, "predict"):
-        res = list(ocr_engine.predict(img_path))
-    else:
-        res = ocr_engine.ocr(img_path)
-
-    if not res:
-        return ""
-
-    for item in res:
-        payload = item
-        if hasattr(item, "res") and isinstance(item.res, dict):
-            payload = item.res
-        elif hasattr(item, "json") and isinstance(item.json, dict):
-            payload = item.json.get("res", item.json)
-
-        rec_texts = None
-        rec_scores = None
-        if isinstance(payload, dict):
-            rec_texts = payload.get("rec_texts")
-            rec_scores = payload.get("rec_scores")
-        elif hasattr(payload, "get"):
-            rec_texts = payload.get("rec_texts")
-            rec_scores = payload.get("rec_scores")
-        elif hasattr(payload, "rec_texts"):
-            rec_texts = getattr(payload, "rec_texts", None)
-            rec_scores = getattr(payload, "rec_scores", None)
-
-        if rec_texts is not None:
-            scores = list(rec_scores) if rec_scores is not None else [1.0] * len(rec_texts)
-            for txt_raw, conf in zip(rec_texts, scores):
-                txt = str(txt_raw).strip()
-                if txt and float(conf) >= min_conf:
-                    line_texts.append(txt)
-            continue
-
-        if isinstance(payload, (list, tuple)):
-            for det in payload:
-                if isinstance(det, (list, tuple)) and len(det) >= 2:
-                    info = det[1]
-                    if isinstance(info, (list, tuple)) and info:
-                        txt = str(info[0]).strip()
-                        conf = float(info[1]) if len(info) > 1 else 1.0
-                        if txt and conf >= min_conf:
-                            line_texts.append(txt)
-
-    return " ".join(line_texts).strip()
-
-
-def _extract_frames_for_roi(video_path: str, out_dir: str, roi: tuple[float, float, float, float], fps: float) -> list[tuple[float, str]]:
-    os.makedirs(out_dir, exist_ok=True)
-    x1, y1, x2, y2 = roi
-    crop_w = max(0.2, x2 - x1)
-    crop_h = max(0.10, y2 - y1)
-    if crop_w >= 0.98 and crop_h >= 0.98:
-        vf_expr = f"fps={fps},scale=1280:-1"
-    else:
-        vf_expr = f"fps={fps},crop=iw*{crop_w:.3f}:ih*{crop_h:.3f}:iw*{x1:.3f}:ih*{y1:.3f},scale=1280:-1"
-
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-vf", vf_expr, os.path.join(out_dir, "f_%04d.jpg")],
-        capture_output=True,
-        text=True,
-    )
-    interval = 1.0 / max(0.1, float(fps))
-    frames = []
-    for fname in sorted(os.listdir(out_dir)):
-        if not fname.endswith(".jpg"):
-            continue
-        try:
-            idx = int(fname.split("_")[1].split(".")[0])
-        except Exception:
-            idx = len(frames) + 1
-        ts = round((idx - 1) * interval, 2)
-        frames.append((ts, os.path.join(out_dir, fname)))
-    return frames[:45]
-
-
-def run_paddle_ocr(video_path: str, work_dir: str) -> tuple[list[dict], tuple[float, float, float, float]]:
-    embedded = extract_embedded_subtitles(video_path, work_dir)
-    if embedded:
-        return embedded, (0.02, 0.70, 0.98, 0.98)
-
-    if os.environ.get("ENABLE_OCR", "1").strip() == "0":
-        print("[INFO] Đã tắt OCR theo ENABLE_OCR=0.")
-        return [], (0.02, 0.70, 0.98, 0.98)
-
-    candidate_rois = [
-        (0.02, 0.58, 0.98, 0.96),
-        (0.0, 0.0, 1.0, 1.0),
-    ]
-    fps = float(os.environ.get("OCR_FPS", "0.5"))
-    chosen_roi = candidate_rois[0]
-    chosen_mode = "raw"
-    ocr_records = []
-
-    try:
-        ocr_engine = _init_paddle_ocr_engine()
-        active_frames = []
-
-        for idx_roi, roi in enumerate(candidate_rois):
-            roi_dir = os.path.join(work_dir, f"ocr_frames_r{idx_roi}")
-            frames = _extract_frames_for_roi(video_path, roi_dir, roi, fps)
-            if not frames:
+        hits = 0
+        screen_texts = []
+        for ts in sample_times:
+            cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
+            ok, frame = cap.read()
+            if not ok or frame is None:
                 continue
-
-            step = max(1, len(frames) // 6)
-            probe_frames = frames[::step][:6]
-
-            matched_mode = None
-            best_hits = 0
-            for m_name in ("raw", "contrast"):
-                hits = 0
-                for _, p in probe_frames:
-                    t_img = p if m_name == "raw" else _preprocess_hardsub_image(p, m_name)
-                    try:
-                        txt_res = _ocr_single_image(ocr_engine, t_img, min_conf=0.25)
-                    except Exception:
-                        txt_res = ""
-                    if txt_res:
-                        hits += 1
-                if hits > best_hits:
-                    best_hits = hits
-                    matched_mode = m_name
-                if hits >= 2:
-                    break
-
-            print(f"[INFO] [PaddleOCR] ROI {roi} | mode={matched_mode or 'raw'} | hits={best_hits}/{len(probe_frames)} mẫu.")
-            if best_hits > 0 or idx_roi == len(candidate_rois) - 1:
-                chosen_roi = roi
-                chosen_mode = matched_mode or "raw"
-                active_frames = frames
-                break
-
-        for ts, img_path in active_frames:
-            t_img = img_path if chosen_mode == "raw" else _preprocess_hardsub_image(img_path, chosen_mode)
-            try:
-                merged = _ocr_single_image(ocr_engine, t_img, min_conf=0.25)
-            except Exception:
-                merged = ""
-            if merged:
-                ocr_records.append({"time": ts, "text": merged})
-
-        del ocr_engine
-        free_gpu()
-    except Exception as ocr_err:
-        print(f"[WARN] PaddleOCR lỗi: {ocr_err}")
-        free_gpu()
-
-    print(f"[INFO] Khoanh vùng phụ đề ROI chọn: {chosen_roi} (mode={chosen_mode}) → {len(ocr_records)} mốc phụ đề.")
-    return ocr_records, chosen_roi
-
-
-def _clean_ocr_typos(text: str) -> str:
-    replacements = {
-        "绐": "给",
-        "从莱市场": "从菜市场",
-        "莱市场": "菜市场",
-        "别入": "别人",
-        "谈谈": "堂堂",
-        "引信埋名": "隐姓埋名",
-        "匕下": "上下",
-        "落荏": "落在",
-        "陆氐": "陆氏",
-    }
-    cleaned = text
-    for bad, good in replacements.items():
-        cleaned = cleaned.replace(bad, good)
-    return cleaned.strip()
-
-
-def align_and_refine_segments(segments: list[dict], ocr_records: list[dict]) -> list[dict]:
-    refined = []
-    verified_cnt = 0
-
-    sorted_segs = sorted(segments, key=lambda x: float(x.get("start", 0.0)))
-    prev_end = 0.0
-
-    for idx_s, seg in enumerate(sorted_segs):
-        raw_s = max(0.0, float(seg.get("start", 0.0)))
-        raw_e = max(raw_s + 0.5, float(seg.get("end", raw_s + 1.0)))
-
-        s_t = round(max(raw_s, prev_end + 0.04 if idx_s > 0 else raw_s), 2)
-        e_t = round(max(raw_e, s_t + 0.45), 2)
-        prev_end = e_t
-
-        asr_txt = (seg.get("asr_text") or "").strip()
-
-        matched_ocrs = [
-            _clean_ocr_typos(r["text"].strip())
-            for r in ocr_records
-            if (s_t - 0.8) <= float(r["time"]) <= (e_t + 0.8) and r.get("text")
-        ]
-        dedup_ocrs = []
-        for t in matched_ocrs:
-            if t and (not dedup_ocrs or t != dedup_ocrs[-1]):
-                dedup_ocrs.append(t)
-        ocr_txt = " ".join(dedup_ocrs).strip()
-
-        best_txt = asr_txt
-        source_mode = "asr_only"
-        if asr_txt and ocr_txt:
-            ratio = SequenceMatcher(None, asr_txt.lower(), ocr_txt.lower()).ratio()
-            if ratio >= 0.55 and len(ocr_txt) >= int(len(asr_txt) * 0.80):
-                best_txt = ocr_txt
-                source_mode = "ocr_verified"
-                verified_cnt += 1
-            else:
-                best_txt = asr_txt
-                source_mode = "asr_with_ocr_hint"
-        elif ocr_txt and not asr_txt:
-            best_txt = ocr_txt
-            source_mode = "ocr_only"
-            verified_cnt += 1
-
-        item = dict(seg)
-        item["id"] = idx_s
-        item["start"] = s_t
-        item["end"] = e_t
-        item["asr_text"] = asr_txt
-        item["ocr_text"] = ocr_txt
-        item["best_text"] = best_txt
-        item["subtitle_source"] = source_mode
-        refined.append(item)
-
-    print(f"[INFO] Đối chiếu ASR+OCR: {verified_cnt}/{len(refined)} câu đối chiếu OCR.")
-    return refined
-
-
-def run_demucs_and_ref_voices(audio_44k: str, segments: list[dict], work_dir: str) -> tuple[str, dict]:
-    import numpy as np
-    import soundfile as sf
-    import torch
-
-    no_vocals_out = os.path.join(work_dir, "no_vocals.wav")
-    clean_vocals_out = os.path.join(work_dir, "clean_vocals.wav")
-    demucs_out_dir = os.path.join(work_dir, "demucs_out")
-    os.makedirs(demucs_out_dir, exist_ok=True)
-
-    model_name = os.environ.get("DEMUCS_MODEL", "htdemucs_ft").strip() or "htdemucs_ft"
-    shifts = max(1, min(3, int(os.environ.get("DEMUCS_SHIFTS", "1"))))
-
-    cmd = [
-        "demucs",
-        "-n", model_name,
-        "--two-stems", "vocals",
-        "--shifts", str(shifts),
-        "-o", demucs_out_dir,
-        audio_44k,
-    ]
-    if not torch.cuda.is_available():
-        cmd.extend(["-d", "cpu"])
-
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    found_nv = False
-    found_voc = False
-    if res.returncode == 0:
-        for root, _, files in os.walk(demucs_out_dir):
-            if "no_vocals.wav" in files and not found_nv:
-                subprocess.run(
-                    ["ffmpeg", "-y", "-i", os.path.join(root, "no_vocals.wav"), "-ac", "2", "-ar", "44100", no_vocals_out],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                found_nv = True
-            if "vocals.wav" in files and not found_voc:
-                subprocess.run(
-                    ["ffmpeg", "-y", "-i", os.path.join(root, "vocals.wav"), "-ac", "1", "-ar", "24000", clean_vocals_out],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                found_voc = True
-    else:
-        print(f"[WARN] Demucs ({model_name}) gặp lỗi, fallback sang htdemucs: {res.stderr[-400:]}")
-        fb_cmd = ["demucs", "-n", "htdemucs", "--two-stems", "vocals", "-o", demucs_out_dir, audio_44k]
-        if not torch.cuda.is_available():
-            fb_cmd.extend(["-d", "cpu"])
-        subprocess.run(fb_cmd, capture_output=True, text=True)
-        for root, _, files in os.walk(demucs_out_dir):
-            if "no_vocals.wav" in files and not found_nv:
-                subprocess.run(
-                    ["ffmpeg", "-y", "-i", os.path.join(root, "no_vocals.wav"), "-ac", "2", "-ar", "44100", no_vocals_out],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                found_nv = True
-            if "vocals.wav" in files and not found_voc:
-                subprocess.run(
-                    ["ffmpeg", "-y", "-i", os.path.join(root, "vocals.wav"), "-ac", "1", "-ar", "24000", clean_vocals_out],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                found_voc = True
-
-    if not os.path.exists(no_vocals_out):
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", audio_44k, "-ac", "2", "-ar", "44100", no_vocals_out],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-    ref_source_wav = clean_vocals_out if os.path.exists(clean_vocals_out) else audio_44k
-    speaker_refs = {}
-    try:
-        data, sr = sf.read(ref_source_wav)
-        if data.ndim > 1:
-            data = data.mean(axis=-1)
-
-        by_speaker = {}
-        for seg in segments:
-            spk = seg.get("speaker_id", "SPEAKER_00")
-            by_speaker.setdefault(spk, []).append(seg)
-
-        for spk, spk_segs in by_speaker.items():
-            candidates = [s for s in spk_segs if (float(s["end"]) - float(s["start"])) >= 1.5] or spk_segs
-            best_seg = max(
-                candidates,
-                key=lambda x: float(np.sqrt(np.mean(data[int(float(x["start"]) * sr): max(int(float(x["start"]) * sr) + 1, int(float(x["end"]) * sr))] ** 2)))
-                if len(data) > 0 else 0.0,
-                default=None,
-            )
-            if not best_seg:
+            h, w, _ = frame.shape
+            crop = frame[int(h * roi["y1"]):int(h * roi["y2"]), int(w * roi["x1"]):int(w * roi["x2"])]
+            if crop.size == 0:
                 continue
-            start_s = max(0.0, float(best_seg["start"]) + 0.1)
-            end_s = min(len(data) / float(sr), max(start_s + 1.5, min(float(best_seg["end"]) - 0.1, start_s + 6.0)))
-            if end_s > start_s:
-                clip = data[int(start_s * sr): int(end_s * sr)].astype(np.float32)
-                rms = float(np.sqrt(np.mean(clip ** 2)))
-                if rms > 1e-5:
-                    clip = np.clip(clip * (0.08 / rms), -0.95, 0.95)
-                ref_name = f"ref_speaker_{spk}.wav"
-                ref_path = os.path.join(work_dir, ref_name)
-                sf.write(ref_path, clip, sr)
-                f0, gender_hint = estimate_pitch_gender(clip, sr)
-                speaker_refs[spk] = {
-                    "ref_asset": ref_name,
-                    "gender_hint": gender_hint,
-                    "pitch_hz": f0,
-                }
-    except Exception:
-        pass
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            boosted = cv2.convertScaleAbs(gray, alpha=1.6, beta=15)
+            boosted_bgr = cv2.cvtColor(boosted, cv2.COLOR_GRAY2BGR)
 
-    free_gpu()
-    return no_vocals_out, speaker_refs
+            found = _extract_ocr_texts(ocr.ocr(crop)) or _extract_ocr_texts(ocr.ocr(boosted_bgr))
+            if found:
+                hits += 1
+                screen_texts.append({"time": ts, "texts": found})
+
+        cap.release()
+        print(f"[INFO] [PaddleOCR] ROI {tuple(roi.values())} | hits={hits}/{len(sample_times)} mẫu.")
+        return roi, screen_texts
+    except Exception as e:
+        print(f"[WARN] PaddleOCR bỏ qua: {e}")
+        return roi, []
 
 
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
 def main():
+    send_ntfy(f"[Stage 1] {JOB_ID}", f"Bắt đầu nhận diện (ASR + Diarization + OCR + Demucs) cho job {JOB_ID}.", tags="film_frames")
     jobs_data, _ = sync.read_json("state/jobs.json")
-    job = jobs_data.get("jobs", {}).get(JOB_ID)
-    if not job:
-        raise KeyError(f"Không tìm thấy job_id '{JOB_ID}' trong state/jobs.json")
-
-    video_asset = (job.get("video_asset") or job.get("video_url") or "source_input.mp4").strip()
-    send_ntfy(f"[Stage 1] {JOB_ID}", f"Bắt đầu Perception cho job {JOB_ID}.", tags="movie_camera")
+    job_info = (jobs_data.get("jobs") or {}).get(JOB_ID) or {}
+    video_asset = (job_info.get("video_asset") or job_info.get("video_url") or "source_input.mp4").strip()
 
     work_dir = "/kaggle/working/work"
     os.makedirs(work_dir, exist_ok=True)
     video_path = os.path.join(work_dir, "input.mp4")
     audio_16k = os.path.join(work_dir, "audio_16k.wav")
-    audio_44k = os.path.join(work_dir, "audio_44k.wav")
-
-    download_video_source(sync, JOB_ID, video_asset, video_path)
-    if not os.path.exists(video_path) or os.path.getsize(video_path) < 1024:
-        raise RuntimeError(f"File video tải về không hợp lệ hoặc rỗng từ nguồn: {video_asset}")
-
-    ff_res = subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", audio_16k],
-        capture_output=True,
-        text=True,
-    )
-    if ff_res.returncode != 0:
-        raise RuntimeError(f"FFmpeg lỗi (code {ff_res.returncode}):\n{ff_res.stderr[-1500:]}")
-
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "2", "-ar", "44100", audio_44k],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
 
     ensure_deps()
+    download_video_source(sync, JOB_ID, video_asset, video_path)
+    extract_audio_16k(video_path, audio_16k)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        fut_asr = pool.submit(run_whisper_asr, audio_16k)
-        fut_ocr = pool.submit(run_paddle_ocr, video_path, work_dir)
-        raw_segments = fut_asr.result()
-        screen_texts, roi = fut_ocr.result()
+        fut_demucs = pool.submit(separate_vocals_and_bgm, audio_16k, work_dir)
+        fut_ocr = pool.submit(run_ocr_on_video, video_path, work_dir)
+        vocals_wav, bgm_wav = fut_demucs.result()
+        subtitle_roi, screen_texts = fut_ocr.result()
 
-    diarized_segments = apply_speaker_diarization(audio_16k, raw_segments, work_dir)
-    segments = align_and_refine_segments(diarized_segments, screen_texts)
-    no_vocals_path, speaker_refs = run_demucs_and_ref_voices(audio_44k, segments, work_dir)
+    segments = transcribe_with_faster_whisper(vocals_wav)
+    speaker_refs = apply_speaker_diarization(audio_16k, segments, work_dir)
 
-    if os.path.exists(no_vocals_path):
-        sync.upload_asset(JOB_ID, no_vocals_path)
-
-    for fname in sorted(os.listdir(work_dir)):
-        if fname.startswith("ref_speaker_") and fname.endswith(".wav"):
-            sync.upload_asset(JOB_ID, os.path.join(work_dir, fname))
-
-    ocr_summary = "; ".join(f"[{r['time']}s] {r['text']}" for r in screen_texts[:15])
-    scene_context = f"Chữ/phụ đề màn hình: {ocr_summary}" if ocr_summary else ""
+    sync.upload_asset(JOB_ID, bgm_wav)
+    for ref_info in speaker_refs.values():
+        ref_local = os.path.join(work_dir, ref_info["ref_asset"])
+        if os.path.exists(ref_local):
+            sync.upload_asset(JOB_ID, ref_local)
 
     stage1_payload = {
         "job_id": JOB_ID,
         "video_asset": video_asset,
-        "subtitle_roi": {"x1": roi[0], "y1": roi[1], "x2": roi[2], "y2": roi[3]},
+        "subtitle_roi": subtitle_roi,
         "screen_texts": screen_texts,
-        "scene_context": scene_context,
+        "scene_context": "",
         "speaker_refs": speaker_refs,
         "segments": segments,
     }
@@ -994,13 +534,14 @@ def main():
     sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done: {JOB_ID}")
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
-    updated_jobs.setdefault("jobs", {})[JOB_ID]["status"] = "STAGE1_DONE"
-    sync.write_json("state/jobs.json", updated_jobs, f"update status STAGE1_DONE: {JOB_ID}")
+    if JOB_ID in updated_jobs.get("jobs", {}):
+        updated_jobs["jobs"][JOB_ID]["status"] = "STAGE1_DONE"
+        sync.write_json("state/jobs.json", updated_jobs, f"update status STAGE1_DONE: {JOB_ID}")
 
     sync.trigger_dispatch("stage1_completed", {"job_id": JOB_ID})
     send_ntfy(
         f"[Stage 1 Done] {JOB_ID}",
-        f"Hoàn tất {len(segments)} câu, {len(screen_texts)} phụ đề, {len(speaker_refs)} người nói -> sang Stage 2.",
+        f"Hoàn tất {len(segments)} đoạn thoại, {len(speaker_refs)} người nói -> sang Stage 2.",
         tags="white_check_mark",
     )
 
