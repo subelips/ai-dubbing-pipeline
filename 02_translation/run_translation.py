@@ -330,7 +330,7 @@ def _clean_vietnamese_translation(text_vi: str, fallback_src: str = "") -> str:
     txt = re.sub(r"\s+([,.!?;:])", r"\1", txt)
     txt = re.sub(r"\s{2,}", " ", txt).strip()
 
-    txt = re.sub(r"\bMinh Nhu\b", "Minh Dao", txt)
+    txt = re.sub(r"\bMinh (?:Nhu|Dương)\b", "Minh Dao", txt)
     txt = re.sub(r"\bLạc thị\b", "Lục thị", txt, flags=re.IGNORECASE)
 
     if len(txt) < 1 and fallback_src:
@@ -338,89 +338,35 @@ def _clean_vietnamese_translation(text_vi: str, fallback_src: str = "") -> str:
     return txt
 
 
-def _split_utterance_across_segments(utterance_vi: str, seg_list: list[dict]) -> list[str]:
-    if len(seg_list) == 1:
-        return [utterance_vi.strip()]
-
-    durs = [max(0.25, float(s.get("end", 1.0)) - float(s.get("start", 0.0))) for s in seg_list]
-    total_d = sum(durs)
-    words = utterance_vi.strip().split()
-    if len(words) <= len(seg_list):
-        out = []
-        for i in range(len(seg_list)):
-            out.append(words[i] if i < len(words) else words[-1] if words else "")
-        return out
-
-    alloc = []
-    cursor = 0
-    for i, d in enumerate(durs):
-        if i == len(durs) - 1:
-            part = words[cursor:]
-        else:
-            take = max(1, int(round(len(words) * (d / total_d))))
-            remain_after = len(seg_list) - (i + 1)
-            take = min(take, max(1, len(words) - cursor - remain_after))
-            part = words[cursor: cursor + take]
-            cursor += take
-        alloc.append(" ".join(part).strip() or words[-1])
-    return alloc
-
-
-def _build_utterance_groups(segments: list[dict]) -> list[list[dict]]:
-    if not segments:
-        return []
-    groups: list[list[dict]] = []
-    cur: list[dict] = [segments[0]]
-    for seg in segments[1:]:
-        prev = cur[-1]
-        same_spk = seg.get("speaker_id") == prev.get("speaker_id")
-        gap = float(seg.get("start", 0.0)) - float(prev.get("end", 0.0))
-        cur_dur = float(prev.get("end", 0.0)) - float(cur[0].get("start", 0.0))
-        if same_spk and gap <= 1.2 and cur_dur <= 6.5:
-            cur.append(seg)
-        else:
-            groups.append(cur)
-            cur = [seg]
-    groups.append(cur)
-    return groups
-
-
-def _translate_utterance_batch(model, processor, batch_groups: list[list[dict]], scene_context: str, speakers_meta: dict) -> dict[int, str]:
+def _translate_lines_batch(
+    model,
+    processor,
+    batch_items: list[dict],
+    scene_context: str,
+    speakers_meta: dict,
+) -> dict[int, str]:
     import torch
-
-    payload_items = []
-    for g_idx, grp in enumerate(batch_groups):
-        spk_id = grp[0].get("speaker_id", "SPEAKER_00")
-        gender = speakers_meta.get(spk_id, {}).get("gender") or grp[0].get("gender_hint") or "female"
-        s_t = float(grp[0].get("start", 0.0))
-        e_t = float(grp[-1].get("end", s_t + 1.0))
-        merged_src = " ".join((s.get("best_text") or s.get("asr_text") or "").strip() for s in grp).strip()
-        payload_items.append({
-            "utt_id": g_idx,
-            "duration_sec": round(max(0.6, e_t - s_t), 2),
-            "speaker_id": spk_id,
-            "gender": gender,
-            "src_text": merged_src,
-        })
 
     messages = [
         {
             "role": "system",
             "content": (
-                "Bạn là biên kịch lồng tiếng phim tiếng Việt tự nhiên, sát nghĩa, chuẩn xưng hô nhân vật. "
+                "Bạn là biên kịch lồng tiếng phim tiếng Việt. "
+                "Mỗi phần tử trong danh sách là một câu thoại độc lập với đúng thời lượng (duration_sec) và người nói.\n"
                 "Quy tắc bắt buộc:\n"
-                "1) Dịch trọn vẹn từng ý thoại sang tiếng Việt tự nhiên, đủ vế, không bỏ sót ý hay cắt nửa chừng.\n"
-                "2) Xưng hô chuẩn theo giới tính & ngữ cảnh: nếu người nói có gender='male' gọi '老婆' thì dịch là 'Vợ ơi' hoặc 'Em à', tuyệt đối không dịch '老婆' thành 'Chồng ơi'; hạn chế dùng 'bạn - tôi' gượng gạo trong hội thoại gia đình.\n"
-                "3) Thống nhất tên riêng & thuật ngữ: giữ 'Lục thị', 'Hạ thị', 'Ngôn Thần', 'Minh Dao'.\n"
-                "4) Không chèn chữ Hán vào câu dịch tiếng Việt.\n"
-                "Chỉ trả về mảng JSON thuần các object có khóa: utt_id, text_vi."
+                "1) Dịch ĐÚNG từng câu theo id của nó, KHÔNG gộp câu này sang câu khác, KHÔNG kéo dài câu vượt quá thời lượng đọc tự nhiên.\n"
+                "2) Dùng prev_text và next_text chỉ để hiểu ngữ cảnh & xưng hô, tuyệt đối không dịch gộp prev_text/next_text vào text_vi của câu hiện tại.\n"
+                "3) Xưng hô chuẩn: nếu gender='male' gọi '老婆' thì dịch 'Vợ ơi' / 'Em à'; giữa vợ chồng dùng 'anh - em' hoặc 'tôi - anh'; với bố vợ dùng 'bố - con'.\n"
+                "4) Giữ tên riêng 'Lục thị', 'Hạ thị', 'Ngôn Thần', 'Minh Dao'; không chèn chữ Hán.\n"
+                "Chỉ trả về mảng JSON thuần các object có khóa: id, text_vi."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Ngữ cảnh: {scene_context or 'Phim chính kịch gia đình & công sở'}\n"
-                f"Danh sách ý thoại:\n{json.dumps(payload_items, ensure_ascii=False)}"
+                f"Ngữ cảnh: {scene_context or 'Phim gia đình & công sở'}\n"
+                f"Hồ sơ người nói: {json.dumps(speakers_meta, ensure_ascii=False)}\n"
+                f"Danh sách câu cần dịch:\n{json.dumps(batch_items, ensure_ascii=False)}"
             ),
         },
     ]
@@ -431,7 +377,7 @@ def _translate_utterance_batch(model, processor, batch_groups: list[list[dict]],
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.inference_mode():
-        out_ids = model.generate(**inputs, max_new_tokens=1400, do_sample=False)
+        out_ids = model.generate(**inputs, max_new_tokens=1600, do_sample=False)
     trimmed = [out[len(inp):] for inp, out in zip(inputs["input_ids"], out_ids)]
     raw_reply = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
 
@@ -444,8 +390,8 @@ def _translate_utterance_batch(model, processor, batch_groups: list[list[dict]],
         parsed = json.loads(clean_json)
         if isinstance(parsed, list):
             for row in parsed:
-                if isinstance(row, dict) and "utt_id" in row and row.get("text_vi"):
-                    result_map[int(row["utt_id"])] = str(row["text_vi"]).strip()
+                if isinstance(row, dict) and "id" in row and row.get("text_vi"):
+                    result_map[int(row["id"])] = str(row["text_vi"]).strip()
     except Exception:
         pass
     return result_map
@@ -455,75 +401,70 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
     if not segments:
         return [], []
 
-    groups = _build_utterance_groups(segments)
-    utt_translations: dict[int, str] = {}
-
-    batch_size = 5
-    for start_g in range(0, len(groups), batch_size):
-        sub_groups = groups[start_g: start_g + batch_size]
-        got = _translate_utterance_batch(model, processor, sub_groups, scene_context, speakers_meta)
-        for local_i, vi_txt in got.items():
-            utt_translations[start_g + local_i] = vi_txt
-
-    # Dịch bù từng cụm còn thiếu hoặc còn chứa chữ Hán
-    for g_id, grp in enumerate(groups):
-        cur_txt = utt_translations.get(g_id, "")
-        if not cur_txt or _has_cjk(cur_txt):
-            retry_got = _translate_utterance_batch(model, processor, [grp], scene_context, speakers_meta)
-            if 0 in retry_got and retry_got[0].strip():
-                utt_translations[g_id] = retry_got[0].strip()
-
-    utterances_out = []
-    seg_text_map: dict[int, str] = {}
-
-    for g_id, grp in enumerate(groups):
-        spk_id = grp[0].get("speaker_id", "SPEAKER_00")
-        gender = speakers_meta.get(spk_id, {}).get("gender") or grp[0].get("gender_hint") or "female"
-        s_t = float(grp[0].get("start", 0.0))
-        e_t = float(grp[-1].get("end", s_t + 1.0))
-        merged_src = " ".join((s.get("best_text") or s.get("asr_text") or "").strip() for s in grp).strip()
-        raw_vi = utt_translations.get(g_id) or merged_src
-        clean_vi = _clean_vietnamese_translation(raw_vi, merged_src)
-
-        seg_ids = [s.get("id", idx_s) for idx_s, s in enumerate(grp)]
-        utterances_out.append({
-            "id": g_id,
-            "start": s_t,
-            "end": e_t,
-            "speaker_id": spk_id,
-            "gender": gender,
-            "src_text": merged_src,
-            "text_vi": clean_vi,
-            "segment_ids": seg_ids,
-        })
-
-        parts = _split_utterance_across_segments(clean_vi, grp)
-        for s_item, p_txt in zip(grp, parts):
-            seg_text_map[s_item.get("id")] = p_txt
-
-    dub_lines = []
+    prepared_items = []
     for idx_s, s in enumerate(segments):
-        seg_id = s.get("id", idx_s)
+        seg_id = int(s.get("id", idx_s))
         spk_id = s.get("speaker_id", "SPEAKER_00")
-        start_t = float(s.get("start", 0.0))
-        end_t = float(s.get("end", start_t + 1.0))
+        start_t = round(float(s.get("start", 0.0)), 2)
+        end_t = round(float(s.get("end", start_t + 1.0)), 2)
         src_txt = (s.get("best_text") or s.get("asr_text") or "").strip()
         g_out = str(speakers_meta.get(spk_id, {}).get("gender") or s.get("gender_hint") or "female").lower()
         if g_out not in ("male", "female"):
             g_out = "female"
 
-        vi_line = _clean_vietnamese_translation(seg_text_map.get(seg_id) or src_txt, src_txt)
-        dub_lines.append({
+        prev_txt = ((segments[idx_s - 1].get("best_text") or segments[idx_s - 1].get("asr_text") or "").strip()) if idx_s > 0 else ""
+        next_txt = ((segments[idx_s + 1].get("best_text") or segments[idx_s + 1].get("asr_text") or "").strip()) if idx_s + 1 < len(segments) else ""
+
+        prepared_items.append({
             "id": seg_id,
             "start": start_t,
             "end": end_t,
+            "duration_sec": round(max(0.3, end_t - start_t), 2),
             "speaker_id": spk_id,
             "gender": g_out,
+            "prev_text": prev_txt,
             "src_text": src_txt,
-            "text_vi": vi_line,
+            "next_text": next_txt,
         })
 
-    print(f"[INFO] Qwen3-VL dịch hoàn tất {len(utterances_out)} cụm ý → {len(dub_lines)}/{len(segments)} câu thoại.")
+    translations: dict[int, str] = {}
+    batch_size = 8
+    for start_i in range(0, len(prepared_items), batch_size):
+        sub_items = prepared_items[start_i: start_i + batch_size]
+        got = _translate_lines_batch(model, processor, sub_items, scene_context, speakers_meta)
+        translations.update(got)
+
+    # Dịch bù từng câu còn thiếu hoặc còn sót chữ Hán
+    for item in prepared_items:
+        item_id = item["id"]
+        cur = translations.get(item_id, "")
+        if not cur or _has_cjk(cur):
+            retry_got = _translate_lines_batch(model, processor, [item], scene_context, speakers_meta)
+            if item_id in retry_got and retry_got[item_id].strip():
+                translations[item_id] = retry_got[item_id].strip()
+
+    dub_lines = []
+    utterances_out = []
+    for item in prepared_items:
+        item_id = item["id"]
+        src_txt = item["src_text"]
+        vi_line = _clean_vietnamese_translation(translations.get(item_id) or src_txt, src_txt)
+        line_obj = {
+            "id": item_id,
+            "start": item["start"],
+            "end": item["end"],
+            "speaker_id": item["speaker_id"],
+            "gender": item["gender"],
+            "src_text": src_txt,
+            "text_vi": vi_line,
+        }
+        dub_lines.append(line_obj)
+        utterances_out.append({
+            **line_obj,
+            "segment_ids": [item_id],
+        })
+
+    print(f"[INFO] Qwen3-VL dịch giữ nguyên timestamp {len(dub_lines)}/{len(segments)} câu thoại.")
     return utterances_out, dub_lines
 
 
@@ -532,7 +473,7 @@ sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 def main():
     model_name = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen3-VL-4B-Instruct").strip() or "Qwen/Qwen3-VL-4B-Instruct"
-    send_ntfy(f"[Stage 2] {JOB_ID}", f"Bắt đầu dịch với {model_name}.", tags="globe_with_meridians")
+    send_ntfy(f"[Stage 2] {JOB_ID}", f"Bắt đầu dịch giữ timestamp với {model_name}.", tags="globe_with_meridians")
     stage1_data, _ = sync.read_json(f"state/{JOB_ID}_stage1.json")
     segments = stage1_data.get("segments", [])
     prev_context = stage1_data.get("scene_context", "")
@@ -577,7 +518,7 @@ def main():
     sync.trigger_dispatch("stage2_completed", {"job_id": JOB_ID})
     send_ntfy(
         f"[Stage 2 Done] {JOB_ID}",
-        f"Hoàn tất {len(dub_lines)} câu dịch ({model_name}) -> sang Stage 3.",
+        f"Hoàn tất {len(dub_lines)} câu dịch giữ timestamp -> sang Stage 3.",
         tags="white_check_mark",
     )
 
