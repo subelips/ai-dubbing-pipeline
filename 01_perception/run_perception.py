@@ -9,6 +9,7 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
+from difflib import SequenceMatcher
 import gc
 import glob
 import json
@@ -218,12 +219,12 @@ def ensure_deps():
         ("gdown", "gdown"),
         ("paddle", "paddlepaddle"),
         ("paddleocr", "paddleocr"),
+        ("pyannote.audio", "pyannote.audio"),
     ]
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
     if missing:
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=False)
 
-    # Cài runtime CUDA 12 cho ctranslate2 / faster-whisper trên các image CUDA 13
     try:
         ctypes.CDLL("libcublas.so.12")
     except OSError:
@@ -346,6 +347,7 @@ def transcribe_with_faster_whisper(vocals_wav: str) -> list[dict]:
                     "speaker_id": "SPEAKER_00",
                     "gender_hint": "unknown",
                     "pitch_hz": None,
+                    "asr_raw": txt,
                     "asr_text": txt,
                     "ocr_text": "",
                     "best_text": txt,
@@ -371,7 +373,7 @@ def transcribe_with_faster_whisper(vocals_wav: str) -> list[dict]:
 def _estimate_pitch_hz(samples, sr: int) -> float | None:
     import numpy as np
 
-    if samples is None or len(samples) < sr // 4:
+    if samples is None or len(samples) < max(64, sr // 6):
         return None
     s = samples.astype(np.float32)
     s = s - np.mean(s)
@@ -381,21 +383,21 @@ def _estimate_pitch_hz(samples, sr: int) -> float | None:
 
     corr = np.correlate(s, s, mode="full")[len(s) - 1:]
     min_lag = max(1, int(sr / 450.0))
-    max_lag = min(len(corr) - 1, int(sr / 65.0))
+    max_lag = min(len(corr) - 1, int(sr / 75.0))
     if max_lag <= min_lag:
         return None
     window = corr[min_lag:max_lag]
     best_idx = int(np.argmax(window)) + min_lag
-    if corr[0] <= 0 or corr[best_idx] / corr[0] < 0.25:
+    if corr[0] <= 0 or corr[best_idx] / corr[0] < 0.22:
         return None
     return round(float(sr) / float(best_idx), 1)
 
 
-def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: str) -> dict:
+def apply_speaker_diarization(vocals_wav: str, segments: list[dict], work_dir: str) -> dict:
     import numpy as np
     import soundfile as sf
 
-    wav_data, sr = sf.read(audio_16k)
+    wav_data, sr = sf.read(vocals_wav)
     if wav_data.ndim > 1:
         wav_data = wav_data.mean(axis=-1)
 
@@ -410,7 +412,7 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
             pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=hf_token)
             if torch.cuda.is_available():
                 pipeline.to(torch.device("cuda"))
-            diarization = pipeline(audio_16k)
+            diarization = pipeline(vocals_wav)
             ann = getattr(diarization, "speaker_diarization", diarization)
             turns = [(float(turn.start), float(turn.end), str(spk)) for turn, _, spk in ann.itertracks(yield_label=True)]
             del pipeline
@@ -443,6 +445,13 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
         else:
             seg["gender_hint"] = "unknown"
 
+    last_known_g = "male"
+    for seg in segments:
+        if seg["gender_hint"] in ("male", "female"):
+            last_known_g = seg["gender_hint"]
+        else:
+            seg["gender_hint"] = last_known_g
+
     if not used_pyannote:
         cur_spk = "SPEAKER_00"
         prev_g = None
@@ -457,11 +466,8 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
 
     for seg in segments:
         base_spk = str(seg.get("speaker_id", "SPEAKER_00"))
-        g_hint = str(seg.get("gender_hint", "unknown")).lower()
-        if g_hint == "female":
-            seg["speaker_id"] = f"{base_spk}_F"
-        elif g_hint == "male":
-            seg["speaker_id"] = f"{base_spk}_M"
+        g_hint = str(seg.get("gender_hint", "male")).lower()
+        seg["speaker_id"] = f"{base_spk}_F" if g_hint == "female" else f"{base_spk}_M"
 
     speaker_refs = {}
     spk_groups: dict[str, list[tuple[float, float]]] = {}
@@ -487,7 +493,7 @@ def apply_speaker_diarization(audio_16k: str, segments: list[dict], work_dir: st
 
         pitches = [float(s["pitch_hz"]) for s in segments if s["speaker_id"] == spk and s.get("pitch_hz")]
         avg_pitch = round(float(np.mean(pitches)), 1) if pitches else None
-        g_hint = "female" if spk.endswith("_F") else ("male" if spk.endswith("_M") else "unknown")
+        g_hint = "female" if spk.endswith("_F") else "male"
         speaker_refs[spk] = {
             "ref_asset": ref_name,
             "gender_hint": g_hint,
@@ -564,7 +570,7 @@ def _run_ocr_predict(ocr_engine, img) -> list[str]:
         return []
 
 
-def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict]]:
+def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict], object]:
     roi = {"x1": 0.02, "y1": 0.58, "x2": 0.98, "y2": 0.96}
     try:
         import cv2
@@ -592,7 +598,7 @@ def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict]]:
         cap.release()
 
         if not frames_crops:
-            return roi, []
+            return roi, [], None
 
         forced_lang = os.environ.get("OCR_LANG", "").strip()
         if forced_lang:
@@ -642,10 +648,94 @@ def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict]]:
                 screen_texts.append({"time": ts, "texts": found})
 
         print(f"[INFO] [PaddleOCR] lang={best_lang} | ROI {tuple(roi.values())} | hits={hits}/{len(frames_crops)} mẫu.")
-        return roi, screen_texts
+        return roi, screen_texts, ocr
     except Exception as e:
         print(f"[WARN] PaddleOCR bỏ qua: {e}")
-        return roi, []
+        return roi, [], None
+
+
+def _normalize_sub_text(txt: str) -> str:
+    return re.sub(r"[\s\W_]+", "", str(txt or ""), flags=re.UNICODE).lower()
+
+
+def align_ocr_with_segments(video_path: str, roi: dict, ocr_engine, segments: list[dict]):
+    if ocr_engine is None or not segments:
+        return
+    try:
+        import cv2
+
+        cap = cv2.VideoCapture(video_path)
+        corrected = 0
+        ocr_enriched = 0
+
+        for seg in segments:
+            start_t = float(seg.get("start", 0.0))
+            end_t = float(seg.get("end", start_t + 0.5))
+            if end_t <= start_t:
+                end_t = start_t + 0.5
+
+            sample_ts = [
+                start_t + 0.25 * (end_t - start_t),
+                start_t + 0.50 * (end_t - start_t),
+                start_t + 0.75 * (end_t - start_t),
+            ]
+
+            line_counts: dict[str, int] = {}
+            line_order: list[str] = []
+            for ts in sample_ts:
+                cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, ts) * 1000.0)
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    continue
+                h, w, _ = frame.shape
+                crop = frame[int(h * roi["y1"]):int(h * roi["y2"]), int(w * roi["x1"]):int(w * roi["x2"])]
+                if crop.size == 0:
+                    continue
+                found = _run_ocr_predict(ocr_engine, crop)
+                for t in found:
+                    t_clean = " ".join(str(t).split()).strip()
+                    if len(re.findall(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7afA-Za-zÀ-ỹ0-9]", t_clean)) >= 2:
+                        if t_clean not in line_counts:
+                            line_order.append(t_clean)
+                            line_counts[t_clean] = 0
+                        line_counts[t_clean] += 1
+
+            if not line_order:
+                continue
+
+            stable_lines = [ln for ln in line_order if line_counts[ln] >= 2]
+            chosen_lines = stable_lines if stable_lines else [max(line_order, key=len)]
+            ocr_joined = " ".join(chosen_lines).strip()
+            seg["ocr_text"] = ocr_joined
+            ocr_enriched += 1
+
+            asr_orig = (seg.get("asr_text") or "").strip()
+            norm_asr = _normalize_sub_text(asr_orig)
+            norm_ocr = _normalize_sub_text(ocr_joined)
+
+            if norm_ocr and len(norm_ocr) >= 2:
+                ratio = SequenceMatcher(None, norm_asr, norm_ocr).ratio() if norm_asr else 1.0
+                len_ok = (len(norm_ocr) >= max(2, int(len(norm_asr) * 0.55))) and (
+                    len(norm_ocr) <= max(8, int(len(norm_asr) * 1.8))
+                )
+                if len_ok and (ratio >= 0.35 or not norm_asr):
+                    if "asr_raw" not in seg:
+                        seg["asr_raw"] = asr_orig
+                    seg["asr_text"] = ocr_joined
+                    seg["best_text"] = ocr_joined
+                    seg["subtitle_source"] = "ocr_corrected"
+                    corrected += 1
+                else:
+                    seg["best_text"] = asr_orig or ocr_joined
+                    seg["subtitle_source"] = "asr_with_ocr_hint"
+
+        cap.release()
+        print(
+            f"[INFO] Sửa ASR theo OCR: {corrected}/{len(segments)} câu ghi đè trực tiếp, "
+            f"{ocr_enriched}/{len(segments)} câu có dữ liệu OCR."
+        )
+    except Exception as e:
+        print(f"[WARN] Sửa ASR theo OCR bỏ qua: {e}")
 
 
 sync = GitHubSync(GH_REPO, GH_TOKEN)
@@ -670,10 +760,11 @@ def main():
         fut_demucs = pool.submit(separate_vocals_and_bgm, audio_16k, work_dir)
         fut_ocr = pool.submit(run_ocr_on_video, video_path, work_dir)
         vocals_wav, bgm_wav = fut_demucs.result()
-        subtitle_roi, screen_texts = fut_ocr.result()
+        subtitle_roi, screen_texts, ocr_engine = fut_ocr.result()
 
     segments = transcribe_with_faster_whisper(vocals_wav)
-    speaker_refs = apply_speaker_diarization(audio_16k, segments, work_dir)
+    align_ocr_with_segments(video_path, subtitle_roi, ocr_engine, segments)
+    speaker_refs = apply_speaker_diarization(vocals_wav, segments, work_dir)
 
     sync.upload_asset(JOB_ID, bgm_wav)
     for ref_info in speaker_refs.values():
