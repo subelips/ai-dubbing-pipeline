@@ -109,10 +109,35 @@ class GitHubSync:
             r.raise_for_status()
         raise RuntimeError(f"Không thể ghi {path} sau {max_retries} lần thử.")
 
-    def download_asset(self, tag: str, filename: str, dest_path: str):
-        r = requests.get(f"{self.api_base}/releases/tags/{tag}", headers=self.headers, timeout=30)
+    def ensure_release(self, tag: str, name: str | None = None) -> dict:
+        url = f"{self.api_base}/releases/tags/{tag}"
+        r = requests.get(url, headers=self.headers, timeout=30)
+        if r.status_code == 200:
+            return r.json()
+        cr = requests.post(
+            f"{self.api_base}/releases",
+            headers=self.headers,
+            json={"tag_name": tag, "name": name or f"Artifacts - {tag}", "draft": False, "prerelease": False},
+            timeout=30,
+        )
+        cr.raise_for_status()
+        return cr.json()
+
+    def upload_asset(self, tag: str, file_path: str):
+        release = self.ensure_release(tag)
+        upload_url = _clean_url_or_str(release["upload_url"].split("{")[0])
+        filename = os.path.basename(file_path)
+        for asset in release.get("assets", []):
+            if asset["name"] == filename:
+                requests.delete(f"{self.api_base}/releases/assets/{asset['id']}", headers=self.headers, timeout=30)
+        up_headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/octet-stream"}
+        with open(file_path, "rb") as f:
+            r = requests.post(f"{upload_url}?name={filename}", headers=up_headers, data=f.read(), timeout=300)
         r.raise_for_status()
-        release = r.json()
+        return _clean_url_or_str(r.json().get("browser_download_url", ""))
+
+    def download_asset(self, tag: str, filename: str, dest_path: str):
+        release = self.ensure_release(tag)
         for asset in release.get("assets", []):
             if asset["name"] == filename:
                 dl_url = _clean_url_or_str(asset["url"])
@@ -434,7 +459,6 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
         got = _translate_lines_batch(model, processor, sub_items, scene_context, speakers_meta)
         translations.update(got)
 
-    # Dịch bù từng câu còn thiếu hoặc còn sót chữ Hán
     for item in prepared_items:
         item_id = item["id"]
         cur = translations.get(item_id, "")
@@ -468,6 +492,40 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
     return utterances_out, dub_lines
 
 
+def _format_srt_time(seconds: float) -> str:
+    ms_total = max(0, int(round(float(seconds or 0.0) * 1000.0)))
+    hours = ms_total // 3_600_000
+    rem = ms_total % 3_600_000
+    minutes = rem // 60_000
+    rem = rem % 60_000
+    secs = rem // 1000
+    millis = rem % 1000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def export_stage2_srt(dub_lines: list[dict], out_srt_path: str) -> str:
+    blocks = []
+    idx_out = 0
+    for line in dub_lines:
+        txt = (line.get("text_vi") or line.get("src_text") or "").strip()
+        if not txt:
+            continue
+        idx_out += 1
+        start_t = float(line.get("start", 0.0))
+        end_t = max(start_t + 0.25, float(line.get("end", start_t + 0.8)))
+        spk = line.get("speaker_id", "SPEAKER_00")
+        gender = line.get("gender", "unknown")
+        blocks.append(
+            f"{idx_out}\n"
+            f"{_format_srt_time(start_t)} --> {_format_srt_time(end_t)}\n"
+            f"[{spk}/{gender}] {txt}\n"
+        )
+    with open(out_srt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(blocks).strip() + ("\n" if blocks else ""))
+    print(f"[INFO] Đã xuất file kiểm định timestamp Stage 2: {out_srt_path} ({idx_out} dòng)")
+    return out_srt_path
+
+
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
@@ -495,6 +553,10 @@ def main():
     finally:
         del model, processor
         free_gpu()
+
+    srt_s2_path = os.path.join(work_dir, f"{JOB_ID}_stage2.srt")
+    export_stage2_srt(dub_lines, srt_s2_path)
+    sync.upload_asset(JOB_ID, srt_s2_path)
 
     stage2_payload = {
         "job_id": JOB_ID,
