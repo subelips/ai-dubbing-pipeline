@@ -70,7 +70,6 @@ jobs:
               out.write(f"job_id={job_id}\n")
               out.write(f"stage={target_stage}\n")
 
-          # Đảm bảo nhánh pipeline-state và file state/jobs.json tồn tại
           api = f"https://api.github.com/repos/{repo}"
           headers = {
               "Authorization": f"Bearer {token}",
@@ -78,7 +77,7 @@ jobs:
               "X-GitHub-Api-Version": "2022-11-28",
           }
 
-          # Kiểm tra nhánh pipeline-state, tạo nếu chưa có
+          # Tạo nhánh pipeline-state nếu chưa tồn tại
           br = requests.get(f"{api}/git/ref/heads/pipeline-state", headers=headers, timeout=20)
           if br.status_code == 404:
               main_ref = requests.get(f"{api}/git/ref/heads/main", headers=headers, timeout=20)
@@ -126,22 +125,22 @@ jobs:
           if file_sha:
               body["sha"] = file_sha
           requests.put(jobs_url, headers=headers, json=body, timeout=20).raise_for_status()
-          print(f"[INFO] Đã sẵn sàng job={job_id}, stage={target_stage}")
+          print(f"[INFO] Đã cập nhật state/jobs.json: job={job_id}, stage={target_stage}")
           PY
 
       - name: Cài đặt Kaggle CLI
-        run: pip install -q kaggle
+        run: pip install -q --upgrade kaggle
 
       - name: Chuẩn bị script & đẩy Kernel lên Kaggle
         env:
           JOB_ID: ${{ steps.ctx.outputs.job_id }}
           STAGE: ${{ steps.ctx.outputs.stage }}
-          PERCEPTION_KAGGLE_USER: ${{ secrets.PERCEPTION_KAGGLE_USER || secrets.KAGGLE_USERNAME }}
-          PERCEPTION_KAGGLE_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY || secrets.KAGGLE_API_TOKEN }}
-          TRANSLATION_KAGGLE_USER: ${{ secrets.TRANSLATION_KAGGLE_USER || secrets.KAGGLE_USERNAME }}
-          TRANSLATION_KAGGLE_KEY: ${{ secrets.TRANSLATION_KAGGLE_KEY || secrets.KAGGLE_API_TOKEN }}
-          SYNTHESIS_KAGGLE_USER: ${{ secrets.SYNTHESIS_KAGGLE_USER || secrets.KAGGLE_USERNAME }}
-          SYNTHESIS_KAGGLE_KEY: ${{ secrets.SYNTHESIS_KAGGLE_KEY || secrets.KAGGLE_API_TOKEN }}
+          PERCEPTION_KAGGLE_USER: ${{ secrets.PERCEPTION_KAGGLE_USER }}
+          PERCEPTION_KAGGLE_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
+          TRANSLATION_KAGGLE_USER: ${{ secrets.TRANSLATION_KAGGLE_USER }}
+          TRANSLATION_KAGGLE_KEY: ${{ secrets.TRANSLATION_KAGGLE_KEY }}
+          SYNTHESIS_KAGGLE_USER: ${{ secrets.SYNTHESIS_KAGGLE_USER }}
+          SYNTHESIS_KAGGLE_KEY: ${{ secrets.SYNTHESIS_KAGGLE_KEY }}
         run: |
           python3 - << 'PY'
           import json, os, shutil, subprocess
@@ -156,15 +155,28 @@ jobs:
           }
           src_file, slug_suffix, u_key, k_key = stage_map[stage]
           k_user = os.environ.get(u_key, "").strip()
-          k_secret = os.environ.get(k_key, "").strip()
-          if not k_user or not k_secret:
-              raise RuntimeError(f"Thiếu secret Kaggle cho {stage} ({u_key} / {k_key}).")
+          k_val = os.environ.get(k_key, "").strip()
 
-          os.makedirs(os.path.expanduser("~/.kaggle"), exist_ok=True)
-          cred_path = os.path.expanduser("~/.kaggle/kaggle.json")
-          with open(cred_path, "w", encoding="utf-8") as f:
-              json.dump({"username": k_user, "key": k_secret}, f)
-          os.chmod(cred_path, 0o600)
+          if not k_user:
+              raise RuntimeError(f"Thiếu secret username Kaggle cho {stage} ({u_key}).")
+          if not k_val:
+              raise RuntimeError(f"Thiếu secret key/token Kaggle cho {stage} ({k_key}).")
+
+          kaggle_dir = os.path.expanduser("~/.kaggle")
+          os.makedirs(kaggle_dir, exist_ok=True)
+
+          sub_env = os.environ.copy()
+          if k_val.startswith("KGAT"):
+              sub_env["KAGGLE_API_TOKEN"] = k_val
+              tok_path = os.path.join(kaggle_dir, "access_token")
+              with open(tok_path, "w", encoding="utf-8") as f:
+                  f.write(k_val)
+              os.chmod(tok_path, 0o600)
+          else:
+              cred_path = os.path.join(kaggle_dir, "kaggle.json")
+              with open(cred_path, "w", encoding="utf-8") as f:
+                  json.dump({"username": k_user, "key": k_val}, f)
+              os.chmod(cred_path, 0o600)
 
           with open(src_file, "r", encoding="utf-8") as f:
               code = f.read()
@@ -180,7 +192,6 @@ jobs:
           for k, v in replacements.items():
               code = code.replace(k, v)
 
-          # Truyền HF_TOKEN vào đầu script để pyannote.audio & Hugging Face dùng trực tiếp
           hf_tok = os.environ.get("HF_TOKEN", "").strip()
           if hf_tok:
               code = f'import os\nos.environ["HF_TOKEN"] = {json.dumps(hf_tok)}\n' + code
@@ -210,7 +221,11 @@ jobs:
           with open(os.path.join(build_dir, "kernel-metadata.json"), "w", encoding="utf-8") as f:
               json.dump(meta, f, indent=2)
 
-          subprocess.run(["kaggle", "kernels", "push", "-p", build_dir], check=True)
+          res = subprocess.run(["kaggle", "kernels", "push", "-p", build_dir], env=sub_env, capture_output=True, text=True)
+          if res.stdout:
+              print(res.stdout)
+          if res.returncode != 0:
+              raise RuntimeError(f"kaggle kernels push lỗi (code {res.returncode}):\n{res.stderr}")
           print(f"[INFO] Đã đẩy kernel {k_user}/{slug_suffix} cho job {job_id}")
           PY
 
