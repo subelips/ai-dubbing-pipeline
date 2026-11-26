@@ -1,8 +1,13 @@
+import os
+
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import gc
 import json
-import os
 import re
 import subprocess
 import sys
@@ -225,16 +230,24 @@ def clean_bgm_residual_vocals(bgm_in: str, work_dir: str) -> str:
     return bgm_in
 
 
-def init_vieneu_engine():
+def init_vieneu_engine(max_retries: int = 4):
     from vieneu import Vieneu  # type: ignore
 
     mode = os.environ.get("VIENEU_MODE", "").strip()
-    if mode:
+    last_err = None
+    for attempt in range(1, max_retries + 1):
         try:
-            return Vieneu(mode=mode)
-        except Exception:
-            pass
-    return Vieneu()
+            if mode:
+                try:
+                    return Vieneu(mode=mode)
+                except Exception:
+                    pass
+            return Vieneu()
+        except Exception as e:
+            last_err = e
+            print(f"[WARN] Tải/khởi tạo VieNeu-TTS lần {attempt}/{max_retries} gặp lỗi ({e}), thử lại sau {5 * attempt}s...")
+            time.sleep(5 * attempt)
+    raise RuntimeError(f"Không thể khởi tạo VieNeu-TTS sau {max_retries} lần thử: {last_err}")
 
 
 def pick_voice_for_gender(tts_engine, gender: str) -> str | None:
