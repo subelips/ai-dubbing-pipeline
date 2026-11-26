@@ -298,7 +298,7 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
 def _split_and_refine_segments(raw_segments, audio_arr, sr: int) -> list[dict]:
     import numpy as np
 
-    # Tách nhỏ các câu ghép dựa trên word_timestamps (dấu ngắt câu hoặc khoảng lặng >= 0.26s)
+    # Chỉ tách câu tại dấu ngắt câu hoặc khoảng lặng thực sự >= 0.55s để không chẻ vụn từ tiếng Trung
     atomic_items: list[tuple[float, float, str]] = []
     punct_chars = set(",.?!;，。？！；、")
 
@@ -325,8 +325,9 @@ def _split_and_refine_segments(raw_segments, audio_arr, sr: int) -> list[dict]:
             prev_str = (prev_w.word or "").strip()
             gap = float(w.start) - float(prev_w.end)
             ends_with_punct = bool(prev_str) and (prev_str[-1] in punct_chars)
+            cur_chars = len(re.sub(r"[\s\W_]+", "", "".join(x.word for x in cur_words)))
 
-            if (ends_with_punct and gap >= 0.08) or gap >= 0.26:
+            if (ends_with_punct and cur_chars >= 2) or (gap >= 0.55 and cur_chars >= 2):
                 clause_txt = "".join(x.word for x in cur_words).strip(" ,.?!;，。？！；、")
                 if clause_txt:
                     atomic_items.append((float(cur_words[0].start), float(prev_w.end), clause_txt))
@@ -339,15 +340,36 @@ def _split_and_refine_segments(raw_segments, audio_arr, sr: int) -> list[dict]:
             if clause_txt:
                 atomic_items.append((float(cur_words[0].start), float(cur_words[-1].end), clause_txt))
 
+    # Gộp các mảnh đơn âm tiết (1 ký tự) bị tách lẻ vào câu liền kề nếu khoảng cách < 0.6s
+    merged_items: list[tuple[float, float, str]] = []
+    i = 0
+    while i < len(atomic_items):
+        s_t, e_t, txt = atomic_items[i]
+        clean_len = len(re.sub(r"[\s\W_]+", "", txt))
+        if clean_len <= 1 and i + 1 < len(atomic_items):
+            ns_t, ne_t, ntxt = atomic_items[i + 1]
+            if (ns_t - e_t) < 0.65:
+                merged_items.append((s_t, ne_t, f"{txt}{ntxt}"))
+                i += 2
+                continue
+        if clean_len <= 1 and merged_items:
+            ps_t, pe_t, ptxt = merged_items[-1]
+            if (s_t - pe_t) < 0.65:
+                merged_items[-1] = (ps_t, e_t, f"{ptxt}{txt}")
+                i += 1
+                continue
+        merged_items.append((s_t, e_t, txt))
+        i += 1
+
     segments = []
-    for idx, (raw_s, raw_e, txt) in enumerate(atomic_items):
+    for idx, (raw_s, raw_e, txt) in enumerate(merged_items):
         s_t = float(raw_s)
         e_t = float(raw_e)
 
         # Cắt bỏ khoảng lặng đầu/cuối dựa trên năng lượng thực tế của vocals
         i0 = max(0, int(s_t * sr))
         i1 = min(len(audio_arr), int(e_t * sr))
-        if i1 - i0 > int(0.25 * sr):
+        if i1 - i0 > int(0.30 * sr):
             win = max(1, int(0.015 * sr))
             chunk = np.abs(audio_arr[i0:i1])
             peak = float(np.max(chunk)) if len(chunk) > 0 else 0.0
@@ -357,18 +379,18 @@ def _split_and_refine_segments(raw_segments, audio_arr, sr: int) -> list[dict]:
                 if len(active_idx) > 0:
                     trim_s = s_t + max(0.0, (active_idx[0] - win) / float(sr))
                     trim_e = s_t + min((i1 - i0) / float(sr), (active_idx[-1] + win) / float(sr))
-                    if trim_e - trim_s >= 0.22:
+                    if trim_e - trim_s >= 0.25:
                         s_t, e_t = trim_s, trim_e
 
         char_len = max(1, len(re.sub(r"\s+", "", txt)))
-        max_plausible_dur = max(1.3, char_len * 0.42 + 0.5)
+        max_plausible_dur = max(1.4, char_len * 0.42 + 0.5)
         if (e_t - s_t) > max_plausible_dur:
             e_t = s_t + max_plausible_dur
 
         segments.append({
             "id": idx,
             "start": round(s_t, 2),
-            "end": round(max(s_t + 0.22, e_t), 2),
+            "end": round(max(s_t + 0.25, e_t), 2),
             "speaker_id": "SPEAKER_00",
             "gender_hint": "unknown",
             "pitch_hz": None,
@@ -379,11 +401,11 @@ def _split_and_refine_segments(raw_segments, audio_arr, sr: int) -> list[dict]:
             "subtitle_source": "asr_only",
         })
 
-    for i in range(len(segments) - 1):
-        cur_end = segments[i]["end"]
-        nxt_start = segments[i + 1]["start"]
+    for k in range(len(segments) - 1):
+        cur_end = segments[k]["end"]
+        nxt_start = segments[k + 1]["start"]
         if cur_end > nxt_start - 0.04:
-            segments[i]["end"] = round(max(segments[i]["start"] + 0.20, nxt_start - 0.04), 2)
+            segments[k]["end"] = round(max(segments[k]["start"] + 0.22, nxt_start - 0.04), 2)
 
     return segments
 
@@ -429,10 +451,10 @@ def transcribe_with_faster_whisper(vocals_wav: str) -> list[dict]:
                 beam_size=5,
                 word_timestamps=True,
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=200, speech_pad_ms=60),
+                vad_parameters=dict(min_silence_duration_ms=220, speech_pad_ms=70),
             )
             segments = _split_and_refine_segments(list(raw_segments), audio_contiguous, 16000)
-            print(f"[INFO] Faster-Whisper ({model_size}, {device}/{compute_type}) nhận diện {len(segments)} câu thoại chuẩn nhịp.")
+            print(f"[INFO] Faster-Whisper ({model_size}, {device}/{compute_type}) nhận diện {len(segments)} câu thoại trọn ý.")
             break
         except Exception as e:
             last_err = e
@@ -459,7 +481,6 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, "np.ndarray
     if energy < 1e-4:
         return None, None
 
-    # Đo cao độ F0 qua từng khung 40ms có tiếng nói và lấy trung vị (median) để chống nhiễu
     frame_len = max(128, int(0.04 * sr))
     hop = max(64, frame_len // 2)
     min_lag = max(1, int(sr / 450.0))
@@ -523,14 +544,23 @@ def apply_speaker_diarization(vocals_wav: str, segments: list[dict], work_dir: s
         else:
             seg["gender_hint"] = last_known_g
 
-    # Phân cụm giọng nam bằng Agglomerative Clustering trên log-spectrum embedding (tối đa 2 giọng nam)
+    # Làm mượt giới tính cho câu ngắn nằm giữa 2 câu cùng giới tính
+    if len(segments) >= 3:
+        smoothed_g = [s["gender_hint"] for s in segments]
+        for i in range(1, len(segments) - 1):
+            if segments[i - 1]["gender_hint"] == segments[i + 1]["gender_hint"]:
+                dur_i = float(segments[i]["end"]) - float(segments[i]["start"])
+                if dur_i < 1.1 and segments[i]["gender_hint"] != segments[i - 1]["gender_hint"]:
+                    smoothed_g[i] = segments[i - 1]["gender_hint"]
+        for i, g in enumerate(smoothed_g):
+            segments[i]["gender_hint"] = g
+
     male_valid = [(i, embeddings[i]) for i, s in enumerate(segments) if s["gender_hint"] == "male" and embeddings[i] is not None]
     male_cluster_map: dict[int, int] = {}
     if len(male_valid) >= 4:
         mat = np.vstack([e for _, e in male_valid])
         Z = linkage(mat, method="ward")
         labels = fcluster(Z, t=2, criterion="maxclust")
-        # Cụm nào xuất hiện sớm hơn ở đầu video được gán là SPEAKER_00_M (nhân vật chính)
         first_seen: dict[int, int] = {}
         for (seg_idx, _), lbl in zip(male_valid, labels):
             lbl_int = int(lbl)
@@ -593,7 +623,6 @@ def _extract_ocr_texts(ocr_result) -> list[str]:
     if not ocr_result:
         return texts
     for item in ocr_result:
-        # Chuyển đổi object kết quả PaddleX 3.x sang dict nếu cần
         if not isinstance(item, (dict, list, tuple)):
             try:
                 if hasattr(item, "res") and isinstance(item.res, dict):
@@ -636,14 +665,6 @@ def _create_single_ocr_engine(lang: str):
 def _run_ocr_predict(ocr_engine, img) -> list[str]:
     if ocr_engine is None:
         return []
-    # Ưu tiên ocr() truyền thống trước vì trả về list tuple trực tiếp, sau đó mới fallback predict()
-    try:
-        res = ocr_engine.ocr(img)
-        got = _extract_ocr_texts(res)
-        if got:
-            return got
-    except Exception:
-        pass
     try:
         if hasattr(ocr_engine, "predict"):
             res_p = list(ocr_engine.predict(img))
@@ -652,11 +673,34 @@ def _run_ocr_predict(ocr_engine, img) -> list[str]:
                 return got_p
     except Exception:
         pass
+    try:
+        res = ocr_engine.ocr(img)
+        got = _extract_ocr_texts(res)
+        if got:
+            return got
+    except Exception:
+        pass
     return []
 
 
+def _prep_ocr_variants(crop):
+    import cv2
+
+    variants = [crop]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    boosted = cv2.convertScaleAbs(gray, alpha=1.6, beta=15)
+    variants.append(cv2.cvtColor(boosted, cv2.COLOR_GRAY2BGR))
+    # Lọc chữ phụ đề trắng sáng nổi bật
+    _, white_mask = cv2.threshold(gray, 210, 255, cv2.THRESH_BINARY)
+    variants.append(cv2.cvtColor(white_mask, cv2.COLOR_GRAY2BGR))
+    return variants
+
+
 def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict], object]:
-    roi = {"x1": 0.02, "y1": 0.58, "x2": 0.98, "y2": 0.96}
+    roi_candidates = [
+        {"x1": 0.02, "y1": 0.50, "x2": 0.98, "y2": 0.95},
+        {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0},
+    ]
     try:
         import cv2
 
@@ -676,32 +720,47 @@ def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict], 
         duration = total_frames / fps if fps > 0 else 60.0
 
         sample_times = [round(duration * k / 7.0, 2) for k in range(1, 7)]
-        hits = 0
-        screen_texts = []
+        sampled_frames = []
         for ts in sample_times:
             cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
             ok, frame = cap.read()
-            if not ok or frame is None:
-                continue
-            h, w, _ = frame.shape
-            crop = frame[int(h * roi["y1"]):int(h * roi["y2"]), int(w * roi["x1"]):int(w * roi["x2"])]
-            if crop.size == 0:
-                continue
-            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-            boosted = cv2.convertScaleAbs(gray, alpha=1.6, beta=15)
-            boosted_bgr = cv2.cvtColor(boosted, cv2.COLOR_GRAY2BGR)
-
-            found = _run_ocr_predict(ocr, crop) or _run_ocr_predict(ocr, boosted_bgr)
-            if found:
-                hits += 1
-                screen_texts.append({"time": ts, "texts": found})
-
+            if ok and frame is not None:
+                sampled_frames.append((ts, frame))
         cap.release()
-        print(f"[INFO] [PaddleOCR] lang={ocr_lang} | ROI {tuple(roi.values())} | hits={hits}/{len(sample_times)} mẫu.")
-        return roi, screen_texts, ocr
+
+        best_roi = roi_candidates[0]
+        best_hits = -1
+        best_texts: list[dict] = []
+
+        for roi in roi_candidates:
+            hits = 0
+            screen_texts = []
+            for ts, frame in sampled_frames:
+                h, w, _ = frame.shape
+                crop = frame[int(h * roi["y1"]):int(h * roi["y2"]), int(w * roi["x1"]):int(w * roi["x2"])]
+                if crop.size == 0:
+                    continue
+                found = []
+                for img_var in _prep_ocr_variants(crop):
+                    found = _run_ocr_predict(ocr, img_var)
+                    if found:
+                        break
+                if found:
+                    hits += 1
+                    screen_texts.append({"time": ts, "texts": found})
+
+            if hits > best_hits:
+                best_hits = hits
+                best_roi = roi
+                best_texts = screen_texts
+            if hits >= 2:
+                break
+
+        print(f"[INFO] [PaddleOCR] lang={ocr_lang} | ROI {tuple(best_roi.values())} | hits={max(0, best_hits)}/{len(sampled_frames)} mẫu.")
+        return best_roi, best_texts, ocr
     except Exception as e:
         print(f"[WARN] PaddleOCR bỏ qua: {e}")
-        return roi, [], None
+        return roi_candidates[0], [], None
 
 
 def _normalize_sub_text(txt: str) -> str:
@@ -741,11 +800,11 @@ def align_ocr_with_segments(video_path: str, roi: dict, ocr_engine, segments: li
                 crop = frame[int(h * roi["y1"]):int(h * roi["y2"]), int(w * roi["x1"]):int(w * roi["x2"])]
                 if crop.size == 0:
                     continue
-                found = _run_ocr_predict(ocr_engine, crop)
-                if not found:
-                    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-                    boosted_bgr = cv2.cvtColor(cv2.convertScaleAbs(gray, alpha=1.6, beta=15), cv2.COLOR_GRAY2BGR)
-                    found = _run_ocr_predict(ocr_engine, boosted_bgr)
+                found = []
+                for img_var in _prep_ocr_variants(crop):
+                    found = _run_ocr_predict(ocr_engine, img_var)
+                    if found:
+                        break
 
                 for t in found:
                     t_clean = " ".join(str(t).split()).strip()
@@ -813,7 +872,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
             continue
         idx_out += 1
         start_t = float(seg.get("start", 0.0))
-        end_t = max(start_t + 0.22, float(seg.get("end", start_t + 0.8)))
+        end_t = max(start_t + 0.25, float(seg.get("end", start_t + 0.8)))
         spk = seg.get("speaker_id", "SPEAKER_00")
         src_tag = seg.get("subtitle_source", "asr_only")
         blocks.append(
