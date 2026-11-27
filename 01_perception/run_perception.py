@@ -5,13 +5,13 @@ os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
-os.environ.setdefault("ORT_CUDA_CUDNN_CONV_ALGO_SEARCH", "HEURISTIC")
 
 import base64
 from difflib import SequenceMatcher
 import gc
 import json
 import re
+import statistics
 import subprocess
 import sys
 import time
@@ -187,9 +187,9 @@ class GitHubSync:
         r.raise_for_status()
 
 
-def _is_installed(mod_name: str) -> bool:
+def _is_installed(pkg_name: str) -> bool:
     try:
-        __import__(mod_name)
+        __import__(pkg_name)
         return True
     except Exception:
         return False
@@ -199,16 +199,59 @@ def ensure_deps():
     wanted = [
         ("demucs", "demucs"),
         ("soundfile", "soundfile"),
-        ("numpy", "numpy"),
         ("cv2", "opencv-python"),
         ("gdown", "gdown"),
-        ("onnxruntime", "onnxruntime-gpu"),
-        ("rapidocr", "rapidocr"),
         ("pyannote.audio", "pyannote.audio"),
     ]
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
     if missing:
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=False)
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "numpy>=1.26.4,<2.3.0", *missing],
+            check=False,
+        )
+    else:
+        try:
+            import importlib.metadata as ilm
+            np_ver = ilm.version("numpy")
+            major, minor = [int(x) for x in np_ver.split(".")[:2]]
+            if major > 2 or (major == 2 and minor >= 3):
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-q", "--force-reinstall", "numpy>=1.26.4,<2.3.0"],
+                    check=False,
+                )
+        except Exception:
+            pass
+
+
+def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
+    """Tạo venv riêng cho RapidOCR GPU để không xung đột gói với môi trường Kaggle chính."""
+    venv_py = os.path.join(venv_dir, "bin", "python")
+    marker = os.path.join(venv_dir, ".rapidocr_gpu_ready")
+    if os.path.exists(venv_py) and os.path.exists(marker):
+        return venv_py
+
+    if not os.path.exists(venv_py):
+        subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", venv_dir], check=True)
+
+    subprocess.run(
+        [
+            venv_py,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "--upgrade",
+            "pip",
+            "numpy>=1.26.4,<2.3.0",
+            "onnxruntime-gpu",
+            "rapidocr",
+            "opencv-python-headless",
+        ],
+        check=True,
+    )
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write("ok\n")
+    return venv_py
 
 
 def free_gpu():
@@ -295,55 +338,62 @@ def _get_dbnet_config() -> dict:
         "step_sec": max(0.25, float(os.environ.get("OCR_STEP_SEC", "0.35"))),
         "idle_jump_sec": max(0.6, float(os.environ.get("OCR_IDLE_JUMP_SEC", "0.85"))),
         "save_bbox_vis": os.environ.get("SAVE_BBOX_VIS", "0").strip() == "1",
+        "use_cuda": os.environ.get("OCR_USE_CUDA", "1").strip() == "1",
     }
 
 
-def _create_mobile_dbnet_ocr(cfg: dict):
-    from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
+_OCR_VENV_WORKER_CODE = r"""
+import json
+import os
+import re
+import sys
+import cv2
+from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
 
-    want_cuda = os.environ.get("OCR_USE_CUDA", "1").strip() == "1"
-    has_cuda = False
-    if want_cuda:
-        try:
-            import onnxruntime as ort
-            has_cuda = "CUDAExecutionProvider" in ort.get_available_providers()
-        except Exception:
-            has_cuda = False
+req_path = sys.argv[1]
+out_path = sys.argv[2]
 
-    engine_type = EngineType.ONNXRUNTIME
+with open(req_path, "r", encoding="utf-8") as f:
+    req = json.load(f)
+
+cfg = req["cfg"]
+samples = req["samples"]  # list of {"time": float, "crop_path": str}
+min_score = float(cfg.get("min_score", 0.50))
+want_cuda = bool(cfg.get("use_cuda", True))
+
+has_cuda = False
+if want_cuda:
+    try:
+        import onnxruntime as ort
+        has_cuda = "CUDAExecutionProvider" in ort.get_available_providers()
+    except Exception:
+        has_cuda = False
+
+def build_ocr(use_gpu: bool):
     params = {
         "Global.use_cls": False,
-        "Global.text_score": cfg["min_score"],
-        "Det.engine_type": engine_type,
+        "Global.text_score": min_score,
+        "Det.engine_type": EngineType.ONNXRUNTIME,
         "Det.lang_type": LangDet.CH,
         "Det.model_type": ModelType.MOBILE,
         "Det.ocr_version": OCRVersion.PPOCRV5,
-        "Det.thresh": cfg["dbnet_thresh"],
-        "Det.box_thresh": cfg["dbnet_box_thresh"],
-        "Det.unclip_ratio": cfg["dbnet_unclip_ratio"],
-        "Det.limit_side_len": cfg["dbnet_limit_side_len"],
-        "Rec.engine_type": engine_type,
+        "Det.thresh": float(cfg.get("dbnet_thresh", 0.26)),
+        "Det.box_thresh": float(cfg.get("dbnet_box_thresh", 0.46)),
+        "Det.unclip_ratio": float(cfg.get("dbnet_unclip_ratio", 1.70)),
+        "Det.limit_side_len": int(cfg.get("dbnet_limit_side_len", 960)),
+        "Rec.engine_type": EngineType.ONNXRUNTIME,
         "Rec.lang_type": LangRec.CH,
         "Rec.model_type": ModelType.MOBILE,
         "Rec.ocr_version": OCRVersion.PPOCRV5,
-        "EngineConfig.onnxruntime.use_cuda": has_cuda,
+        "EngineConfig.onnxruntime.use_cuda": use_gpu,
     }
+    return RapidOCR(params=params), use_gpu
 
-    try:
-        ocr = RapidOCR(params=params)
-        print(
-            f"[INFO] Đã khởi tạo RapidOCR PP-OCRv5 Mobile + DBNet "
-            f"(use_cuda={has_cuda}, step={cfg['step_sec']}s, idle={cfg['idle_jump_sec']}s, min_score={cfg['min_score']})."
-        )
-        return ocr
-    except Exception as e:
-        print(f"[WARN] Fallback RapidOCR cấu hình gọn do: {e}")
-        return RapidOCR()
+ocr, active_gpu = build_ocr(has_cuda)
+print(f"[VENV-OCR] RapidOCR PP-OCRv5 Mobile + DBNet sẵn sàng (use_cuda={active_gpu}).", flush=True)
 
-
-def _is_valid_subtitle_detection(txt: str, pts: list, crop_w: int, crop_h: int) -> bool:
-    s = str(txt or "").strip()
-    if not s:
+def is_valid_det(txt: str, pts: list, crop_w: int, crop_h: int) -> bool:
+    if not txt:
         return False
     if len(pts) >= 4 and crop_w > 0 and crop_h > 0:
         xs = [p[0] for p in pts]
@@ -354,29 +404,19 @@ def _is_valid_subtitle_detection(txt: str, pts: list, crop_w: int, crop_h: int) 
             return False
     return True
 
-
-def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.50) -> list[dict]:
-    if ocr_engine is None or crop is None:
-        return []
-    try:
-        res = ocr_engine(crop)
-    except Exception:
-        return []
-
+def run_one(engine, crop):
     crop_h, crop_w = crop.shape[:2]
+    res = engine(crop)
     boxes = getattr(res, "boxes", None)
     txts = getattr(res, "txts", None)
     scores = getattr(res, "scores", None)
-
     if boxes is None and isinstance(res, tuple) and len(res) >= 1 and res[0]:
         boxes = [x[0] for x in res[0]]
         txts = [x[1] for x in res[0]]
         scores = [x[2] for x in res[0]]
-
     if not txts:
         return []
-
-    detections: list[dict] = []
+    dets = []
     for i, txt_raw in enumerate(txts):
         txt = str(txt_raw or "").strip()
         sc = float(scores[i]) if (scores is not None and i < len(scores) and scores[i] is not None) else 1.0
@@ -385,7 +425,6 @@ def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.50) -> list[dic
             continue
         if len(clean_chars) < 2 and sc < 0.55:
             continue
-
         pts = []
         if boxes is not None and i < len(boxes) and boxes[i] is not None:
             try:
@@ -395,12 +434,32 @@ def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.50) -> list[dic
                         pts.append([int(round(float(p[0]))), int(round(float(p[1])))])
             except Exception:
                 pts = []
+        if is_valid_det(txt, pts, crop_w, crop_h):
+            dets.append({"poly": pts, "text": txt, "score": round(sc, 3)})
+    return dets
 
-        if not _is_valid_subtitle_detection(txt, pts, crop_w, crop_h):
-            continue
+results = []
+for item in samples:
+    ts = float(item["time"])
+    cp = item["crop_path"]
+    crop = cv2.imread(cp)
+    if crop is None or crop.size == 0:
+        results.append({"time": ts, "boxes": []})
+        continue
+    try:
+        dets = run_one(ocr, crop)
+    except Exception as e:
+        if active_gpu:
+            print(f"[VENV-OCR] GPU lỗi ({e}), chuyển sang CPU trong venv.", flush=True)
+            ocr, active_gpu = build_ocr(False)
+            dets = run_one(ocr, crop)
+        else:
+            dets = []
+    results.append({"time": ts, "boxes": dets})
 
-        detections.append({"poly": pts, "text": txt, "score": round(sc, 3)})
-    return detections
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump({"active_gpu": active_gpu, "results": results}, f, ensure_ascii=False)
+"""
 
 
 def _draw_bbox_visualization(
@@ -455,6 +514,7 @@ def _draw_bbox_visualization(
 def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[dict], str, float]:
     roi = {"x1": 0.02, "y1": 0.55, "x2": 0.98, "y2": 0.97}
     vis_dir = os.path.join(work_dir, "bbox_vis")
+    crops_dir = os.path.join(work_dir, "ocr_crops")
     zip_path = os.path.join(work_dir, f"{JOB_ID}_bbox_vis.zip")
     duration = 60.0
 
@@ -465,8 +525,12 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
         save_vis = db_cfg["save_bbox_vis"]
         if save_vis:
             os.makedirs(vis_dir, exist_ok=True)
+        os.makedirs(crops_dir, exist_ok=True)
 
-        ocr = _create_mobile_dbnet_ocr(db_cfg)
+        venv_py = ensure_ocr_venv("/tmp/ocr_venv")
+        worker_py = os.path.join(work_dir, "_rapidocr_venv_worker.py")
+        with open(worker_py, "w", encoding="utf-8") as f:
+            f.write(_OCR_VENV_WORKER_CODE.lstrip())
 
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
@@ -475,58 +539,83 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
 
         step_sec = db_cfg["step_sec"]
         idle_jump_sec = db_cfg["idle_jump_sec"]
-        min_score = db_cfg["min_score"]
 
-        def _probe_at(t_sec: float):
-            clamped_t = max(0.0, min(duration, float(t_sec)))
-            cap.set(cv2.CAP_PROP_POS_MSEC, clamped_t * 1000.0)
-            ok, frm = cap.read()
-            if not ok or frm is None:
-                return None, []
-            fh, fw, _ = frm.shape
-            crp = frm[int(fh * roi["y1"]):int(fh * roi["y2"]), int(fw * roi["x1"]):int(fw * roi["x2"])]
-            if crp.size == 0:
-                return frm, []
-            return frm, _run_dbnet_ocr_single(ocr, crp, min_score=min_score)
-
+        # Lấy mẫu các mốc thời gian và lưu crop để chạy hàng loạt trong venv
+        sampled_entries = []
         cur_t = round(min(duration * 0.005, 0.2), 2)
+        idx_s = 0
+        while cur_t < duration:
+            cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, min(duration, cur_t)) * 1000.0)
+            ok, frm = cap.read()
+            if ok and frm is not None:
+                fh, fw, _ = frm.shape
+                crp = frm[int(fh * roi["y1"]):int(fh * roi["y2"]), int(fw * roi["x1"]):int(fw * roi["x2"])]
+                if crp.size > 0:
+                    cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{cur_t:.2f}s.jpg")
+                    cv2.imwrite(cp, crp)
+                    sampled_entries.append({"time": cur_t, "crop_path": cp})
+                    idx_s += 1
+            cur_t = round(cur_t + step_sec, 2)
+
+        cap.release()
+
+        req_json = os.path.join(work_dir, "_ocr_req.json")
+        res_json = os.path.join(work_dir, "_ocr_res.json")
+        with open(req_json, "w", encoding="utf-8") as f:
+            json.dump({"cfg": db_cfg, "samples": sampled_entries}, f, ensure_ascii=False)
+
+        proc = subprocess.run([venv_py, worker_py, req_json, res_json], capture_output=True, text=True)
+        if proc.stdout:
+            print(proc.stdout.strip())
+        if proc.returncode != 0:
+            raise RuntimeError(f"Worker RapidOCR trong venv lỗi (code {proc.returncode}): {proc.stderr[-500:]}")
+
+        with open(res_json, "r", encoding="utf-8") as f:
+            raw_ocr_map = {float(x["time"]): (x.get("boxes") or []) for x in json.load(f).get("results", [])}
+
+        # Áp dụng bước nhảy idle khi gặp đoạn lặng liên tiếp để giữ nhịp mốc
+        screen_texts: list[dict] = []
+        vis_files: list[str] = []
         consecutive_empty = 0
         steps_visited = 0
         hits = 0
-        screen_texts: list[dict] = []
-        vis_files: list[str] = []
+        next_allowed_t = 0.0
 
-        while cur_t < duration:
-            steps_visited += 1
-            frame, dets = _probe_at(cur_t)
-            if frame is None:
-                cur_t = round(cur_t + step_sec, 2)
+        cap_vis = cv2.VideoCapture(video_path) if save_vis else None
+        for entry in sampled_entries:
+            ts = float(entry["time"])
+            if ts + 1e-6 < next_allowed_t:
                 continue
-
+            steps_visited += 1
+            dets = raw_ocr_map.get(ts, [])
             texts_found = [d["text"] for d in dets if str(d.get("text") or "").strip()]
 
             if dets or texts_found:
                 hits += 1
                 consecutive_empty = 0
-                vis_name = f"frame_{hits - 1:03d}_{cur_t:.2f}s.jpg"
-                if save_vis:
-                    vis_path = os.path.join(vis_dir, vis_name)
-                    _draw_bbox_visualization(frame, roi, dets, vis_path, cur_t)
-                    if os.path.exists(vis_path):
-                        vis_files.append(vis_path)
+                vis_name = f"frame_{hits - 1:03d}_{ts:.2f}s.jpg"
+                if save_vis and cap_vis is not None:
+                    cap_vis.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
+                    ok_v, frm_v = cap_vis.read()
+                    if ok_v and frm_v is not None:
+                        vp = os.path.join(vis_dir, vis_name)
+                        _draw_bbox_visualization(frm_v, roi, dets, vp, ts)
+                        if os.path.exists(vp):
+                            vis_files.append(vp)
                 screen_texts.append({
-                    "time": cur_t,
+                    "time": ts,
                     "texts": texts_found,
                     "boxes": dets,
                     "vis_image": vis_name if save_vis else "",
                 })
-                cur_t = round(cur_t + step_sec, 2)
+                next_allowed_t = ts + step_sec
             else:
                 consecutive_empty += 1
                 jump = idle_jump_sec if consecutive_empty >= 2 else step_sec
-                cur_t = round(cur_t + jump, 2)
+                next_allowed_t = ts + jump
 
-        cap.release()
+        if cap_vis is not None:
+            cap_vis.release()
 
         if save_vis and vis_files:
             with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -534,12 +623,12 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                     zf.write(vf, arcname=os.path.basename(vf))
 
         print(
-            f"[INFO] [RapidOCR PP-OCRv5 Mobile + DBNet | Step={step_sec}s/Idle={idle_jump_sec}s] "
+            f"[INFO] [RapidOCR venv GPU | Step={step_sec}s/Idle={idle_jump_sec}s] "
             f"mốc đã nhảy qua={steps_visited} | hits={hits}"
         )
         return roi, screen_texts, zip_path if (save_vis and vis_files) else "", duration
     except Exception as e:
-        print(f"[WARN] RapidOCR Mobile / DBNet bỏ qua: {e}")
+        print(f"[WARN] RapidOCR venv bỏ qua: {e}")
         return roi, [], "", duration
 
 
@@ -608,7 +697,7 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
     if samples is None or len(samples) < max(64, sr // 10):
         return None, 0.0
     s = samples.astype(np.float32)
-    s = s - np.mean(s)
+    s = s - float(np.mean(s))
     energy = float(np.sqrt(np.mean(s ** 2)))
     if energy < 1e-4:
         return None, 0.0
@@ -617,16 +706,17 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
     hop = max(64, frame_len // 2)
     min_lag = max(1, int(sr / 450.0))
     max_lag = min(frame_len - 1, int(sr / 75.0))
-    frame_pitches = []
-    centroids = []
+    frame_pitches: list[float] = []
+    centroids: list[float] = []
     freqs = np.fft.rfftfreq(512, d=1.0 / sr)
+    win = np.hanning(frame_len).astype(np.float32)
 
     for start in range(0, len(s) - frame_len + 1, hop):
         fr = s[start: start + frame_len]
         rms = float(np.sqrt(np.mean(fr ** 2)))
         if rms < energy * 0.35:
             continue
-        win_fr = fr * np.hanning(frame_len)
+        win_fr = fr * win
         spec = np.abs(np.fft.rfft(win_fr, n=512))
         s_sum = float(np.sum(spec))
         if s_sum > 1e-6:
@@ -639,13 +729,12 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
             if corr[b_idx] / corr[0] >= 0.28:
                 frame_pitches.append(float(sr) / float(b_idx))
 
-    pitch_med = round(float(np.median(frame_pitches)), 1) if frame_pitches else None
-    cent_med = float(np.median(centroids)) if centroids else 0.0
+    pitch_med = round(float(statistics.median(frame_pitches)), 1) if frame_pitches else None
+    cent_med = float(statistics.median(centroids)) if centroids else 0.0
     return pitch_med, cent_med
 
 
 def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: int, work_dir: str) -> dict | None:
-    """Phân tách người nói bằng pyannote.audio và gán nhãn chuẩn cho từng segment."""
     hf_tok = _clean_url_or_str(os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN)
     if not hf_tok:
         print("[WARN] Thiếu HF_TOKEN cho pyannote.audio, dùng VAD/pitch dự phòng.")
@@ -671,7 +760,8 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
         if torch.cuda.is_available():
             pipeline.to(torch.device("cuda"))
 
-        diarization = pipeline(vocals_wav)
+        waveform_tensor = torch.from_numpy(wav_data.astype(np.float32)).unsqueeze(0)
+        diarization = pipeline({"waveform": waveform_tensor, "sample_rate": int(sr)})
         annotation = getattr(diarization, "speaker_diarization", diarization)
 
         turns: list[tuple[float, float, str]] = []
@@ -690,7 +780,6 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
             if spk_raw not in raw_spk_order:
                 raw_spk_order.append(spk_raw)
 
-        # Tính pitch trung bình từng speaker raw của pyannote để gắn hậu tố _M / _F
         spk_pitches: dict[str, list[float]] = {k: [] for k in raw_spk_order}
         for t0, t1, spk_raw in turns:
             i0 = max(0, int(t0 * sr))
@@ -705,7 +794,7 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
         female_idx = 0
         for spk_raw in raw_spk_order:
             p_list = spk_pitches.get(spk_raw) or []
-            med_p = float(np.median(p_list)) if p_list else None
+            med_p = float(statistics.median(p_list)) if p_list else None
             if med_p is not None and med_p >= 185.0:
                 raw_to_clean[spk_raw] = f"SPEAKER_{female_idx:02d}_F"
                 female_idx += 1
@@ -713,7 +802,6 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
                 raw_to_clean[spk_raw] = f"SPEAKER_{male_idx:02d}_M"
                 male_idx += 1
 
-        # Gán speaker_id cho từng segment theo tổng thời gian giao thoai lớn nhất (hoặc khoảng cách gần nhất)
         for seg in segments:
             s_start = float(seg["start"])
             s_end = float(seg["end"])
@@ -763,7 +851,7 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
             sf.write(ref_path, merged_wav, sr)
 
             pitches = [float(s["pitch_hz"]) for s in segments if s["speaker_id"] == spk and s.get("pitch_hz")]
-            avg_pitch = round(float(np.mean(pitches)), 1) if pitches else None
+            avg_pitch = round(float(statistics.mean(pitches)), 1) if pitches else None
             g_hint = "female" if spk.endswith("_F") else "male"
             speaker_refs[spk] = {
                 "ref_asset": ref_name,
@@ -771,7 +859,7 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
                 "pitch_hz": avg_pitch,
             }
 
-        del pipeline, diarization
+        del pipeline, diarization, waveform_tensor
         free_gpu()
         print(f"[INFO] pyannote.audio ({model_id}) phân tách thành công {len(speaker_refs)} người nói: {list(speaker_refs.keys())}")
         return speaker_refs
@@ -793,7 +881,6 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
         wav_data = wav_data.mean(axis=-1)
     total_dur = len(wav_data) / float(sr)
 
-    # Căn chỉnh biên thời gian theo năng lượng giọng hát/thoại (VAD)
     for idx, seg in enumerate(segments):
         prev_end = float(segments[idx - 1]["end"]) + 0.03 if idx > 0 else 0.0
         next_start = float(segments[idx + 1]["start"]) - 0.03 if idx + 1 < len(segments) else total_dur
@@ -821,7 +908,6 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
     if pyannote_refs is not None:
         return pyannote_refs
 
-    # Dự phòng bằng pitch/centroid nếu không dùng được pyannote
     centroids: list[float] = []
     for seg in segments:
         i0 = max(0, int(float(seg["start"]) * sr))
@@ -865,18 +951,18 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
     for t_idx, idxs in enumerate(male_turns):
         valid_p = [float(segments[k]["pitch_hz"]) for k in idxs if segments[k].get("pitch_hz") and 65.0 <= float(segments[k]["pitch_hz"]) <= 185.0]
         valid_c = [centroids[k] for k in idxs if centroids[k] > 0]
-        p_med = float(np.median(valid_p)) if valid_p else 108.0
-        c_med = float(np.median(valid_c)) if valid_c else 1100.0
+        p_med = float(statistics.median(valid_p)) if valid_p else 108.0
+        c_med = float(statistics.median(valid_c)) if valid_c else 1100.0
         turn_scores.append((t_idx, p_med, c_med))
 
     turn_speaker: dict[int, str] = {}
     if len(turn_scores) >= 2:
         p_vals = np.array([x[1] for x in turn_scores], dtype=np.float32)
         c_vals = np.array([x[2] for x in turn_scores], dtype=np.float32)
-        p_norm = (p_vals - np.mean(p_vals)) / max(1.0, float(np.std(p_vals)))
-        c_norm = (c_vals - np.mean(c_vals)) / max(1.0, float(np.std(c_vals)))
-        combo = 0.65 * p_norm + 0.35 * c_norm
-        split_thr = float(np.median(combo))
+        p_norm = (p_vals - float(np.mean(p_vals))) / max(1.0, float(np.std(p_vals)))
+        c_norm = (c_vals - float(np.mean(c_vals))) / max(1.0, float(np.std(c_vals)))
+        combo = [float(0.65 * p + 0.35 * c) for p, c in zip(p_norm, c_norm)]
+        split_thr = float(statistics.median(combo))
         first_is_low = combo[0] <= split_thr
         for (t_idx, _, _), sc in zip(turn_scores, combo):
             is_low = sc <= split_thr
@@ -918,7 +1004,7 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
         sf.write(ref_path, merged_wav, sr)
 
         pitches = [float(s["pitch_hz"]) for s in segments if s["speaker_id"] == spk and s.get("pitch_hz")]
-        avg_pitch = round(float(np.mean(pitches)), 1) if pitches else None
+        avg_pitch = round(float(statistics.mean(pitches)), 1) if pitches else None
         g_hint = "female" if spk.endswith("_F") else "male"
         speaker_refs[spk] = {
             "ref_asset": ref_name,
@@ -962,7 +1048,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
         blocks.append("1\n00:00:00,000 --> 00:00:01,000\n[NO_OCR_TEXT_DETECTED]\n")
     with open(out_srt_path, "w", encoding="utf-8") as f:
         f.write("\n".join(blocks).strip() + "\n")
-    print(f"[INFO] Đã xuất file SRT Stage 1 (RapidOCR Mobile + DBNet + VAD/pyannote): {out_srt_path} ({idx_out} dòng)")
+    print(f"[INFO] Đã xuất file SRT Stage 1 (RapidOCR venv GPU + VAD/pyannote): {out_srt_path} ({idx_out} dòng)")
     return out_srt_path
 
 
@@ -972,7 +1058,7 @@ sync = GitHubSync(GH_REPO, GH_TOKEN)
 def main():
     send_ntfy(
         f"[Stage 1] {JOB_ID}",
-        f"Bắt đầu nhận diện RapidOCR PP-OCRv5 Mobile + DBNet + VAD/pyannote cho job {JOB_ID}.",
+        f"Bắt đầu nhận diện RapidOCR venv GPU + VAD/pyannote cho job {JOB_ID}.",
         tags="film_frames",
     )
     jobs_data, _ = sync.read_json("state/jobs.json")
@@ -1021,7 +1107,7 @@ def main():
     with open(os.path.join(work_dir, f"{JOB_ID}_stage1.json"), "w", encoding="utf-8") as f:
         json.dump(stage1_payload, f, ensure_ascii=False, indent=2)
 
-    sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done (rapidocr mobile+dbnet+pyannote): {JOB_ID}")
+    sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done (rapidocr venv gpu+pyannote): {JOB_ID}")
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
     if JOB_ID in updated_jobs.get("jobs", {}):
@@ -1031,7 +1117,7 @@ def main():
     sync.trigger_dispatch("stage1_completed", {"job_id": JOB_ID})
     send_ntfy(
         f"[Stage 1 Done] {JOB_ID}",
-        f"Hoàn tất RapidOCR Mobile + DBNet + pyannote ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
+        f"Hoàn tất RapidOCR venv GPU + pyannote ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
         tags="white_check_mark",
     )
 
