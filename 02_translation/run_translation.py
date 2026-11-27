@@ -1,6 +1,9 @@
 import os
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 import base64
 import gc
@@ -171,12 +174,12 @@ def _is_installed(pkg_name: str) -> bool:
 
 def ensure_deps():
     wanted = [
-        ("transformers", "transformers"),
+        ("transformers", "transformers>=4.49.0"),
         ("accelerate", "accelerate"),
         ("PIL", "pillow"),
         ("gdown", "gdown"),
     ]
-    missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
+    missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name.split(".")[0])]
     if missing:
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=False)
 
@@ -234,17 +237,20 @@ def extract_keyframes(video_path: str, work_dir: str) -> list[str]:
     return frames
 
 
-def load_qwen3_vl():
+def load_qwen2_5_vl():
     import torch
-    from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-    model_id = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen3-VL-4B-Instruct").strip() or "Qwen/Qwen3-VL-4B-Instruct"
+    model_id = os.environ.get("QWEN2_5_VL_MODEL", os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen2.5-VL-3B-Instruct")).strip() or "Qwen/Qwen2.5-VL-3B-Instruct"
     use_4bit = os.environ.get("QWEN_VL_4BIT", "0").strip() == "1"
+
+    min_pixels = int(os.environ.get("QWEN_VL_MIN_PIXELS", str(128 * 28 * 28)))
+    max_pixels = int(os.environ.get("QWEN_VL_MAX_PIXELS", str(384 * 28 * 28)))
 
     processor = AutoProcessor.from_pretrained(
         model_id,
-        min_pixels=128 * 28 * 28,
-        max_pixels=320 * 28 * 28,
+        min_pixels=min_pixels,
+        max_pixels=max_pixels,
     )
 
     load_kwargs = {
@@ -263,11 +269,11 @@ def load_qwen3_vl():
             print(f"[INFO] Nạp {model_id} ở chế độ 4-bit NF4.")
         else:
             load_kwargs["dtype"] = torch.float16
-            print(f"[INFO] Nạp {model_id} ở chế độ float16 (không nén 4-bit để giữ chất lượng dịch).")
+            print(f"[INFO] Nạp {model_id} ở chế độ float16.")
     else:
         load_kwargs["dtype"] = torch.float32
 
-    model = Qwen3VLForConditionalGeneration.from_pretrained(model_id, **load_kwargs)
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **load_kwargs)
     model.eval()
     return model, processor
 
@@ -305,7 +311,7 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
 
     messages = [{"role": "user", "content": content}]
     prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = processor(text=[prompt], images=images, return_tensors="pt")
+    inputs = processor(text=[prompt], images=images, padding=True, return_tensors="pt")
     if torch.cuda.is_available():
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
@@ -314,6 +320,8 @@ def label_scene_and_speakers(model, processor, frame_paths: list[str], speaker_r
     trimmed = [out[len(inp):] for inp, out in zip(inputs["input_ids"], out_ids)]
     raw_out = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
 
+    for img in images:
+        img.close()
     del inputs, out_ids, trimmed, images
     free_gpu()
 
@@ -369,8 +377,11 @@ def _translate_lines_batch(
     batch_items: list[dict],
     scene_context: str,
     speakers_meta: dict,
+    screen_texts: list[dict],
 ) -> dict[int, str]:
     import torch
+
+    screen_hints = [str(x.get("texts") or []) for x in (screen_texts or [])[:8] if x.get("texts")]
 
     messages = [
         {
@@ -390,6 +401,7 @@ def _translate_lines_batch(
             "role": "user",
             "content": (
                 f"Ngữ cảnh: {scene_context or 'Phim gia đình & công sở'}\n"
+                f"Chữ phụ đề/màn hình tham chiếu: {json.dumps(screen_hints, ensure_ascii=False)}\n"
                 f"Hồ sơ người nói: {json.dumps(speakers_meta, ensure_ascii=False)}\n"
                 f"Danh sách câu cần dịch:\n{json.dumps(batch_items, ensure_ascii=False)}"
             ),
@@ -397,7 +409,7 @@ def _translate_lines_batch(
     ]
 
     prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = processor(text=[prompt], return_tensors="pt")
+    inputs = processor(text=[prompt], padding=True, return_tensors="pt")
     if torch.cuda.is_available():
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
@@ -422,9 +434,24 @@ def _translate_lines_batch(
     return result_map
 
 
-def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_context: str, speakers_meta: dict) -> tuple[list[dict], list[dict]]:
+def translate_with_qwen2_5_vl(
+    model,
+    processor,
+    segments: list[dict],
+    scene_context: str,
+    speakers_meta: dict,
+    screen_texts: list[dict],
+) -> tuple[list[dict], list[dict]]:
     if not segments:
         return [], []
+
+    def _get_seg_text(s_obj: dict) -> str:
+        return (
+            s_obj.get("best_text")
+            or s_obj.get("asr_text")
+            or s_obj.get("ocr_text")
+            or ""
+        ).strip()
 
     prepared_items = []
     for idx_s, s in enumerate(segments):
@@ -432,13 +459,13 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
         spk_id = s.get("speaker_id", "SPEAKER_00")
         start_t = round(float(s.get("start", 0.0)), 2)
         end_t = round(float(s.get("end", start_t + 1.0)), 2)
-        src_txt = (s.get("best_text") or s.get("asr_text") or "").strip()
+        src_txt = _get_seg_text(s)
         g_out = str(speakers_meta.get(spk_id, {}).get("gender") or s.get("gender_hint") or "female").lower()
         if g_out not in ("male", "female"):
             g_out = "female"
 
-        prev_txt = ((segments[idx_s - 1].get("best_text") or segments[idx_s - 1].get("asr_text") or "").strip()) if idx_s > 0 else ""
-        next_txt = ((segments[idx_s + 1].get("best_text") or segments[idx_s + 1].get("asr_text") or "").strip()) if idx_s + 1 < len(segments) else ""
+        prev_txt = _get_seg_text(segments[idx_s - 1]) if idx_s > 0 else ""
+        next_txt = _get_seg_text(segments[idx_s + 1]) if idx_s + 1 < len(segments) else ""
 
         prepared_items.append({
             "id": seg_id,
@@ -456,14 +483,14 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
     batch_size = 8
     for start_i in range(0, len(prepared_items), batch_size):
         sub_items = prepared_items[start_i: start_i + batch_size]
-        got = _translate_lines_batch(model, processor, sub_items, scene_context, speakers_meta)
+        got = _translate_lines_batch(model, processor, sub_items, scene_context, speakers_meta, screen_texts)
         translations.update(got)
 
     for item in prepared_items:
         item_id = item["id"]
         cur = translations.get(item_id, "")
         if not cur or _has_cjk(cur):
-            retry_got = _translate_lines_batch(model, processor, [item], scene_context, speakers_meta)
+            retry_got = _translate_lines_batch(model, processor, [item], scene_context, speakers_meta, screen_texts)
             if item_id in retry_got and retry_got[item_id].strip():
                 translations[item_id] = retry_got[item_id].strip()
 
@@ -488,7 +515,7 @@ def translate_with_qwen3_vl(model, processor, segments: list[dict], scene_contex
             "segment_ids": [item_id],
         })
 
-    print(f"[INFO] Qwen3-VL dịch giữ nguyên timestamp {len(dub_lines)}/{len(segments)} câu thoại.")
+    print(f"[INFO] Qwen2.5-VL dịch giữ nguyên timestamp {len(dub_lines)}/{len(segments)} câu thoại.")
     return utterances_out, dub_lines
 
 
@@ -530,10 +557,11 @@ sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
 def main():
-    model_name = os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen3-VL-4B-Instruct").strip() or "Qwen/Qwen3-VL-4B-Instruct"
+    model_name = os.environ.get("QWEN2_5_VL_MODEL", os.environ.get("QWEN_VL_MODEL", "Qwen/Qwen2.5-VL-3B-Instruct")).strip() or "Qwen/Qwen2.5-VL-3B-Instruct"
     send_ntfy(f"[Stage 2] {JOB_ID}", f"Bắt đầu dịch giữ timestamp với {model_name}.", tags="globe_with_meridians")
     stage1_data, _ = sync.read_json(f"state/{JOB_ID}_stage1.json")
     segments = stage1_data.get("segments", [])
+    screen_texts = stage1_data.get("screen_texts", [])
     prev_context = stage1_data.get("scene_context", "")
     speaker_refs = stage1_data.get("speaker_refs") or {}
     video_asset = (stage1_data.get("video_asset") or stage1_data.get("video_url") or "source_input.mp4").strip()
@@ -546,10 +574,12 @@ def main():
     fetched = fetch_video_for_labeling(sync, JOB_ID, video_asset, video_path)
     frames = extract_keyframes(fetched, work_dir) if fetched else []
 
-    model, processor = load_qwen3_vl()
+    model, processor = load_qwen2_5_vl()
     try:
         scene_context, speakers_meta = label_scene_and_speakers(model, processor, frames, speaker_refs, prev_context)
-        utterances_out, dub_lines = translate_with_qwen3_vl(model, processor, segments, scene_context, speakers_meta)
+        utterances_out, dub_lines = translate_with_qwen2_5_vl(
+            model, processor, segments, scene_context, speakers_meta, screen_texts
+        )
     finally:
         del model, processor
         free_gpu()
