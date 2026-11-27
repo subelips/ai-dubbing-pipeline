@@ -11,6 +11,7 @@ from difflib import SequenceMatcher
 import gc
 import json
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -224,14 +225,17 @@ def ensure_deps():
 
 
 def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
-    """Tạo venv riêng cho RapidOCR GPU để không xung đột gói với môi trường Kaggle chính."""
+    """Tạo venv cô lập hoàn toàn cho RapidOCR GPU để không xung đột gói với môi trường Kaggle chính."""
     venv_py = os.path.join(venv_dir, "bin", "python")
-    marker = os.path.join(venv_dir, ".rapidocr_gpu_ready")
+    marker = os.path.join(venv_dir, ".rapidocr_gpu_v2_ready")
     if os.path.exists(venv_py) and os.path.exists(marker):
         return venv_py
 
+    if os.path.exists(venv_dir) and not os.path.exists(marker):
+        shutil.rmtree(venv_dir, ignore_errors=True)
+
     if not os.path.exists(venv_py):
-        subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", venv_dir], check=True)
+        subprocess.run([sys.executable, "-m", "venv", venv_dir], check=True)
 
     subprocess.run(
         [
@@ -362,10 +366,12 @@ min_score = float(cfg.get("min_score", 0.50))
 want_cuda = bool(cfg.get("use_cuda", True))
 
 has_cuda = False
+providers = []
 if want_cuda:
     try:
         import onnxruntime as ort
-        has_cuda = "CUDAExecutionProvider" in ort.get_available_providers()
+        providers = ort.get_available_providers()
+        has_cuda = "CUDAExecutionProvider" in providers
     except Exception:
         has_cuda = False
 
@@ -390,7 +396,10 @@ def build_ocr(use_gpu: bool):
     return RapidOCR(params=params), use_gpu
 
 ocr, active_gpu = build_ocr(has_cuda)
-print(f"[VENV-OCR] RapidOCR PP-OCRv5 Mobile + DBNet sẵn sàng (use_cuda={active_gpu}).", flush=True)
+print(
+    f"[VENV-OCR] RapidOCR PP-OCRv5 Mobile + DBNet sẵn sàng (use_cuda={active_gpu}, providers={providers}).",
+    flush=True,
+)
 
 def is_valid_det(txt: str, pts: list, crop_w: int, crop_h: int) -> bool:
     if not txt:
@@ -438,6 +447,7 @@ def run_one(engine, crop):
             dets.append({"poly": pts, "text": txt, "score": round(sc, 3)})
     return dets
 
+gpu_fallback_done = False
 results = []
 for item in samples:
     ts = float(item["time"])
@@ -449,10 +459,14 @@ for item in samples:
     try:
         dets = run_one(ocr, crop)
     except Exception as e:
-        if active_gpu:
-            print(f"[VENV-OCR] GPU lỗi ({e}), chuyển sang CPU trong venv.", flush=True)
+        if active_gpu and not gpu_fallback_done:
+            print(f"[VENV-OCR] GPU lỗi ({e}), chuyển sang CPU 1 lần trong venv.", flush=True)
+            gpu_fallback_done = True
             ocr, active_gpu = build_ocr(False)
-            dets = run_one(ocr, crop)
+            try:
+                dets = run_one(ocr, crop)
+            except Exception:
+                dets = []
         else:
             dets = []
     results.append({"time": ts, "boxes": dets})
@@ -571,7 +585,9 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
             raise RuntimeError(f"Worker RapidOCR trong venv lỗi (code {proc.returncode}): {proc.stderr[-500:]}")
 
         with open(res_json, "r", encoding="utf-8") as f:
-            raw_ocr_map = {float(x["time"]): (x.get("boxes") or []) for x in json.load(f).get("results", [])}
+            res_payload = json.load(f)
+            active_gpu = bool(res_payload.get("active_gpu", False))
+            raw_ocr_map = {float(x["time"]): (x.get("boxes") or []) for x in res_payload.get("results", [])}
 
         # Áp dụng bước nhảy idle khi gặp đoạn lặng liên tiếp để giữ nhịp mốc
         screen_texts: list[dict] = []
@@ -622,12 +638,15 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                 for vf in vis_files:
                     zf.write(vf, arcname=os.path.basename(vf))
 
+        shutil.rmtree(crops_dir, ignore_errors=True)
+
         print(
-            f"[INFO] [RapidOCR venv GPU | Step={step_sec}s/Idle={idle_jump_sec}s] "
+            f"[INFO] [RapidOCR venv (GPU={active_gpu}) | Step={step_sec}s/Idle={idle_jump_sec}s] "
             f"mốc đã nhảy qua={steps_visited} | hits={hits}"
         )
         return roi, screen_texts, zip_path if (save_vis and vis_files) else "", duration
     except Exception as e:
+        shutil.rmtree(crops_dir, ignore_errors=True)
         print(f"[WARN] RapidOCR venv bỏ qua: {e}")
         return roi, [], "", duration
 
