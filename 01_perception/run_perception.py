@@ -1,11 +1,6 @@
 import os
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-os.environ["FLAGS_use_mkldnn"] = "0"
-os.environ["FLAGS_use_onednn"] = "0"
-os.environ["FLAGS_enable_pir_api"] = "0"
-os.environ["FLAGS_enable_pir_in_executor"] = "0"
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
@@ -182,59 +177,15 @@ def _is_installed(pkg_name: str) -> bool:
         return False
 
 
-PADDLE_ISOLATED_DIR = "/kaggle/working/paddle_gpu_libs"
-
-
-def _ensure_paddle_gpu():
-    if os.path.isdir(PADDLE_ISOLATED_DIR) and PADDLE_ISOLATED_DIR not in sys.path:
-        sys.path.insert(0, PADDLE_ISOLATED_DIR)
-
-    need_gpu_install = False
-    try:
-        import paddle
-        if not paddle.device.is_compiled_with_cuda():
-            need_gpu_install = True
-    except Exception:
-        need_gpu_install = True
-
-    if need_gpu_install:
-        print("[INFO] Cài đặt paddlepaddle-gpu vào thư mục cách ly (không ghi đè CUDA/NCCL của PyTorch)...")
-        os.makedirs(PADDLE_ISOLATED_DIR, exist_ok=True)
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "-q",
-                "--no-deps",
-                "--target",
-                PADDLE_ISOLATED_DIR,
-                "paddlepaddle-gpu",
-                "-i",
-                "https://www.paddlepaddle.org.cn/packages/stable/cu126/",
-            ],
-            check=False,
-        )
-        if PADDLE_ISOLATED_DIR not in sys.path:
-            sys.path.insert(0, PADDLE_ISOLATED_DIR)
-
-
 def ensure_deps():
-    # Nạp torch trước để khóa thư viện CUDA/NCCL gốc của PyTorch trên hệ thống
-    try:
-        import torch  # noqa: F401
-    except Exception:
-        pass
-
-    _ensure_paddle_gpu()
     wanted = [
         ("demucs", "demucs"),
         ("soundfile", "soundfile"),
         ("numpy", "numpy"),
         ("cv2", "opencv-python"),
         ("gdown", "gdown"),
-        ("paddleocr", "paddleocr"),
+        ("onnxruntime", "onnxruntime-gpu"),
+        ("rapidocr", "rapidocr"),
     ]
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
     if missing:
@@ -300,11 +251,7 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
 
 
 def _get_dbnet_config() -> dict:
-    det_model = os.environ.get("OCR_DET_MODEL", "PP-OCRv5_mobile_det").strip() or "PP-OCRv5_mobile_det"
-    rec_model = os.environ.get("OCR_REC_MODEL", "PP-OCRv5_mobile_rec").strip() or "PP-OCRv5_mobile_rec"
     return {
-        "det_model": det_model,
-        "rec_model": rec_model,
         "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.30")),
         "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.50")),
         "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.60")),
@@ -312,197 +259,90 @@ def _get_dbnet_config() -> dict:
         "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.65")),
         "step_sec": max(0.4, float(os.environ.get("OCR_STEP_SEC", "0.8"))),
         "idle_jump_sec": max(1.0, float(os.environ.get("OCR_IDLE_JUMP_SEC", "2.4"))),
-        "batch_size": max(1, min(16, int(os.environ.get("OCR_BATCH_SIZE", "8")))),
         "save_bbox_vis": os.environ.get("SAVE_BBOX_VIS", "0").strip() == "1",
     }
 
 
-def _create_mobile_dbnet_ocr(lang: str, cfg: dict):
-    if os.path.isdir(PADDLE_ISOLATED_DIR) and PADDLE_ISOLATED_DIR not in sys.path:
-        sys.path.insert(0, PADDLE_ISOLATED_DIR)
+def _create_mobile_dbnet_ocr(cfg: dict):
+    from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
 
-    import paddle
-    from paddleocr import PaddleOCR
-
+    has_cuda = False
     try:
-        paddle.set_flags({"FLAGS_use_mkldnn": False, "FLAGS_use_onednn": False, "FLAGS_enable_pir_api": False})
+        import onnxruntime as ort
+        has_cuda = "CUDAExecutionProvider" in ort.get_available_providers()
     except Exception:
-        pass
+        has_cuda = False
 
-    use_gpu = False
+    engine_type = EngineType.ONNXRUNTIME
+    params = {
+        "Global.use_cls": False,
+        "Global.text_score": cfg["min_score"],
+        "Det.engine_type": engine_type,
+        "Det.lang_type": LangDet.CH,
+        "Det.model_type": ModelType.MOBILE,
+        "Det.ocr_version": OCRVersion.PPOCRV5,
+        "Det.thresh": cfg["dbnet_thresh"],
+        "Det.box_thresh": cfg["dbnet_box_thresh"],
+        "Det.unclip_ratio": cfg["dbnet_unclip_ratio"],
+        "Det.limit_side_len": cfg["dbnet_limit_side_len"],
+        "Rec.engine_type": engine_type,
+        "Rec.lang_type": LangRec.CH,
+        "Rec.model_type": ModelType.MOBILE,
+        "Rec.ocr_version": OCRVersion.PPOCRV5,
+    }
+    if has_cuda:
+        params["EngineConfig.onnxruntime.use_cuda"] = True
+
     try:
-        use_gpu = bool(paddle.device.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0)
-    except Exception:
-        use_gpu = False
-
-    if use_gpu:
-        paddle.set_device("gpu:0")
-    device_str = "gpu:0" if use_gpu else "cpu"
-
-    candidate_kwargs = [
-        dict(
-            device=device_str,
-            enable_mkldnn=False,
-            text_detection_model_name=cfg["det_model"],
-            text_recognition_model_name=cfg["rec_model"],
-            text_det_thresh=cfg["dbnet_thresh"],
-            text_det_box_thresh=cfg["dbnet_box_thresh"],
-            text_det_unclip_ratio=cfg["dbnet_unclip_ratio"],
-            text_det_limit_side_len=cfg["dbnet_limit_side_len"],
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-        ),
-        dict(
-            device=device_str,
-            enable_mkldnn=False,
-            text_detection_model_name=cfg["det_model"],
-            text_recognition_model_name=cfg["rec_model"],
-            text_det_thresh=cfg["dbnet_thresh"],
-            text_det_box_thresh=cfg["dbnet_box_thresh"],
-            text_det_unclip_ratio=cfg["dbnet_unclip_ratio"],
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-        ),
-        dict(
-            device=device_str,
-            enable_mkldnn=False,
-            lang=lang,
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-        ),
-        dict(
-            device=device_str,
-            lang=lang,
-        ),
-    ]
-
-    last_err = None
-    for kw in candidate_kwargs:
-        try:
-            eng = PaddleOCR(**kw)
-            print(f"[INFO] Đã khởi tạo PaddleOCR mobile với device={device_str}, compiled_cuda={use_gpu}.")
-            return eng
-        except (TypeError, ValueError) as e:
-            last_err = e
-            continue
-    if last_err is not None:
-        print(f"[WARN] Dùng cấu hình PaddleOCR mặc định do: {last_err}")
-    return PaddleOCR(device=device_str, lang=lang)
-
-
-def _parse_single_ocr_item(item, min_score: float = 0.65) -> list[dict]:
-    detections: list[dict] = []
-    if not item:
-        return detections
-
-    res_obj = item
-    if not isinstance(res_obj, dict):
-        for getter in (
-            lambda x: x.res,
-            lambda x: x.json() if callable(getattr(x, "json", None)) else getattr(x, "json", None),
-        ):
-            try:
-                val = getter(res_obj)
-                if isinstance(val, dict):
-                    res_obj = val.get("res", val)
-                    break
-            except Exception:
-                continue
-
-    if isinstance(res_obj, dict):
-        polys = res_obj.get("dt_polys")
-        if polys is None:
-            polys = res_obj.get("rec_polys")
-        if polys is None:
-            polys = res_obj.get("rec_boxes")
-        if polys is None:
-            polys = []
-
-        rec_texts = res_obj.get("rec_texts") or []
-        rec_scores = res_obj.get("rec_scores") or []
-
-        count = max(len(polys), len(rec_texts))
-        for i in range(count):
-            poly_raw = polys[i] if i < len(polys) else None
-            txt = str(rec_texts[i]).strip() if i < len(rec_texts) else ""
-            sc = float(rec_scores[i]) if i < len(rec_scores) and rec_scores[i] is not None else 1.0
-            clean_chars = re.sub(r"[\s\W_]+", "", txt, flags=re.UNICODE)
-            min_len = 1 if (sc >= 0.85 and re.search(r"[\u4e00-\u9fff]", clean_chars)) else 2
-            if sc < min_score or len(clean_chars) < min_len:
-                continue
-
-            pts = []
-            if poly_raw is not None:
-                try:
-                    arr = poly_raw.tolist() if hasattr(poly_raw, "tolist") else list(poly_raw)
-                    if len(arr) == 4 and all(isinstance(v, (int, float)) for v in arr):
-                        x1, y1, x2, y2 = arr
-                        pts = [[int(x1), int(y1)], [int(x2), int(y1)], [int(x2), int(y2)], [int(x1), int(y2)]]
-                    else:
-                        for p in arr:
-                            if len(p) >= 2:
-                                pts.append([int(round(float(p[0]))), int(round(float(p[1])))])
-                except Exception:
-                    pts = []
-
-            detections.append({"poly": pts, "text": txt, "score": round(sc, 3)})
-        return detections
-
-    if isinstance(item, (list, tuple)):
-        for entry in item:
-            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                raw_box = entry[0]
-                info = entry[1]
-                txt = str(info[0]).strip() if isinstance(info, (list, tuple)) and info else ""
-                sc = float(info[1]) if isinstance(info, (list, tuple)) and len(info) >= 2 else 1.0
-                clean_chars = re.sub(r"[\s\W_]+", "", txt, flags=re.UNICODE)
-                min_len = 1 if (sc >= 0.85 and re.search(r"[\u4e00-\u9fff]", clean_chars)) else 2
-                if sc < min_score or len(clean_chars) < min_len:
-                    continue
-                pts = []
-                try:
-                    for p in raw_box:
-                        if len(p) >= 2:
-                            pts.append([int(round(float(p[0]))), int(round(float(p[1])))])
-                except Exception:
-                    pts = []
-                detections.append({"poly": pts, "text": txt, "score": round(sc, 3)})
-
-    return detections
-
-
-def _run_dbnet_ocr_batch(ocr_engine, crops: list, min_score: float = 0.65) -> list[list[dict]]:
-    if ocr_engine is None or not crops:
-        return [[] for _ in crops]
-    try:
-        if hasattr(ocr_engine, "predict"):
-            res_p = list(ocr_engine.predict(crops))
-            if len(res_p) == len(crops):
-                return [_parse_single_ocr_item(it, min_score=min_score) for it in res_p]
-            if res_p:
-                out = [[] for _ in crops]
-                for it in res_p:
-                    idx_it = 0
-                    if isinstance(it, dict) and "input_path" not in it and "index" in it:
-                        idx_it = int(it["index"])
-                    if 0 <= idx_it < len(out):
-                        out[idx_it].extend(_parse_single_ocr_item(it, min_score=min_score))
-                if any(out):
-                    return out
+        ocr = RapidOCR(params=params)
+        print(f"[INFO] Đã khởi tạo RapidOCR PP-OCRv5 Mobile + DBNet (use_cuda={has_cuda}).")
+        return ocr
     except Exception as e:
-        print(f"[WARN] DBNet mobile batch predict lỗi: {e}")
+        print(f"[WARN] Fallback RapidOCR cấu hình gọn do: {e}")
+        return RapidOCR()
 
-    results = []
-    for c in crops:
-        try:
-            r = ocr_engine.ocr(c)
-            results.append(_parse_single_ocr_item(r, min_score=min_score))
-        except Exception:
-            results.append([])
-    return results
+
+def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.65) -> list[dict]:
+    if ocr_engine is None or crop is None:
+        return []
+    try:
+        res = ocr_engine(crop)
+    except Exception:
+        return []
+
+    boxes = getattr(res, "boxes", None)
+    txts = getattr(res, "txts", None)
+    scores = getattr(res, "scores", None)
+
+    if boxes is None and isinstance(res, tuple) and len(res) >= 1 and res[0]:
+        boxes = [x[0] for x in res[0]]
+        txts = [x[1] for x in res[0]]
+        scores = [x[2] for x in res[0]]
+
+    if not txts:
+        return []
+
+    detections: list[dict] = []
+    for i, txt_raw in enumerate(txts):
+        txt = str(txt_raw or "").strip()
+        sc = float(scores[i]) if (scores is not None and i < len(scores) and scores[i] is not None) else 1.0
+        clean_chars = re.sub(r"[\s\W_]+", "", txt, flags=re.UNICODE)
+        min_len = 1 if (sc >= 0.85 and re.search(r"[\u4e00-\u9fff]", clean_chars)) else 2
+        if sc < min_score or len(clean_chars) < min_len:
+            continue
+
+        pts = []
+        if boxes is not None and i < len(boxes) and boxes[i] is not None:
+            try:
+                arr = boxes[i].tolist() if hasattr(boxes[i], "tolist") else list(boxes[i])
+                for p in arr:
+                    if len(p) >= 2:
+                        pts.append([int(round(float(p[0]))), int(round(float(p[1])))])
+            except Exception:
+                pts = []
+
+        detections.append({"poly": pts, "text": txt, "score": round(sc, 3)})
+    return detections
 
 
 def _draw_bbox_visualization(
@@ -568,25 +408,7 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
         if save_vis:
             os.makedirs(vis_dir, exist_ok=True)
 
-        forced_lang = os.environ.get("OCR_LANG", "").strip()
-        if forced_lang:
-            ocr_lang = forced_lang
-        else:
-            src_lang = os.environ.get("SOURCE_LANG", "zh").strip().lower()
-            lang_map = {
-                "zh": "ch",
-                "cn": "ch",
-                "ch": "ch",
-                "ja": "japan",
-                "jp": "japan",
-                "ko": "korean",
-                "kr": "korean",
-                "vi": "vi",
-                "en": "en",
-            }
-            ocr_lang = lang_map.get(src_lang, "ch")
-
-        ocr = _create_mobile_dbnet_ocr(ocr_lang, db_cfg)
+        ocr = _create_mobile_dbnet_ocr(db_cfg)
 
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
@@ -596,65 +418,75 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
         step_sec = db_cfg["step_sec"]
         idle_jump_sec = db_cfg["idle_jump_sec"]
         min_score = db_cfg["min_score"]
-        batch_size = db_cfg["batch_size"]
 
-        jump_times: list[float] = []
-        t_cursor = round(min(duration * 0.01, 0.4), 2)
-        while t_cursor < duration:
-            jump_times.append(t_cursor)
-            t_cursor = round(t_cursor + step_sec, 2)
+        def _probe_at(t_sec: float):
+            cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, t_sec) * 1000.0)
+            ok, frm = cap.read()
+            if not ok or frm is None:
+                return None, []
+            fh, fw, _ = frm.shape
+            crp = frm[int(fh * roi["y1"]):int(fh * roi["y2"]), int(fw * roi["x1"]):int(fw * roi["x2"])]
+            if crp.size == 0:
+                return frm, []
+            return frm, _run_dbnet_ocr_single(ocr, crp, min_score=min_score)
 
+        cur_t = round(min(duration * 0.01, 0.4), 2)
+        consecutive_empty = 0
+        last_jump = step_sec
+        steps_visited = 0
         hits = 0
         screen_texts: list[dict] = []
         vis_files: list[str] = []
-        consecutive_empty = 0
-        idx_t = 0
 
-        while idx_t < len(jump_times):
-            batch_ts: list[float] = []
-            while idx_t < len(jump_times) and len(batch_ts) < batch_size:
-                ts_val = jump_times[idx_t]
-                if consecutive_empty >= 2 and batch_ts:
-                    idx_t += 1
-                    consecutive_empty = 0
-                    continue
-                batch_ts.append(ts_val)
-                idx_t += 1
-
-            sampled = []
-            for ts in batch_ts:
-                cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    continue
-                fh, fw, _ = frame.shape
-                crop = frame[int(fh * roi["y1"]):int(fh * roi["y2"]), int(fw * roi["x1"]):int(fw * roi["x2"])]
-                if crop.size > 0:
-                    sampled.append((ts, frame, crop))
-
-            if not sampled:
+        while cur_t < duration:
+            steps_visited += 1
+            frame, dets = _probe_at(cur_t)
+            if frame is None:
+                cur_t = round(cur_t + step_sec, 2)
                 continue
 
-            batch_dets = _run_dbnet_ocr_batch(ocr, [x[2] for x in sampled], min_score=min_score)
-            for (ts, frame, _), dets in zip(sampled, batch_dets):
-                texts_found = [d["text"] for d in dets if str(d.get("text") or "").strip()]
-                if dets or texts_found:
-                    hits += 1
-                    consecutive_empty = 0
-                    vis_name = f"frame_{hits - 1:03d}_{ts:.2f}s.jpg"
-                    if save_vis:
-                        vis_path = os.path.join(vis_dir, vis_name)
-                        _draw_bbox_visualization(frame, roi, dets, vis_path, ts)
-                        if os.path.exists(vis_path):
-                            vis_files.append(vis_path)
-                    screen_texts.append({
-                        "time": ts,
-                        "texts": texts_found,
-                        "boxes": dets,
-                        "vis_image": vis_name if save_vis else "",
-                    })
-                else:
-                    consecutive_empty += 1
+            texts_found = [d["text"] for d in dets if str(d.get("text") or "").strip()]
+
+            if dets or texts_found:
+                if last_jump > step_sec * 1.3 and (cur_t - step_sec) > 0.2:
+                    back_t = round(cur_t - step_sec, 2)
+                    steps_visited += 1
+                    b_frame, b_dets = _probe_at(back_t)
+                    b_texts = [d["text"] for d in b_dets if str(d.get("text") or "").strip()]
+                    if b_texts:
+                        hits += 1
+                        vis_name_b = f"frame_{hits - 1:03d}_{back_t:.2f}s.jpg"
+                        if save_vis and b_frame is not None:
+                            vp_b = os.path.join(vis_dir, vis_name_b)
+                            _draw_bbox_visualization(b_frame, roi, b_dets, vp_b, back_t)
+                            vis_files.append(vp_b)
+                        screen_texts.append({
+                            "time": back_t,
+                            "texts": b_texts,
+                            "boxes": b_dets,
+                            "vis_image": vis_name_b if save_vis else "",
+                        })
+
+                hits += 1
+                consecutive_empty = 0
+                vis_name = f"frame_{hits - 1:03d}_{cur_t:.2f}s.jpg"
+                if save_vis:
+                    vis_path = os.path.join(vis_dir, vis_name)
+                    _draw_bbox_visualization(frame, roi, dets, vis_path, cur_t)
+                    if os.path.exists(vis_path):
+                        vis_files.append(vis_path)
+                screen_texts.append({
+                    "time": cur_t,
+                    "texts": texts_found,
+                    "boxes": dets,
+                    "vis_image": vis_name if save_vis else "",
+                })
+                last_jump = step_sec
+                cur_t = round(cur_t + step_sec, 2)
+            else:
+                consecutive_empty += 1
+                last_jump = idle_jump_sec if consecutive_empty >= 2 else step_sec
+                cur_t = round(cur_t + last_jump, 2)
 
         cap.release()
 
@@ -664,13 +496,12 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                     zf.write(vf, arcname=os.path.basename(vf))
 
         print(
-            f"[INFO] [PaddleOCR Mobile + DBNet GPU Batch={batch_size} | JumpStep={step_sec}s/Idle={idle_jump_sec}s] "
-            f"lang={ocr_lang} det={db_cfg['det_model']} rec={db_cfg['rec_model']} "
-            f"| mốc nhảy={len(jump_times)} | hits={hits}"
+            f"[INFO] [RapidOCR PP-OCRv5 Mobile + DBNet | JumpStep={step_sec}s/Idle={idle_jump_sec}s] "
+            f"mốc đã nhảy qua={steps_visited} | hits={hits}"
         )
         return roi, screen_texts, zip_path if (save_vis and vis_files) else "", duration
     except Exception as e:
-        print(f"[WARN] PaddleOCR Mobile / DBNet bỏ qua: {e}")
+        print(f"[WARN] RapidOCR Mobile / DBNet bỏ qua: {e}")
         return roi, [], "", duration
 
 
@@ -715,7 +546,7 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
             "asr_text": "",
             "ocr_text": joined,
             "best_text": joined,
-            "subtitle_source": "ocr_mobile_dbnet_jump_gpu",
+            "subtitle_source": "rapidocr_mobile_dbnet_jump",
             "boxes": item.get("boxes") or [],
             "vis_image": item.get("vis_image") or "",
         })
@@ -936,7 +767,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
         start_t = float(seg.get("start", 0.0))
         end_t = max(start_t + 0.25, float(seg.get("end", start_t + 0.8)))
         spk = seg.get("speaker_id", "SPEAKER_00")
-        src_tag = seg.get("subtitle_source", "ocr_mobile_dbnet_jump_gpu")
+        src_tag = seg.get("subtitle_source", "rapidocr_mobile_dbnet_jump")
         blocks.append(
             f"{idx_out}\n"
             f"{_format_srt_time(start_t)} --> {_format_srt_time(end_t)}\n"
@@ -946,7 +777,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
         blocks.append("1\n00:00:00,000 --> 00:00:01,000\n[NO_OCR_TEXT_DETECTED]\n")
     with open(out_srt_path, "w", encoding="utf-8") as f:
         f.write("\n".join(blocks).strip() + "\n")
-    print(f"[INFO] Đã xuất file SRT Stage 1 (GPU Batch Jump OCR + VAD): {out_srt_path} ({idx_out} dòng)")
+    print(f"[INFO] Đã xuất file SRT Stage 1 (RapidOCR Mobile + DBNet + VAD): {out_srt_path} ({idx_out} dòng)")
     return out_srt_path
 
 
@@ -956,7 +787,7 @@ sync = GitHubSync(GH_REPO, GH_TOKEN)
 def main():
     send_ntfy(
         f"[Stage 1] {JOB_ID}",
-        f"Bắt đầu nhận diện GPU Batch Jump OCR (PaddleOCR Mobile + DBNet + VAD, bỏ ASR) cho job {JOB_ID}.",
+        f"Bắt đầu nhận diện RapidOCR PP-OCRv5 Mobile + DBNet + VAD (bỏ ASR) cho job {JOB_ID}.",
         tags="film_frames",
     )
     jobs_data, _ = sync.read_json("state/jobs.json")
@@ -993,7 +824,7 @@ def main():
         "job_id": JOB_ID,
         "video_asset": video_asset,
         "asr_enabled": False,
-        "ocr_engine": "paddleocr_mobile_dbnet_jump_gpu",
+        "ocr_engine": "rapidocr_mobile_dbnet_jump",
         "ocr_step_sec": step_sec,
         "subtitle_roi": subtitle_roi,
         "screen_texts": screen_texts,
@@ -1005,7 +836,7 @@ def main():
     with open(os.path.join(work_dir, f"{JOB_ID}_stage1.json"), "w", encoding="utf-8") as f:
         json.dump(stage1_payload, f, ensure_ascii=False, indent=2)
 
-    sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done (gpu jump ocr): {JOB_ID}")
+    sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done (rapidocr mobile+dbnet): {JOB_ID}")
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
     if JOB_ID in updated_jobs.get("jobs", {}):
@@ -1015,7 +846,7 @@ def main():
     sync.trigger_dispatch("stage1_completed", {"job_id": JOB_ID})
     send_ntfy(
         f"[Stage 1 Done] {JOB_ID}",
-        f"Hoàn tất GPU Jump OCR + VAD ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
+        f"Hoàn tất RapidOCR Mobile + DBNet + VAD ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
         tags="white_check_mark",
     )
 
