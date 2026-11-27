@@ -381,29 +381,39 @@ def _translate_lines_batch(
 ) -> dict[int, str]:
     import torch
 
-    screen_hints = [str(x.get("texts") or []) for x in (screen_texts or [])[:8] if x.get("texts")]
+    compact_items = [
+        {
+            "id": it["id"],
+            "speaker_id": it["speaker_id"],
+            "gender": it["gender"],
+            "duration_sec": it["duration_sec"],
+            "src_text": it["src_text"],
+            "context_prev": it["prev_text"],
+            "context_next": it["next_text"],
+        }
+        for it in batch_items
+    ]
 
     messages = [
         {
             "role": "system",
             "content": (
                 "Bạn là biên kịch lồng tiếng phim tiếng Việt. "
-                "Mỗi phần tử trong danh sách là một câu thoại độc lập với đúng thời lượng (duration_sec) và người nói.\n"
-                "Quy tắc bắt buộc:\n"
-                "1) Dịch ĐÚNG từng câu theo id của nó, KHÔNG gộp câu này sang câu khác, KHÔNG kéo dài câu vượt quá thời lượng đọc tự nhiên.\n"
-                "2) Dùng prev_text và next_text chỉ để hiểu ngữ cảnh & xưng hô, tuyệt đối không dịch gộp prev_text/next_text vào text_vi của câu hiện tại.\n"
-                "3) Xưng hô chuẩn: nếu gender='male' gọi '老婆' thì dịch 'Vợ ơi' / 'Em à'; giữa vợ chồng dùng 'anh - em' hoặc 'tôi - anh'; với bố vợ dùng 'bố - con'.\n"
-                "4) Giữ tên riêng 'Lục thị', 'Hạ thị', 'Ngôn Thần', 'Minh Dao'; không chèn chữ Hán.\n"
-                "Chỉ trả về mảng JSON thuần các object có khóa: id, text_vi."
+                "Dịch TỪNG câu src_text sang tiếng Việt tự nhiên, ngắn gọn vừa thời lượng duration_sec.\n"
+                "Quy tắc nghiêm ngặt:\n"
+                "1) Mỗi id phải dịch ĐÚNG nghĩa của chính src_text ở id đó. TUYỆT ĐỐI KHÔNG lặp lại bản dịch của câu trước hay câu sau.\n"
+                "2) context_prev và context_next chỉ dùng để đoán chủ ngữ/xưng hô, KHÔNG được dịch nội dung của context_prev/context_next vào text_vi.\n"
+                "3) Xưng hô phù hợp hoàn cảnh: 'anh - em', 'tôi - cô/anh', 'bố - con' (khi nói với bố vợ/cha).\n"
+                "4) Giữ tên riêng 'Lục thị', 'Hạ thị', 'Minh Dao'; không để sót chữ Hán.\n"
+                "5) Trả về duy nhất mảng JSON thuần đúng số phần tử đầu vào: [{\"id\": <int>, \"text_vi\": \"...\"}]."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Ngữ cảnh: {scene_context or 'Phim gia đình & công sở'}\n"
-                f"Chữ phụ đề/màn hình tham chiếu: {json.dumps(screen_hints, ensure_ascii=False)}\n"
-                f"Hồ sơ người nói: {json.dumps(speakers_meta, ensure_ascii=False)}\n"
-                f"Danh sách câu cần dịch:\n{json.dumps(batch_items, ensure_ascii=False)}"
+                f"Bối cảnh: {scene_context or 'Phim gia đình & công sở'}\n"
+                f"Danh sách {len(compact_items)} câu cần dịch riêng biệt:\n"
+                f"{json.dumps(compact_items, ensure_ascii=False)}"
             ),
         },
     ]
@@ -414,7 +424,12 @@ def _translate_lines_batch(
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.inference_mode():
-        out_ids = model.generate(**inputs, max_new_tokens=1600, do_sample=False)
+        out_ids = model.generate(
+            **inputs,
+            max_new_tokens=900,
+            do_sample=False,
+            repetition_penalty=1.08,
+        )
     trimmed = [out[len(inp):] for inp, out in zip(inputs["input_ids"], out_ids)]
     raw_reply = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
 
@@ -424,6 +439,9 @@ def _translate_lines_batch(
     result_map: dict[int, str] = {}
     try:
         clean_json = raw_reply.split("```json")[-1].split("```")[0].strip() if "```" in raw_reply else raw_reply
+        m_arr = re.search(r"\[.*\]", clean_json, flags=re.DOTALL)
+        if m_arr:
+            clean_json = m_arr.group(0)
         parsed = json.loads(clean_json)
         if isinstance(parsed, list):
             for row in parsed:
@@ -480,16 +498,24 @@ def translate_with_qwen2_5_vl(
         })
 
     translations: dict[int, str] = {}
-    batch_size = 8
+    batch_size = 4
     for start_i in range(0, len(prepared_items), batch_size):
         sub_items = prepared_items[start_i: start_i + batch_size]
         got = _translate_lines_batch(model, processor, sub_items, scene_context, speakers_meta, screen_texts)
         translations.update(got)
 
-    for item in prepared_items:
+    # Phát hiện và dịch lại đơn lẻ các câu bị thiếu, còn chữ Hán, hoặc bị lặp giống hệt câu liền kề dù src_text khác nhau
+    for idx_p, item in enumerate(prepared_items):
         item_id = item["id"]
-        cur = translations.get(item_id, "")
-        if not cur or _has_cjk(cur):
+        cur = (translations.get(item_id) or "").strip()
+        is_dup_with_neighbor = False
+        if idx_p > 0:
+            prev_item = prepared_items[idx_p - 1]
+            prev_vi = (translations.get(prev_item["id"]) or "").strip()
+            if cur and prev_vi and cur.lower() == prev_vi.lower() and item["src_text"] != prev_item["src_text"]:
+                is_dup_with_neighbor = True
+
+        if not cur or _has_cjk(cur) or is_dup_with_neighbor:
             retry_got = _translate_lines_batch(model, processor, [item], scene_context, speakers_meta, screen_texts)
             if item_id in retry_got and retry_got[item_id].strip():
                 translations[item_id] = retry_got[item_id].strip()
