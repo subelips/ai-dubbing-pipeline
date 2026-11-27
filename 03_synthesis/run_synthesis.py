@@ -382,7 +382,6 @@ def load_vieneu_engine():
                     continue
             print(f"[WARN] Không khởi tạo được {full_name}: {last_err}")
 
-        # Trường hợp vieneu cung cấp hàm trực tiếp ở mức module
         for mod in modules_to_scan:
             for m in ("synthesize", "tts", "infer", "generate", "clone"):
                 fn = getattr(mod, m, None)
@@ -488,7 +487,6 @@ def _synthesize_vietnamese_neural_fallback(
         voice = "vi-VN-HoaiMyNeural" if is_female else "vi-VN-NamMinhNeural"
 
         tone = expr.get("tone", "neutral")
-        # Phân biệt tông giọng giữa 2 nhân vật nam (SPEAKER_00_M vs SPEAKER_02_M) và sắc thái câu
         pitch_shift = "+0Hz"
         rate_shift = "+0%"
         if not is_female and "02" in str(speaker_id):
@@ -665,6 +663,7 @@ def build_final_dubbed_track(
 
 def mux_dubbed_video(video_path: str, dubbed_wav: str, out_mp4: str) -> str:
     if not video_path or not os.path.exists(video_path) or not dubbed_wav or not os.path.exists(dubbed_wav):
+        print(f"[WARN] Bỏ qua mux video do thiếu file: video={bool(video_path and os.path.exists(video_path))}, wav={bool(dubbed_wav and os.path.exists(dubbed_wav))}")
         return ""
     res = subprocess.run(
         [
@@ -690,7 +689,10 @@ def mux_dubbed_video(video_path: str, dubbed_wav: str, out_mp4: str) -> str:
         capture_output=True,
         text=True,
     )
-    return out_mp4 if res.returncode == 0 and os.path.exists(out_mp4) else ""
+    if res.returncode != 0 or not os.path.exists(out_mp4):
+        print(f"[WARN] ffmpeg mux lỗi (code {res.returncode}): {res.stderr[-400:]}")
+        return ""
+    return out_mp4
 
 
 sync = GitHubSync(GH_REPO, GH_TOKEN)
@@ -857,9 +859,22 @@ def main():
         sync.write_json("state/jobs.json", updated_jobs, f"update status DONE: {JOB_ID}")
 
     sync.trigger_dispatch("stage3_completed", {"job_id": JOB_ID})
+
+    ntfy_lines = [
+        f"Hoàn tất {len(enriched_lines)} phân đoạn (VieNeu clone: {cloned_count}, Neural VN: {neural_fb_count}).",
+    ]
+    if mp4_url:
+        ntfy_lines.append(f"Video lồng tiếng: {mp4_url}")
+    else:
+        ntfy_lines.append("Video lồng tiếng: không tạo được file MP4 (kiểm tra video nguồn).")
+    if mix_url:
+        ntfy_lines.append(f"Audio mix: {mix_url}")
+    if srt_url:
+        ntfy_lines.append(f"Phụ đề SRT: {srt_url}")
+
     send_ntfy(
         f"[Stage 3 Done] {JOB_ID}",
-        f"Hoàn tất {len(enriched_lines)} phân đoạn (VieNeu clone: {cloned_count}, Neural VN: {neural_fb_count}).",
+        "\n".join(ntfy_lines),
         tags="white_check_mark",
     )
 
