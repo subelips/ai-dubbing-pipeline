@@ -309,7 +309,7 @@ def _build_cuda_ld_library_path(venv_dir: str = "/tmp/ocr_venv") -> str:
 def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
     """Tạo venv cô lập không cần ensurepip/pip bên trong venv, cài trực tiếp qua --target vào site-packages."""
     venv_py = os.path.join(venv_dir, "bin", "python")
-    marker = os.path.join(venv_dir, ".rapidocr_gpu_v6_ready")
+    marker = os.path.join(venv_dir, ".rapidocr_gpu_v7_ready")
     if os.path.exists(venv_py) and os.path.exists(marker):
         return venv_py
 
@@ -326,7 +326,7 @@ def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
     pkgs = [
         "wrapt",
         "numpy>=1.26.4,<2.3.0",
-        "onnxruntime-gpu==1.20.1",
+        "onnxruntime-gpu==1.20.2",
         "rapidocr",
         "opencv-python-headless",
     ]
