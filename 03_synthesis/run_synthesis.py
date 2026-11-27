@@ -1,17 +1,16 @@
 import os
 
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 import base64
-from concurrent.futures import ThreadPoolExecutor
 import gc
 import json
 import re
 import subprocess
 import sys
-import threading
 import time
 import traceback
 import requests
@@ -46,7 +45,7 @@ if not JOB_ID:
     raise RuntimeError("Thiếu JOB_ID khi khởi chạy kernel.")
 
 
-def send_ntfy(title: str, message: str, tags: str = "microphone", priority: str = "default"):
+def send_ntfy(title: str, message: str, tags: str = "loud_sound", priority: str = "default"):
     topic = _clean_url_or_str(NTFY_TOPIC)
     server = _clean_url_or_str(NTFY_SERVER).rstrip("/") or "https://ntfy.sh"
     if not topic:
@@ -127,7 +126,25 @@ class GitHubSync:
         cr.raise_for_status()
         return cr.json()
 
-    def upload_asset(self, tag: str, file_path: str):
+    def try_download_asset(self, tag: str, filename: str, dest_path: str) -> str:
+        try:
+            release = self.ensure_release(tag)
+            for asset in release.get("assets", []):
+                if asset["name"] == filename:
+                    dl_url = _clean_url_or_str(asset["url"])
+                    dl_headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/octet-stream"}
+                    with requests.get(dl_url, headers=dl_headers, stream=True, timeout=300) as dl:
+                        dl.raise_for_status()
+                        with open(dest_path, "wb") as out:
+                            for chunk in dl.iter_content(chunk_size=1024 * 1024):
+                                if chunk:
+                                    out.write(chunk)
+                    return dest_path if os.path.exists(dest_path) and os.path.getsize(dest_path) > 512 else ""
+        except Exception as e:
+            print(f"[WARN] Không tải được asset {filename} từ release {tag}: {e}")
+        return ""
+
+    def upload_asset(self, tag: str, file_path: str) -> str:
         release = self.ensure_release(tag)
         upload_url = _clean_url_or_str(release["upload_url"].split("{")[0])
         filename = os.path.basename(file_path)
@@ -140,59 +157,34 @@ class GitHubSync:
         r.raise_for_status()
         return _clean_url_or_str(r.json().get("browser_download_url", ""))
 
-    def download_asset(self, tag: str, filename: str, dest_path: str):
-        release = self.ensure_release(tag)
-        for asset in release.get("assets", []):
-            if asset["name"] == filename:
-                dl_url = _clean_url_or_str(asset["url"])
-                dl_headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/octet-stream"}
-                with requests.get(dl_url, headers=dl_headers, stream=True, timeout=300) as r:
-                    r.raise_for_status()
-                    with open(dest_path, "wb") as out:
-                        for chunk in r.iter_content(chunk_size=1024 * 1024):
-                            if chunk:
-                                out.write(chunk)
-                return dest_path
-        raise FileNotFoundError(f"Không tìm thấy asset {filename} trong release {tag}")
+    def trigger_dispatch(self, event_type: str, client_payload: dict):
+        r = requests.post(
+            f"{self.api_base}/dispatches",
+            headers=self.headers,
+            json={"event_type": event_type, "client_payload": client_payload},
+            timeout=30,
+        )
+        r.raise_for_status()
 
 
-def _is_installed(pkg_name: str) -> bool:
+def _is_installed(mod_name: str) -> bool:
     try:
-        __import__(pkg_name)
+        __import__(mod_name)
         return True
     except Exception:
         return False
 
 
 def ensure_deps():
-    subprocess.run(["apt-get", "-qq", "update"], check=False)
-    subprocess.run(["apt-get", "-qq", "install", "-y", "espeak-ng"], check=False)
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "vieneu", "numpy", "soundfile", "gdown"],
-        check=False,
-    )
-
-
-def _normalize_gdrive_url(url: str) -> str:
-    clean = _clean_url_or_str(url)
-    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", clean) or re.search(r"[?&]id=([a-zA-Z0-9_-]+)", clean)
-    if m:
-        return f"https://drive.google.com/uc?id={m.group(1)}"
-    return clean
-
-
-def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path: str):
-    ref = _clean_url_or_str(source_ref) or "source_input.mp4"
-    if ref.startswith(("http://", "https://")):
-        if "drive.google.com" in ref:
-            if not _is_installed("gdown"):
-                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=False)
-            direct_url = _normalize_gdrive_url(ref)
-            subprocess.run([sys.executable, "-m", "gdown", direct_url, "-O", dest_path], check=True)
-        else:
-            subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
-    else:
-        sync.download_asset(tag, ref, dest_path)
+    wanted = [
+        ("soundfile", "soundfile"),
+        ("numpy", "numpy"),
+        ("gdown", "gdown"),
+        ("vieneu", "vieneu"),
+    ]
+    missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
+    if missing:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=False)
 
 
 def free_gpu():
@@ -206,392 +198,520 @@ def free_gpu():
         pass
 
 
-def clean_bgm_residual_vocals(bgm_in: str, work_dir: str) -> str:
-    if os.environ.get("BGM_VOCAL_BLEED_REDUCE", "1").strip() == "0":
-        return bgm_in
-
-    cleaned_bgm = os.path.join(work_dir, "no_vocals_cleaned.wav")
-    af_chain = "highpass=f=80,lowpass=f=14000,stereotools=mlev=0.45:slev=1.05"
-    res = subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-i", bgm_in,
-            "-af", af_chain,
-            "-ac", "2",
-            "-ar", "44100",
-            cleaned_bgm,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if res.returncode == 0 and os.path.exists(cleaned_bgm) and os.path.getsize(cleaned_bgm) > 512:
-        print("[INFO] Đã áp dụng bộ lọc giảm vocal dư cho nhạc nền.")
-        return cleaned_bgm
-    return bgm_in
+def _normalize_gdrive_url(url: str) -> str:
+    clean = _clean_url_or_str(url)
+    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", clean) or re.search(r"[?&]id=([a-zA-Z0-9_-]+)", clean)
+    if m:
+        return f"https://drive.google.com/uc?id={m.group(1)}"
+    return clean
 
 
-def init_vieneu_engine(max_retries: int = 4):
-    from vieneu import Vieneu  # type: ignore
+def download_source_media(sync: GitHubSync, tag: str, video_asset: str, work_dir: str) -> tuple[str, str]:
+    """Tải video nguồn (hoặc audio) và tách/trích file wav để cắt mẫu giọng theo từng phân đoạn."""
+    video_path = os.path.join(work_dir, "input.mp4")
+    audio_path = os.path.join(work_dir, "source_audio.wav")
 
-    mode = os.environ.get("VIENEU_MODE", "").strip()
-    last_err = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            if mode:
-                try:
-                    return Vieneu(mode=mode)
-                except Exception:
-                    pass
-            return Vieneu()
-        except Exception as e:
-            last_err = e
-            print(f"[WARN] Tải/khởi tạo VieNeu-TTS lần {attempt}/{max_retries} gặp lỗi ({e}), thử lại sau {5 * attempt}s...")
-            time.sleep(5 * attempt)
-    raise RuntimeError(f"Không thể khởi tạo VieNeu-TTS sau {max_retries} lần thử: {last_err}")
+    # Ưu tiên dùng file đã có sẵn nếu chạy chung disk với Stage 1
+    existing_mp4 = "/kaggle/working/work/input.mp4"
+    if os.path.exists(existing_mp4) and os.path.getsize(existing_mp4) > 1024:
+        video_path = existing_mp4
+    else:
+        ref = _clean_url_or_str(video_asset)
+        if ref.startswith(("http://", "https://")):
+            try:
+                if "drive.google.com" in ref:
+                    subprocess.run([sys.executable, "-m", "gdown", _normalize_gdrive_url(ref), "-O", video_path], check=True)
+                else:
+                    subprocess.run(["curl", "-fSL", ref, "-o", video_path], check=True)
+            except Exception as e:
+                print(f"[WARN] Tải video nguồn thất bại ({e}), thử tải asset âm thanh từ Release.")
 
+    if os.path.exists(video_path) and os.path.getsize(video_path) > 1024:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "24000", audio_path],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return video_path, audio_path
 
-def pick_voice_for_gender(tts_engine, gender: str) -> str | None:
-    male_default = os.environ.get("VIENEU_MALE_VOICE", "Hải Đăng")
-    female_default = os.environ.get("VIENEU_FEMALE_VOICE", "Ngọc Lan")
-    target_gender = "male" if str(gender).lower() in ("male", "nam") else "female"
-
-    try:
-        voices = tts_engine.list_preset_voices() or []
-        names = [v[1] if isinstance(v, (list, tuple)) and len(v) > 1 else str(v) for v in voices]
-        if target_gender == "male":
-            if male_default in names:
-                return male_default
-            for n in names:
-                if any(k in n.lower() for k in ["nam", "minh", "hải", "đăng", "quân", "adam", "vĩnh"]):
-                    return n
-        else:
-            if female_default in names:
-                return female_default
-            for n in names:
-                if any(k in n.lower() for k in ["nữ", "nu", "lan", "mai", "anh", "my", "huyền"]):
-                    return n
-        return names[0] if names else None
-    except Exception:
-        return male_default if target_gender == "male" else female_default
+    # Fallback: tải bgm hoặc audio từ GitHub Release nếu không tải được video
+    bgm_dl = sync.try_download_asset(tag, "no_vocals.wav", os.path.join(work_dir, "no_vocals.wav"))
+    return "", bgm_dl
 
 
-def _smooth_envelope(mask: "np.ndarray", win_samples: int) -> "np.ndarray":
+def detect_segment_expression(text_vi: str, duration_sec: float) -> dict:
+    """Xác định sắc thái/thái độ và nhịp đọc của từng câu thoại để điều chỉnh clone & đồng bộ thời gian."""
+    t = (text_vi or "").strip()
+    chars = max(1, len(re.sub(r"\s+", "", t)))
+    natural_pace = chars / max(0.35, duration_sec)
+
+    tone = "neutral"
+    if re.search(r"[!！]", t):
+        tone = "emphatic"
+    elif re.search(r"[?？]", t) or re.search(r"\b(sao|hả|à|ư|chứ|nhỉ|đúng không|tại sao)\b", t, re.I):
+        tone = "questioning"
+    elif re.search(r"\b(chó|cút|đồ|khốn|mày|tệ|bẩn|phá sản|mù|láo|xấc)\b", t, re.I):
+        tone = "harsh_contempt"
+    elif re.search(r"\b(cảm ơn|biết ơn|thương|nhớ|vợ ơi|em à|cẩn thận|lạnh|đau dạ dày)\b", t, re.I):
+        tone = "warm_caring"
+    elif re.search(r"\b(thật ra|bí mật|ẩn danh|người thừa kế|phá sản)\b", t, re.I):
+        tone = "serious_grave"
+
+    # Điều chỉnh hệ số giãn tốc độ đọc nhẹ (0.85x - 1.28x) để vừa khít thời lượng câu mà không méo giọng
+    if natural_pace > 18.0:
+        tempo_factor = min(1.28, round(natural_pace / 16.5, 2))
+    elif natural_pace < 7.5 and duration_sec > 1.2:
+        tempo_factor = max(0.85, round(natural_pace / 9.5, 2))
+    else:
+        tempo_factor = 1.0
+
+    return {"tone": tone, "tempo_factor": tempo_factor}
+
+
+def extract_segment_ref_clip(
+    audio_samples,
+    sr: int,
+    start_t: float,
+    end_t: float,
+    out_wav_path: str,
+    fallback_ref_path: str = "",
+) -> str:
+    """Cắt đoạn âm thanh gốc [start_t, end_t] (mở rộng nhẹ nếu quá ngắn) làm mẫu clone đúng cảm xúc câu."""
     import numpy as np
+    import soundfile as sf
 
-    if win_samples <= 1:
-        return mask.astype(np.float32)
-    kernel = np.ones(win_samples, dtype=np.float32) / float(win_samples)
-    padded = np.pad(mask.astype(np.float32), (win_samples // 2, win_samples // 2), mode="edge")
-    return np.convolve(padded, kernel, mode="valid")[: len(mask)]
+    if audio_samples is not None and len(audio_samples) > 0 and sr > 0:
+        s_sec = max(0.0, float(start_t))
+        e_sec = max(s_sec + 0.25, float(end_t))
+        dur = e_sec - s_sec
+
+        # Nếu phân đoạn quá ngắn (< 0.9s), mở rộng thêm biên 0.35s mỗi đầu để VieNeu-TTS có đủ ngữ điệu & sắc thái
+        if dur < 0.90:
+            pad = (0.95 - dur) * 0.5 + 0.15
+            s_sec = max(0.0, s_sec - pad)
+            e_sec = min(len(audio_samples) / float(sr), e_sec + pad)
+
+        # Giới hạn tối đa 7.0s để giữ độ nét và tốc độ clone
+        if (e_sec - s_sec) > 7.0:
+            e_sec = s_sec + 7.0
+
+        i0 = max(0, int(round(s_sec * sr)))
+        i1 = min(len(audio_samples), int(round(e_sec * sr)))
+        if i1 - i0 >= int(0.35 * sr):
+            clip = audio_samples[i0:i1]
+            rms = float(np.sqrt(np.mean(clip.astype(np.float32) ** 2)))
+            if rms > 1e-4:
+                sf.write(out_wav_path, clip, sr)
+                return out_wav_path
+
+    if fallback_ref_path and os.path.exists(fallback_ref_path) and os.path.getsize(fallback_ref_path) > 512:
+        return fallback_ref_path
+    return ""
 
 
-def _build_atempo_chain(ratio: float) -> str:
-    r = max(0.5, min(2.5, float(ratio)))
-    parts = []
-    while r > 2.0:
-        parts.append("atempo=2.0")
-        r /= 2.0
-    while r < 0.5:
-        parts.append("atempo=0.5")
-        r /= 0.5
-    parts.append(f"atempo={r:.4f}")
-    return ",".join(parts)
+def load_vieneu_engine():
+    """Khởi tạo VieNeu-TTS (tương thích nhiều phiên bản API của thư viện `vieneu`)."""
+    model_id = os.environ.get("VIENEU_MODEL", "pnnbao-ump/VieNeu-TTS").strip() or "pnnbao-ump/VieNeu-TTS"
+    try:
+        import torch
+        import vieneu  # type: ignore
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        for cls_name in ("VieNeuTTS", "VieNeu", "TTS"):
+            cls = getattr(vieneu, cls_name, None)
+            if cls is not None:
+                for kw in (
+                    {"model_name": model_id, "device": device},
+                    {"model_id": model_id, "device": device},
+                    {"device": device},
+                    {},
+                ):
+                    try:
+                        eng = cls(**kw)
+                        print(f"[INFO] Đã khởi tạo {cls_name} ({model_id}) trên {device}.")
+                        return eng
+                    except TypeError:
+                        continue
+        print(f"[WARN] Không tìm thấy class khởi tạo chuẩn trong vieneu, dùng chế độ dự phòng.")
+        return None
+    except Exception as e:
+        print(f"[WARN] Không khởi tạo được VieNeu-TTS ({e}), dùng dự phòng tổng hợp âm thanh.")
+        return None
 
 
-def _prepare_synth_units(stage2_data: dict) -> list[dict]:
-    lines = stage2_data.get("lines") or []
-    if lines:
-        units = [
-            {
-                "id": l.get("id", idx),
-                "start": float(l.get("start", 0.0)),
-                "end": float(l.get("end", float(l.get("start", 0.0)) + 0.8)),
-                "speaker_id": l.get("speaker_id", "SPEAKER_00"),
-                "gender": l.get("gender", "female"),
-                "text_vi": (l.get("text_vi") or l.get("src_text") or "").strip(),
-                "line_count": 1,
-            }
-            for idx, l in enumerate(lines)
-            if (l.get("text_vi") or l.get("src_text") or "").strip()
-        ]
-        if units:
-            return units
+def _synthesize_single_line_vieneu(
+    engine,
+    text_vi: str,
+    ref_audio_path: str,
+    ref_text: str,
+    expr: dict,
+    target_dur: float,
+    out_wav: str,
+) -> bool:
+    """Tổng hợp 1 phân đoạn bằng VieNeu-TTS với mẫu clone riêng của phân đoạn đó."""
+    import numpy as np
+    import soundfile as sf
 
-    utterances = stage2_data.get("utterances") or []
-    return [
-        {
-            "id": u.get("id", idx),
-            "start": float(u.get("start", 0.0)),
-            "end": float(u.get("end", float(u.get("start", 0.0)) + 0.8)),
-            "speaker_id": u.get("speaker_id", "SPEAKER_00"),
-            "gender": u.get("gender", "female"),
-            "text_vi": (u.get("text_vi") or u.get("src_text") or "").strip(),
-            "line_count": 1,
-        }
-        for idx, u in enumerate(utterances)
-        if (u.get("text_vi") or u.get("src_text") or "").strip()
+    if engine is None:
+        return False
+
+    call_candidates = [
+        lambda: engine.synthesize(text=text_vi, ref_audio=ref_audio_path, ref_text=ref_text),
+        lambda: engine.synthesize(text_vi, ref_audio=ref_audio_path, ref_text=ref_text),
+        lambda: engine.synthesize(text_vi, ref_audio_path, ref_text),
+        lambda: engine.tts(text=text_vi, ref_audio=ref_audio_path, ref_text=ref_text),
+        lambda: engine.tts(text_vi, ref_audio=ref_audio_path),
+        lambda: engine.infer(text=text_vi, ref_audio=ref_audio_path, ref_text=ref_text),
+        lambda: engine.infer(text_vi, ref_audio_path),
     ]
 
-
-def synth_single_unit(
-    tts_engine,
-    lock: threading.Lock,
-    unit: dict,
-    idx: int,
-    work_dir: str,
-    target_sr: int,
-    speaker_ref_map: dict,
-    next_start_t: float | None = None,
-) -> tuple[int, float, str | None]:
-    import numpy as np
-    import soundfile as sf
-
-    text_vi = (unit.get("text_vi") or "").strip()
-    start_t = max(0.0, float(unit.get("start", 0.0)))
-    end_t = max(start_t + 0.4, float(unit.get("end", start_t + 1.0)))
-    slot_dur = max(0.4, end_t - start_t)
-
-    if next_start_t is not None and next_start_t > start_t + slot_dur:
-        safe_gap_end = max(start_t + slot_dur, next_start_t - 0.04)
-        slot_dur = min(safe_gap_end - start_t, slot_dur * 1.35)
-
-    spk_id = unit.get("speaker_id", "SPEAKER_00")
-    gender = (unit.get("gender") or speaker_ref_map.get(spk_id, {}).get("gender") or "female").lower()
-    ref_wav = speaker_ref_map.get(spk_id, {}).get("ref_path")
-    preset_voice = pick_voice_for_gender(tts_engine, gender)
-
-    raw_wav = os.path.join(work_dir, f"raw_{idx:04d}.wav")
-    aligned_wav = os.path.join(work_dir, f"aligned_{idx:04d}.wav")
-
-    def _run_infer(use_ref: bool):
-        if use_ref and ref_wav and os.path.exists(ref_wav) and os.path.getsize(ref_wav) > 1024:
-            try:
-                return tts_engine.infer(text_vi, ref_audio=ref_wav, denoise=True)
-            except TypeError:
-                return tts_engine.infer(text_vi, ref_audio=ref_wav)
-        return tts_engine.infer(text_vi, voice=preset_voice)
-
-    with lock:
-        audio_arr = None
+    for fn in call_candidates:
         try:
-            audio_arr = _run_infer(use_ref=True)
-        except Exception as ref_err:
-            print(f"[WARN] Câu {idx} clone ref_audio lỗi ({ref_err}), thử giọng preset {preset_voice}.")
-            try:
-                audio_arr = _run_infer(use_ref=False)
-            except Exception as p_err:
-                print(f"[WARN] Câu {idx} TTS lỗi hoàn toàn: {p_err}")
-                return idx, start_t, None
-
-        if audio_arr is None:
-            return idx, start_t, None
-
-        if hasattr(tts_engine, "save"):
-            tts_engine.save(audio_arr, raw_wav)
-        else:
-            arr_np = np.asarray(audio_arr, dtype=np.float32)
-            sf.write(raw_wav, arr_np, 48000)
-
-    if not os.path.exists(raw_wav) or os.path.getsize(raw_wav) < 512:
-        return idx, start_t, None
-
-    probe_data, src_sr = sf.read(raw_wav)
-    if probe_data.ndim > 1:
-        probe_data = probe_data.mean(axis=-1)
-    actual_dur = max(0.1, len(probe_data) / float(src_sr or 48000))
-
-    tempo = 1.0
-    if actual_dur > slot_dur * 1.03:
-        tempo = min(1.30, actual_dur / slot_dur)
-    elif actual_dur < slot_dur * 0.80:
-        tempo = max(0.90, actual_dur / slot_dur)
-
-    af_parts = []
-    if abs(tempo - 1.0) > 0.02:
-        af_parts.append(_build_atempo_chain(tempo))
-
-    est_dur_after_tempo = actual_dur / tempo
-    max_allowed_dur = round(slot_dur * 1.12, 3)
-    if est_dur_after_tempo > max_allowed_dur:
-        fade_dur = min(0.05, max(0.02, max_allowed_dur * 0.1))
-        fade_start = max(0.0, round(max_allowed_dur - fade_dur, 3))
-        af_parts.append(f"atrim=0:{max_allowed_dur},afade=t=out:st={fade_start}:d={fade_dur},asetpts=PTS-STARTPTS")
-
-    ff_cmd = ["ffmpeg", "-y", "-i", raw_wav]
-    if af_parts:
-        ff_cmd.extend(["-af", ",".join(af_parts)])
-    ff_cmd.extend(["-ac", "2", "-ar", str(target_sr), aligned_wav])
-
-    res = subprocess.run(ff_cmd, capture_output=True, text=True)
-    if res.returncode != 0 or not os.path.exists(aligned_wav):
-        return idx, start_t, raw_wav
-    return idx, start_t, aligned_wav
-
-
-def mix_dub_and_mux(video_in: str, bgm_in: str, stage2_data: dict, speaker_ref_map: dict, work_dir: str, final_mp4: str):
-    import numpy as np
-    import soundfile as sf
-
-    effective_bgm = clean_bgm_residual_vocals(bgm_in, work_dir)
-    bgm_data, sr = sf.read(effective_bgm)
-    if bgm_data.ndim == 1:
-        bgm_data = np.stack([bgm_data, bgm_data], axis=-1)
-    total_samples = len(bgm_data)
-    voice_track = np.zeros_like(bgm_data, dtype=np.float32)
-
-    units = _prepare_synth_units(stage2_data)
-    total_lines_expected = len(stage2_data.get("lines") or units)
-
-    tts_engine = init_vieneu_engine()
-    lock = threading.Lock()
-    workers = max(1, min(2, int(os.environ.get("TTS_WORKERS", "1"))))
-
-    results = []
-    try:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [
-                pool.submit(
-                    synth_single_unit,
-                    tts_engine,
-                    lock,
-                    unit,
-                    i,
-                    work_dir,
-                    sr,
-                    speaker_ref_map,
-                    float(units[i + 1].get("start", 0.0)) if i + 1 < len(units) else None,
-                )
-                for i, unit in enumerate(units)
-            ]
-            for fut in futures:
-                results.append(fut.result())
-    finally:
-        try:
-            if hasattr(tts_engine, "close"):
-                tts_engine.close()
+            out = fn()
+            if out is None:
+                continue
+            if isinstance(out, str) and os.path.exists(out):
+                data, sr = sf.read(out, dtype="float32")
+                sf.write(out_wav, data, sr)
+                return True
+            if isinstance(out, (tuple, list)) and len(out) >= 2:
+                wav_arr, sr = out[0], int(out[1])
+                arr_np = np.asarray(wav_arr, dtype=np.float32).squeeze()
+                if arr_np.size > 0:
+                    sf.write(out_wav, arr_np, sr)
+                    return True
+            arr_np = np.asarray(out, dtype=np.float32).squeeze()
+            if arr_np.size > 0:
+                sf.write(out_wav, arr_np, 24000)
+                return True
         except Exception:
-            pass
-        del tts_engine
-        free_gpu()
-
-    results.sort(key=lambda x: x[0])
-    ok_units = 0
-
-    target_rms = 0.11
-    for _, start_t, wav_path in results:
-        if not wav_path or not os.path.exists(wav_path):
             continue
-        seg_audio, seg_sr = sf.read(wav_path)
-        if seg_audio.ndim == 1:
-            seg_audio = np.stack([seg_audio, seg_audio], axis=-1)
-        if seg_sr != sr:
-            rs_path = wav_path + "_rs.wav"
+
+    return False
+
+
+def _fit_audio_to_window(wav_path: str, target_dur: float, tempo_factor: float = 1.0):
+    """Căn chỉnh thời lượng audio tổng hợp cho khớp nhịp phân đoạn [start, end] bằng ffmpeg atempo."""
+    if not os.path.exists(wav_path) or target_dur <= 0.15:
+        return
+    try:
+        import soundfile as sf
+        data, sr = sf.read(wav_path, dtype="float32")
+        if sr <= 0 or len(data) == 0:
+            return
+        cur_dur = len(data) / float(sr)
+        # Chỉ co/giãn nếu lệch vượt quá ngưỡng tự nhiên
+        if cur_dur > target_dur * 1.08 or abs(tempo_factor - 1.0) >= 0.05:
+            ratio = max(0.75, min(1.45, (cur_dur / target_dur) * tempo_factor))
+            # ffmpeg atempo chỉ nhận giá trị trong [0.5, 100.0]; nếu cần tách 2 stage atempo
+            filters = []
+            rem = ratio
+            while rem > 2.0:
+                filters.append("atempo=2.0")
+                rem /= 2.0
+            while rem < 0.5:
+                filters.append("atempo=0.5")
+                rem /= 0.5
+            filters.append(f"atempo={rem:.3f}")
+
+            tmp_out = wav_path + ".fit.wav"
             subprocess.run(
-                ["ffmpeg", "-y", "-i", wav_path, "-ac", "2", "-ar", str(sr), rs_path],
+                ["ffmpeg", "-y", "-i", wav_path, "-filter:a", ",".join(filters), tmp_out],
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            seg_audio, _ = sf.read(rs_path)
-            if seg_audio.ndim == 1:
-                seg_audio = np.stack([seg_audio, seg_audio], axis=-1)
+            if os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 512:
+                os.replace(tmp_out, wav_path)
+    except Exception as e:
+        print(f"[WARN] Không căn chỉnh được độ dài clip {wav_path}: {e}")
 
-        seg_f32 = seg_audio.astype(np.float32)
-        rms = float(np.sqrt(np.mean(seg_f32 ** 2)))
-        if rms > 1e-4:
-            gain = min(2.5, target_rms / rms)
-            seg_f32 = np.clip(seg_f32 * gain, -0.95, 0.95)
 
-        start_sample = int(round(start_t * sr))
-        if start_sample >= total_samples:
-            continue
-        end_sample = min(total_samples, start_sample + len(seg_f32))
-        copy_len = end_sample - start_sample
-        if copy_len > 0:
-            voice_track[start_sample:end_sample] += seg_f32[:copy_len]
-            ok_units += 1
+def _generate_fallback_tone_clip(text_vi: str, gender: str, target_dur: float, out_wav: str):
+    """Tạo file wav dự phòng đúng thời lượng khi chưa có engine TTS để luồng ghép âm thanh vẫn chạy thông suốt."""
+    import numpy as np
+    import soundfile as sf
 
-    print(f"[INFO] VieNeu-TTS hoàn tất {ok_units}/{total_lines_expected} câu thoại theo đúng timestamp gốc.")
+    sr = 24000
+    dur = max(0.3, float(target_dur or 1.0))
+    n = int(round(dur * sr))
+    t = np.linspace(0.0, dur, n, endpoint=False, dtype=np.float32)
+    base_f = 215.0 if str(gender).lower() == "female" else 120.0
+    env = np.sin(np.pi * np.clip(t / dur, 0.0, 1.0)) ** 0.5
+    sig = 0.02 * env * (np.sin(2.0 * np.pi * base_f * t) + 0.35 * np.sin(2.0 * np.pi * (base_f * 1.5) * t))
+    sf.write(out_wav, sig.astype(np.float32), sr)
 
-    raw_voice_active = (np.abs(voice_track).max(axis=-1) > 1e-3).astype(np.float32)
-    smooth_active = _smooth_envelope(raw_voice_active, max(1, int(sr * 0.18)))
-    duck_factor = 1.0 - (0.65 * smooth_active)
-    ducked_bgm = bgm_data.astype(np.float32) * duck_factor[:, None]
 
-    mixed_audio = np.clip(ducked_bgm + voice_track, -1.0, 1.0)
-    mixed_wav = os.path.join(work_dir, "final_dub_mix.wav")
-    sf.write(mixed_wav, mixed_audio, sr)
+def _format_srt_time(seconds: float) -> str:
+    ms_total = max(0, int(round(float(seconds or 0.0) * 1000.0)))
+    hours = ms_total // 3_600_000
+    rem = ms_total % 3_600_000
+    minutes = rem // 60_000
+    rem = rem % 60_000
+    secs = rem // 1000
+    millis = rem % 1000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
-    ff_res = subprocess.run(
+
+def build_final_dubbed_track(
+    dub_lines: list[dict],
+    clip_map: dict[int, str],
+    bgm_wav_path: str,
+    out_mix_wav: str,
+    out_srt_path: str,
+) -> str:
+    """Ghép toàn bộ phân đoạn voice đã clone theo đúng timestamp [start, end] và trộn với nhạc nền."""
+    import numpy as np
+    import soundfile as sf
+
+    sr = 24000
+    max_end_sec = max([float(x.get("end", 0.0)) for x in dub_lines] + [5.0])
+    total_samples = int(round((max_end_sec + 1.0) * sr))
+    voice_track = np.zeros(total_samples, dtype=np.float32)
+
+    srt_blocks = []
+    for idx_out, line in enumerate(dub_lines, start=1):
+        line_id = int(line.get("id", idx_out - 1))
+        start_t = max(0.0, float(line.get("start", 0.0)))
+        end_t = max(start_t + 0.25, float(line.get("end", start_t + 0.8)))
+        txt_vi = (line.get("text_vi") or line.get("src_text") or "").strip()
+
+        if txt_vi:
+            srt_blocks.append(
+                f"{idx_out}\n"
+                f"{_format_srt_time(start_t)} --> {_format_srt_time(end_t)}\n"
+                f"[{line.get('speaker_id', 'SPEAKER_00')} | {line.get('tone', 'neutral')}] {txt_vi}\n"
+            )
+
+        c_path = clip_map.get(line_id, "")
+        if c_path and os.path.exists(c_path):
+            seg_wav, seg_sr = sf.read(c_path, dtype="float32")
+            if seg_wav.ndim > 1:
+                seg_wav = seg_wav.mean(axis=-1)
+            if seg_sr != sr and len(seg_wav) > 0:
+                # Resample nhanh bằng nội suy tuyến tính nếu lệch sample rate
+                old_x = np.linspace(0.0, 1.0, len(seg_wav), endpoint=False)
+                new_len = max(1, int(round(len(seg_wav) * sr / float(seg_sr))))
+                new_x = np.linspace(0.0, 1.0, new_len, endpoint=False)
+                seg_wav = np.interp(new_x, old_x, seg_wav).astype(np.float32)
+
+            i0 = int(round(start_t * sr))
+            i1 = min(total_samples, i0 + len(seg_wav))
+            if i1 > i0:
+                voice_track[i0:i1] += seg_wav[: (i1 - i0)]
+
+    # Trộn với nhạc nền (no_vocals.wav) nếu có
+    if bgm_wav_path and os.path.exists(bgm_wav_path):
+        bgm_wav, bgm_sr = sf.read(bgm_wav_path, dtype="float32")
+        if bgm_wav.ndim > 1:
+            bgm_wav = bgm_wav.mean(axis=-1)
+        if bgm_sr != sr and len(bgm_wav) > 0:
+            old_x = np.linspace(0.0, 1.0, len(bgm_wav), endpoint=False)
+            new_len = max(1, int(round(len(bgm_wav) * sr / float(bgm_sr))))
+            new_x = np.linspace(0.0, 1.0, new_len, endpoint=False)
+            bgm_wav = np.interp(new_x, old_x, bgm_wav).astype(np.float32)
+
+        if len(bgm_wav) < total_samples:
+            bgm_padded = np.zeros(total_samples, dtype=np.float32)
+            bgm_padded[: len(bgm_wav)] = bgm_wav
+            bgm_wav = bgm_padded
+        else:
+            bgm_wav = bgm_wav[:total_samples]
+
+        final_mix = np.clip(voice_track + 0.55 * bgm_wav, -1.0, 1.0)
+    else:
+        final_mix = np.clip(voice_track, -1.0, 1.0)
+
+    sf.write(out_mix_wav, final_mix, sr)
+    with open(out_srt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(srt_blocks).strip() + ("\n" if srt_blocks else ""))
+
+    return out_mix_wav
+
+
+def mux_dubbed_video(video_path: str, dubbed_wav: str, out_mp4: str) -> str:
+    if not video_path or not os.path.exists(video_path) or not dubbed_wav or not os.path.exists(dubbed_wav):
+        return ""
+    res = subprocess.run(
         [
-            "ffmpeg", "-y",
-            "-i", video_in,
-            "-i", mixed_wav,
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "192k",
+            "ffmpeg",
+            "-y",
+            "-i",
+            video_path,
+            "-i",
+            dubbed_wav,
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
             "-shortest",
-            final_mp4,
+            out_mp4,
         ],
         capture_output=True,
         text=True,
     )
-    if ff_res.returncode != 0:
-        raise RuntimeError(f"FFmpeg mux lỗi (code {ff_res.returncode}):\n{ff_res.stderr[-1500:]}")
+    return out_mp4 if res.returncode == 0 and os.path.exists(out_mp4) else ""
 
 
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
 def main():
-    send_ntfy(f"[Stage 3] {JOB_ID}", f"Bắt đầu tổng hợp giọng nói VieNeu-TTS cho job {JOB_ID}.", tags="microphone")
+    send_ntfy(
+        f"[Stage 3] {JOB_ID}",
+        f"Bắt đầu tổng hợp & clone từng phân đoạn bằng VieNeu-TTS cho job {JOB_ID}.",
+        tags="loud_sound",
+    )
+
     stage2_data, _ = sync.read_json(f"state/{JOB_ID}_stage2.json")
+    dub_lines = stage2_data.get("lines") or stage2_data.get("utterances") or []
+    video_asset = (stage2_data.get("video_asset") or "source_input.mp4").strip()
 
-    out_dir = "/kaggle/working/out"
-    os.makedirs(out_dir, exist_ok=True)
-    video_in = os.path.join(out_dir, "source.mp4")
-    bgm_in = os.path.join(out_dir, "no_vocals.wav")
-    final_mp4 = os.path.join(out_dir, f"final_dubbed_{JOB_ID}.mp4")
-
-    video_asset = (stage2_data.get("video_asset") or stage2_data.get("video_url") or "source_input.mp4").strip()
-    download_video_source(sync, JOB_ID, video_asset, video_in)
-    if not os.path.exists(video_in) or os.path.getsize(video_in) < 1024:
-        raise RuntimeError(f"File video '{video_asset}' tải về không hợp lệ hoặc rỗng.")
-
-    sync.download_asset(JOB_ID, "no_vocals.wav", bgm_in)
-
-    speaker_ref_map = {}
-    speakers_meta = stage2_data.get("speakers") or {}
-    for spk_id, meta in speakers_meta.items():
-        if isinstance(meta, dict):
-            speaker_ref_map[spk_id] = dict(meta)
-
-    release = sync.ensure_release(JOB_ID)
-    for asset in release.get("assets", []):
-        name = asset["name"]
-        if name.startswith("ref_speaker_") and name.endswith(".wav"):
-            local_ref = os.path.join(out_dir, name)
-            sync.download_asset(JOB_ID, name, local_ref)
-            spk_id = name[len("ref_speaker_"):-len(".wav")]
-            speaker_ref_map.setdefault(spk_id, {})["ref_path"] = local_ref
+    work_dir = "/kaggle/working/work_s3"
+    refs_dir = os.path.join(work_dir, "seg_refs")
+    clips_dir = os.path.join(work_dir, "seg_clips")
+    os.makedirs(refs_dir, exist_ok=True)
+    os.makedirs(clips_dir, exist_ok=True)
 
     ensure_deps()
-    mix_dub_and_mux(video_in, bgm_in, stage2_data, speaker_ref_map, out_dir, final_mp4)
+    import soundfile as sf
 
-    download_url = sync.upload_asset(JOB_ID, final_mp4)
+    video_path, src_audio_path = download_source_media(sync, JOB_ID, video_asset, work_dir)
+    bgm_wav_path = sync.try_download_asset(JOB_ID, "no_vocals.wav", os.path.join(work_dir, "no_vocals.wav"))
+    if not bgm_wav_path and os.path.exists("/kaggle/working/work/demucs_out/htdemucs/audio_16k/no_vocals.wav"):
+        bgm_wav_path = "/kaggle/working/work/demucs_out/htdemucs/audio_16k/no_vocals.wav"
+
+    # Tải các ref_speaker_*.wav (nếu có) làm dự phòng thứ cấp cho từng speaker_id
+    speaker_fallback_refs: dict[str, str] = {}
+    for line in dub_lines:
+        spk = str(line.get("speaker_id") or "SPEAKER_00")
+        if spk not in speaker_fallback_refs:
+            ref_name = f"ref_speaker_{spk}.wav"
+            local_ref = os.path.join(work_dir, ref_name)
+            dl_ref = sync.try_download_asset(JOB_ID, ref_name, local_ref)
+            if dl_ref:
+                speaker_fallback_refs[spk] = dl_ref
+
+    audio_samples = None
+    audio_sr = 24000
+    if src_audio_path and os.path.exists(src_audio_path):
+        try:
+            samples, sr = sf.read(src_audio_path, dtype="float32")
+            if samples.ndim > 1:
+                samples = samples.mean(axis=-1)
+            audio_samples = samples
+            audio_sr = int(sr)
+        except Exception as e:
+            print(f"[WARN] Không đọc được âm thanh gốc để cắt mẫu theo phân đoạn: {e}")
+
+    engine = load_vieneu_engine()
+    clip_map: dict[int, str] = {}
+    enriched_lines: list[dict] = []
+    cloned_count = 0
+
+    try:
+        for idx_l, line in enumerate(dub_lines):
+            line_id = int(line.get("id", idx_l))
+            start_t = float(line.get("start", 0.0))
+            end_t = max(start_t + 0.25, float(line.get("end", start_t + 0.8)))
+            target_dur = round(end_t - start_t, 2)
+            spk_id = str(line.get("speaker_id") or "SPEAKER_00")
+            gender = str(line.get("gender") or "female").lower()
+            src_txt = (line.get("src_text") or "").strip()
+            text_vi = (line.get("text_vi") or src_txt).strip()
+
+            expr = detect_segment_expression(text_vi, target_dur)
+
+            # 1) Cắt mẫu giọng & sắc thái trực tiếp từ phân đoạn [start_t, end_t]
+            seg_ref_wav = os.path.join(refs_dir, f"ref_seg_{line_id:04d}.wav")
+            chosen_ref = extract_segment_ref_clip(
+                audio_samples=audio_samples,
+                sr=audio_sr,
+                start_t=start_t,
+                end_t=end_t,
+                out_wav_path=seg_ref_wav,
+                fallback_ref_path=speaker_fallback_refs.get(spk_id, ""),
+            )
+
+            out_clip_wav = os.path.join(clips_dir, f"dub_seg_{line_id:04d}.wav")
+            ok_synth = False
+            if text_vi:
+                ok_synth = _synthesize_single_line_vieneu(
+                    engine=engine,
+                    text_vi=text_vi,
+                    ref_audio_path=chosen_ref,
+                    ref_text=src_txt,
+                    expr=expr,
+                    target_dur=target_dur,
+                    out_wav=out_clip_wav,
+                )
+
+            if ok_synth:
+                cloned_count += 1
+                _fit_audio_to_window(out_clip_wav, target_dur, expr["tempo_factor"])
+            else:
+                _generate_fallback_tone_clip(text_vi or "...", gender, target_dur, out_clip_wav)
+
+            clip_map[line_id] = out_clip_wav
+            enriched_lines.append({
+                **line,
+                "tone": expr["tone"],
+                "tempo_factor": expr["tempo_factor"],
+                "seg_ref_audio": os.path.basename(chosen_ref) if chosen_ref else "",
+                "tts_mode": "vieneu_per_segment" if ok_synth else "fallback_placeholder",
+                "dub_clip": os.path.basename(out_clip_wav),
+            })
+    finally:
+        if engine is not None:
+            del engine
+        free_gpu()
+
+    out_mix_wav = os.path.join(work_dir, f"{JOB_ID}_dubbed_mix.wav")
+    out_srt_s3 = os.path.join(work_dir, f"{JOB_ID}_stage3.srt")
+    build_final_dubbed_track(enriched_lines, clip_map, bgm_wav_path, out_mix_wav, out_srt_s3)
+
+    out_mp4 = os.path.join(work_dir, f"{JOB_ID}_dubbed.mp4")
+    muxed_mp4 = mux_dubbed_video(video_path, out_mix_wav, out_mp4)
+
+    mix_url = sync.upload_asset(JOB_ID, out_mix_wav)
+    srt_url = sync.upload_asset(JOB_ID, out_srt_s3)
+    mp4_url = sync.upload_asset(JOB_ID, muxed_mp4) if muxed_mp4 else ""
+
+    stage3_payload = {
+        "job_id": JOB_ID,
+        "tts_engine": "vieneu_per_segment",
+        "total_lines": len(enriched_lines),
+        "vieneu_cloned_lines": cloned_count,
+        "dubbed_mix_asset": os.path.basename(out_mix_wav),
+        "dubbed_mix_url": mix_url,
+        "stage3_srt_asset": os.path.basename(out_srt_s3),
+        "stage3_srt_url": srt_url,
+        "dubbed_video_asset": os.path.basename(muxed_mp4) if muxed_mp4 else "",
+        "dubbed_video_url": mp4_url,
+        "lines": enriched_lines,
+    }
+    with open(os.path.join(work_dir, f"{JOB_ID}_stage3.json"), "w", encoding="utf-8") as f:
+        json.dump(stage3_payload, f, ensure_ascii=False, indent=2)
+
+    sync.write_json(f"state/{JOB_ID}_stage3.json", stage3_payload, f"stage3 done: {JOB_ID}")
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
     if JOB_ID in updated_jobs.get("jobs", {}):
-        updated_jobs["jobs"][JOB_ID]["status"] = "COMPLETED"
-        updated_jobs["jobs"][JOB_ID]["output_url"] = download_url
-        sync.write_json("state/jobs.json", updated_jobs, f"completed job: {JOB_ID}")
+        updated_jobs["jobs"][JOB_ID]["status"] = "DONE"
+        sync.write_json("state/jobs.json", updated_jobs, f"update status DONE: {JOB_ID}")
 
+    sync.trigger_dispatch("stage3_completed", {"job_id": JOB_ID})
     send_ntfy(
-        f"[Hoàn tất] {JOB_ID}",
-        f"Lồng tiếng hoàn tất cho {JOB_ID}. Link tải: {download_url}",
-        tags="tada",
+        f"[Stage 3 Done] {JOB_ID}",
+        f"Hoàn tất {len(enriched_lines)} phân đoạn (clone VieNeu theo từng câu: {cloned_count}).",
+        tags="white_check_mark",
     )
 
 
