@@ -307,9 +307,9 @@ def _build_cuda_ld_library_path(venv_dir: str = "/tmp/ocr_venv") -> str:
 
 
 def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
-    """Tạo venv cô lập không cần ensurepip hệ thống, ghim onnxruntime-gpu==1.20.1 tránh lỗi cuDNN 9.27 FE."""
+    """Tạo venv cô lập không cần ensurepip/pip bên trong venv, cài trực tiếp qua --target vào site-packages."""
     venv_py = os.path.join(venv_dir, "bin", "python")
-    marker = os.path.join(venv_dir, ".rapidocr_gpu_v5_ready")
+    marker = os.path.join(venv_dir, ".rapidocr_gpu_v6_ready")
     if os.path.exists(venv_py) and os.path.exists(marker):
         return venv_py
 
@@ -317,6 +317,11 @@ def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
         shutil.rmtree(venv_dir, ignore_errors=True)
 
     subprocess.run([sys.executable, "-S", "-m", "venv", "--without-pip", venv_dir], check=True)
+
+    site_pkgs = os.path.join(
+        venv_dir, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages"
+    )
+    os.makedirs(site_pkgs, exist_ok=True)
 
     pkgs = [
         "wrapt",
@@ -326,17 +331,10 @@ def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
         "opencv-python-headless",
     ]
 
-    res = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "--python", venv_py, *pkgs],
-        capture_output=True,
-        text=True,
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--target", site_pkgs, *pkgs],
+        check=True,
     )
-    if res.returncode != 0:
-        get_pip = "/tmp/get-pip.py"
-        if not os.path.exists(get_pip):
-            urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py", get_pip)
-        subprocess.run([venv_py, "-S", get_pip, "-q"], check=True)
-        subprocess.run([venv_py, "-m", "pip", "install", "-q", *pkgs], check=True)
 
     with open(marker, "w", encoding="utf-8") as f:
         f.write("ok\n")
