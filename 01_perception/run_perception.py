@@ -8,13 +8,16 @@ os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
 import base64
 from difflib import SequenceMatcher
+import functools
 import gc
+import glob
 import json
 import re
 import shutil
 import statistics
 import subprocess
 import sys
+import sysconfig
 import time
 import traceback
 import urllib.request
@@ -225,27 +228,62 @@ def ensure_deps():
             pass
 
 
+def _build_cuda_ld_library_path(venv_dir: str = "/tmp/ocr_venv") -> str:
+    """Thu thập toàn bộ đường dẫn lib CUDA/cuDNN từ hệ thống & venv để onnxruntime-gpu nạp GPU thật."""
+    lib_dirs: list[str] = []
+    search_roots = [
+        os.path.join(venv_dir, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages", "nvidia"),
+        os.path.join(sysconfig.get_paths().get("purelib", ""), "nvidia"),
+        "/usr/local/lib/python3.13/dist-packages/nvidia",
+        "/usr/local/lib/python3.12/dist-packages/nvidia",
+        "/usr/local/lib/python3.11/dist-packages/nvidia",
+        "/usr/local/lib/python3.10/dist-packages/nvidia",
+    ]
+    for root in search_roots:
+        if os.path.isdir(root):
+            for p in sorted(glob.glob(os.path.join(root, "*", "lib"))):
+                if os.path.isdir(p) and p not in lib_dirs:
+                    lib_dirs.append(p)
+
+    for std_dir in [
+        "/usr/local/cuda/lib64",
+        "/usr/local/cuda-12/lib64",
+        "/usr/local/cuda-12.4/lib64",
+        "/usr/local/cuda-12.2/lib64",
+        "/usr/local/cuda-11/lib64",
+        "/usr/lib/x86_64-linux-gnu",
+    ]:
+        if os.path.isdir(std_dir) and std_dir not in lib_dirs:
+            lib_dirs.append(std_dir)
+
+    existing = os.environ.get("LD_LIBRARY_PATH", "")
+    if existing:
+        for p in existing.split(":"):
+            if p and p not in lib_dirs:
+                lib_dirs.append(p)
+    return ":".join(lib_dirs)
+
+
 def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
-    """Tạo venv cô lập không cần ensurepip hệ thống (dùng --without-pip + get-pip.py / pip --python)."""
+    """Tạo venv cô lập không cần ensurepip hệ thống (dùng --without-pip + pip --python)."""
     venv_py = os.path.join(venv_dir, "bin", "python")
-    marker = os.path.join(venv_dir, ".rapidocr_gpu_v3_ready")
+    marker = os.path.join(venv_dir, ".rapidocr_gpu_v4_ready")
     if os.path.exists(venv_py) and os.path.exists(marker):
         return venv_py
 
     if os.path.exists(venv_dir) and not os.path.exists(marker):
         shutil.rmtree(venv_dir, ignore_errors=True)
 
-    # Kaggle Debian/Ubuntu thiếu gói python3-venv (ensurepip lỗi), dùng --without-pip sẽ tạo venv sạch tức thì
     subprocess.run([sys.executable, "-m", "venv", "--without-pip", venv_dir], check=True)
 
     pkgs = [
+        "wrapt",
         "numpy>=1.26.4,<2.3.0",
         "onnxruntime-gpu",
         "rapidocr",
         "opencv-python-headless",
     ]
 
-    # Ưu tiên dùng pip hệ thống cài thẳng vào venv (--python) để không phải bootstrap pip lại
     res = subprocess.run(
         [sys.executable, "-m", "pip", "install", "-q", "--python", venv_py, *pkgs],
         capture_output=True,
@@ -356,6 +394,7 @@ import json
 import os
 import re
 import sys
+import time
 import cv2
 from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
 
@@ -366,7 +405,7 @@ with open(req_path, "r", encoding="utf-8") as f:
     req = json.load(f)
 
 cfg = req["cfg"]
-samples = req["samples"]  # list of {"time": float, "crop_path": str}
+samples = req["samples"]
 min_score = float(cfg.get("min_score", 0.50))
 want_cuda = bool(cfg.get("use_cuda", True))
 
@@ -375,6 +414,7 @@ providers = []
 if want_cuda:
     try:
         import onnxruntime as ort
+        ort.preload_dlls()
         providers = ort.get_available_providers()
         has_cuda = "CUDAExecutionProvider" in providers
     except Exception:
@@ -400,9 +440,18 @@ def build_ocr(use_gpu: bool):
     }
     return RapidOCR(params=params), use_gpu
 
+t0_init = time.time()
 ocr, active_gpu = build_ocr(has_cuda)
+
+actual_det_providers = []
+try:
+    actual_det_providers = ocr.text_det.session.session.get_providers()
+except Exception:
+    pass
+
 print(
-    f"[VENV-OCR] RapidOCR PP-OCRv5 Mobile + DBNet sẵn sàng (use_cuda={active_gpu}, providers={providers}).",
+    f"[VENV-OCR] RapidOCR PP-OCRv5 Mobile + DBNet sẵn sàng (use_cuda={active_gpu}, "
+    f"det_providers={actual_det_providers or providers}).",
     flush=True,
 )
 
@@ -476,6 +525,7 @@ for item in samples:
             dets = []
     results.append({"time": ts, "boxes": dets})
 
+print(f"[VENV-OCR] Hoàn tất OCR {len(samples)} ảnh trong {time.time() - t0_init:.2f}s.", flush=True)
 with open(out_path, "w", encoding="utf-8") as f:
     json.dump({"active_gpu": active_gpu, "results": results}, f, ensure_ascii=False)
 """
@@ -546,7 +596,8 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
             os.makedirs(vis_dir, exist_ok=True)
         os.makedirs(crops_dir, exist_ok=True)
 
-        venv_py = ensure_ocr_venv("/tmp/ocr_venv")
+        venv_dir = "/tmp/ocr_venv"
+        venv_py = ensure_ocr_venv(venv_dir)
         worker_py = os.path.join(work_dir, "_rapidocr_venv_worker.py")
         with open(worker_py, "w", encoding="utf-8") as f:
             f.write(_OCR_VENV_WORKER_CODE.lstrip())
@@ -559,7 +610,6 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
         step_sec = db_cfg["step_sec"]
         idle_jump_sec = db_cfg["idle_jump_sec"]
 
-        # Lấy mẫu các mốc thời gian và lưu crop để chạy hàng loạt trong venv
         sampled_entries = []
         cur_t = round(min(duration * 0.005, 0.2), 2)
         idx_s = 0
@@ -583,7 +633,10 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
         with open(req_json, "w", encoding="utf-8") as f:
             json.dump({"cfg": db_cfg, "samples": sampled_entries}, f, ensure_ascii=False)
 
-        proc = subprocess.run([venv_py, worker_py, req_json, res_json], capture_output=True, text=True)
+        worker_env = os.environ.copy()
+        worker_env["LD_LIBRARY_PATH"] = _build_cuda_ld_library_path(venv_dir)
+
+        proc = subprocess.run([venv_py, worker_py, req_json, res_json], env=worker_env, capture_output=True, text=True)
         if proc.stdout:
             print(proc.stdout.strip())
         if proc.returncode != 0:
@@ -594,7 +647,6 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
             active_gpu = bool(res_payload.get("active_gpu", False))
             raw_ocr_map = {float(x["time"]): (x.get("boxes") or []) for x in res_payload.get("results", [])}
 
-        # Áp dụng bước nhảy idle khi gặp đoạn lặng liên tiếp để giữ nhịp mốc
         screen_texts: list[dict] = []
         vis_files: list[str] = []
         consecutive_empty = 0
@@ -758,6 +810,41 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
     return pitch_med, cent_med
 
 
+def _patch_py313_ufunc_wrapper():
+    """Tránh lỗi Python 3.13 khi pyannote/scipy gọi functools.update_wrapper lên numpy.ufunc."""
+    if getattr(functools.update_wrapper, "_py313_ufunc_patched", False):
+        return
+    orig_update_wrapper = functools.update_wrapper
+
+    def safe_update_wrapper(
+        wrapper,
+        wrapped,
+        assigned=functools.WRAPPER_ASSIGNMENTS,
+        updated=functools.WRAPPER_UPDATES,
+    ):
+        try:
+            return orig_update_wrapper(wrapper, wrapped, assigned=assigned, updated=updated)
+        except (AttributeError, TypeError):
+            for attr in assigned:
+                try:
+                    setattr(wrapper, attr, getattr(wrapped, attr))
+                except (AttributeError, TypeError):
+                    pass
+            for attr in updated:
+                try:
+                    getattr(wrapper, attr).update(getattr(wrapped, attr, {}))
+                except (AttributeError, TypeError):
+                    pass
+            try:
+                wrapper.__wrapped__ = wrapped
+            except (AttributeError, TypeError):
+                pass
+            return wrapper
+
+    safe_update_wrapper._py313_ufunc_patched = True
+    functools.update_wrapper = safe_update_wrapper
+
+
 def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: int, work_dir: str) -> dict | None:
     hf_tok = _clean_url_or_str(os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN)
     if not hf_tok:
@@ -767,6 +854,7 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
     model_id = os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip() or "pyannote/speaker-diarization-3.1"
 
     try:
+        _patch_py313_ufunc_wrapper()
         import numpy as np
         import soundfile as sf
         import torch
