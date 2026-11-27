@@ -310,7 +310,7 @@ def extract_segment_ref_clip(
 
 
 def load_vieneu_engine():
-    """Tự động quét và khởi tạo class/module của VieNeu-TTS trên mọi phiên bản cài đặt."""
+    """Tự động quét và khởi tạo đúng TTS/clone engine của VieNeu-TTS, tránh nhầm các class nội bộ như CaptureLock."""
     model_id = os.environ.get("VIENEU_MODEL", "pnnbao-ump/VieNeu-TTS").strip() or "pnnbao-ump/VieNeu-TTS"
     try:
         import torch
@@ -326,41 +326,72 @@ def load_vieneu_engine():
                     continue
 
         synth_methods = ("synthesize", "tts", "infer", "generate", "speak", "clone", "__call__")
+        exclude_suffixes = (
+            "lock", "config", "cfg", "error", "exception", "warning",
+            "state", "context", "pool", "queue", "manager", "helper",
+            "utils", "util", "parser", "arg", "args", "dataset", "loader",
+        )
+
         candidate_classes = []
         for mod in modules_to_scan:
+            mod_name = getattr(mod, "__name__", "")
+            is_private_mod = any(part.startswith("_") for part in mod_name.split(".")[1:])
             for attr_name in dir(mod):
                 if attr_name.startswith("_"):
                     continue
+                low = attr_name.lower()
+                if any(low.endswith(suf) or suf in low.split("_") for suf in exclude_suffixes):
+                    continue
                 obj = getattr(mod, attr_name, None)
                 if inspect.isclass(obj):
-                    if any(callable(getattr(obj, m, None)) for m in synth_methods):
-                        candidate_classes.append((f"{mod.__name__}.{attr_name}", obj))
+                    methods_found = [m for m in synth_methods if callable(getattr(obj, m, None))]
+                    if methods_found:
+                        score = 0
+                        if any(k in low for k in ("tts", "engine", "vieneu", "clone", "synth", "voice")):
+                            score += 10
+                        if "turbo" in low or "v3" in low or "model" in low:
+                            score += 4
+                        if not is_private_mod:
+                            score += 5
+                        score += len(methods_found)
+                        candidate_classes.append((score, f"{mod_name}.{attr_name}", obj, methods_found))
 
-        for full_name, cls in candidate_classes:
-            for kw in (
+        candidate_classes.sort(key=lambda x: x[0], reverse=True)
+        print(f"[INFO] Tìm thấy {len(candidate_classes)} class ứng viên VieNeu: {[x[1] for x in candidate_classes[:6]]}")
+
+        for _, full_name, cls, methods_found in candidate_classes:
+            kw_list = [
                 {"model_name": model_id, "device": device},
                 {"model_id": model_id, "device": device},
+                {"repo_id": model_id, "device": device},
+                {"backbone_repo": model_id, "codec_repo": model_id, "device": device},
                 {"backbone_repo": model_id, "codec_repo": model_id},
+                {"model_name": model_id},
+                {"model_id": model_id},
                 {"device": device},
                 {},
-            ):
+            ]
+            last_err = None
+            for kw in kw_list:
                 try:
                     eng = cls(**kw)
-                    print(f"[INFO] Đã khởi tạo VieNeu-TTS qua {full_name} trên {device}.")
+                    print(f"[INFO] Đã khởi tạo VieNeu-TTS qua {full_name} (methods={methods_found}, kwargs={list(kw.keys())}) trên {device}.")
                     return eng
-                except Exception:
+                except Exception as e:
+                    last_err = e
                     continue
+            print(f"[WARN] Không khởi tạo được {full_name}: {last_err}")
 
         # Trường hợp vieneu cung cấp hàm trực tiếp ở mức module
         for mod in modules_to_scan:
-            for m in ("synthesize", "tts", "infer", "generate"):
+            for m in ("synthesize", "tts", "infer", "generate", "clone"):
                 fn = getattr(mod, m, None)
                 if callable(fn):
                     print(f"[INFO] Dùng hàm trực tiếp {mod.__name__}.{m} của VieNeu-TTS.")
                     return mod
 
         public_attrs = [a for a in dir(vieneu) if not a.startswith("_")]
-        print(f"[WARN] Không khởi tạo được class trong vieneu (attrs={public_attrs}), chuyển sang giọng Việt neural fallback.")
+        print(f"[WARN] Không khởi tạo được engine nào trong vieneu (attrs={public_attrs}), chuyển sang giọng Việt neural fallback.")
         return None
     except Exception as e:
         print(f"[WARN] Lỗi nạp VieNeu-TTS ({e}), chuyển sang giọng Việt neural fallback.")
@@ -382,28 +413,37 @@ def _synthesize_single_line_vieneu(
     if engine is None:
         return False
 
+    has_ref = bool(ref_audio_path and os.path.exists(ref_audio_path) and os.path.getsize(ref_audio_path) > 512)
+    errors = []
+
+    def _build_calls_for_callable(fn, label: str):
+        calls = []
+        if has_ref:
+            calls.extend([
+                (f"{label}(text, ref_audio, ref_text)", lambda f=fn: f(text=text_vi, ref_audio=ref_audio_path, ref_text=ref_text)),
+                (f"{label}(text, ref_audio_path, ref_text)", lambda f=fn: f(text=text_vi, ref_audio_path=ref_audio_path, ref_text=ref_text)),
+                (f"{label}(text, prompt_speech, prompt_text)", lambda f=fn: f(text=text_vi, prompt_speech=ref_audio_path, prompt_text=ref_text)),
+                (f"{label}(text, ref_audio)", lambda f=fn: f(text=text_vi, ref_audio=ref_audio_path)),
+                (f"{label}(pos: text, ref_audio, ref_text)", lambda f=fn: f(text_vi, ref_audio_path, ref_text)),
+                (f"{label}(pos: text, ref_audio)", lambda f=fn: f(text_vi, ref_audio_path)),
+            ])
+        calls.append((f"{label}(text)", lambda f=fn: f(text=text_vi)))
+        calls.append((f"{label}(pos: text)", lambda f=fn: f(text_vi)))
+        return calls
+
     call_candidates = []
     for m_name in ("synthesize", "tts", "infer", "generate", "speak", "clone"):
         fn = getattr(engine, m_name, None)
         if callable(fn):
-            call_candidates.extend([
-                lambda f=fn: f(text=text_vi, ref_audio=ref_audio_path, ref_text=ref_text),
-                lambda f=fn: f(text=text_vi, ref_audio_path=ref_audio_path, ref_text=ref_text),
-                lambda f=fn: f(text=text_vi, prompt_speech=ref_audio_path, prompt_text=ref_text),
-                lambda f=fn: f(text_vi, ref_audio_path, ref_text),
-                lambda f=fn: f(text_vi, ref_audio_path),
-                lambda f=fn: f(text=text_vi),
-            ])
+            call_candidates.extend(_build_calls_for_callable(fn, f"{type(engine).__name__}.{m_name}"))
     if callable(engine):
-        call_candidates.extend([
-            lambda: engine(text=text_vi, ref_audio=ref_audio_path, ref_text=ref_text),
-            lambda: engine(text_vi, ref_audio_path),
-        ])
+        call_candidates.extend(_build_calls_for_callable(engine, f"{type(engine).__name__}.__call__"))
 
-    for fn in call_candidates:
+    for desc, fn in call_candidates:
         try:
             out = fn()
             if out is None:
+                errors.append(f"{desc} -> returned None")
                 continue
             if isinstance(out, str) and os.path.exists(out):
                 data, sr = sf.read(out, dtype="float32")
@@ -419,8 +459,16 @@ def _synthesize_single_line_vieneu(
             if arr_np.size > 0:
                 sf.write(out_wav, arr_np, 24000)
                 return True
-        except Exception:
+            errors.append(f"{desc} -> empty output ({type(out).__name__})")
+        except Exception as e:
+            errors.append(f"{desc} -> {type(e).__name__}: {e}")
             continue
+
+    if not getattr(_synthesize_single_line_vieneu, "_logged_fail", False):
+        _synthesize_single_line_vieneu._logged_fail = True
+        print(f"[WARN] VieNeu không tổng hợp được câu đầu tiên (has_ref={has_ref}):")
+        for err_line in errors[:6]:
+            print(f"   - {err_line}")
 
     return False
 
