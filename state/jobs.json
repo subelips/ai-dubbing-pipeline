@@ -2,7 +2,7 @@
   "jobs": {
     "ep01": {
       "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
-      "status": "STAGE1_RUNNING"
+      "status": "STAGE1_DONE"
     },
     "ep1": {
       "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
