@@ -5,9 +5,13 @@ os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
+import asyncio
 import base64
 import gc
+import importlib
+import inspect
 import json
+import pkgutil
 import re
 import subprocess
 import sys
@@ -145,6 +149,8 @@ class GitHubSync:
         return ""
 
     def upload_asset(self, tag: str, file_path: str) -> str:
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            return ""
         release = self.ensure_release(tag)
         upload_url = _clean_url_or_str(release["upload_url"].split("{")[0])
         filename = os.path.basename(file_path)
@@ -180,6 +186,7 @@ def ensure_deps():
         ("soundfile", "soundfile"),
         ("numpy", "numpy"),
         ("gdown", "gdown"),
+        ("edge_tts", "edge-tts"),
         ("vieneu", "vieneu"),
     ]
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
@@ -207,11 +214,9 @@ def _normalize_gdrive_url(url: str) -> str:
 
 
 def download_source_media(sync: GitHubSync, tag: str, video_asset: str, work_dir: str) -> tuple[str, str]:
-    """Tải video nguồn (hoặc audio) và tách/trích file wav để cắt mẫu giọng theo từng phân đoạn."""
     video_path = os.path.join(work_dir, "input.mp4")
     audio_path = os.path.join(work_dir, "source_audio.wav")
 
-    # Ưu tiên dùng file đã có sẵn nếu chạy chung disk với Stage 1
     existing_mp4 = "/kaggle/working/work/input.mp4"
     if os.path.exists(existing_mp4) and os.path.getsize(existing_mp4) > 1024:
         video_path = existing_mp4
@@ -235,13 +240,11 @@ def download_source_media(sync: GitHubSync, tag: str, video_asset: str, work_dir
         )
         return video_path, audio_path
 
-    # Fallback: tải bgm hoặc audio từ GitHub Release nếu không tải được video
     bgm_dl = sync.try_download_asset(tag, "no_vocals.wav", os.path.join(work_dir, "no_vocals.wav"))
     return "", bgm_dl
 
 
 def detect_segment_expression(text_vi: str, duration_sec: float) -> dict:
-    """Xác định sắc thái/thái độ và nhịp đọc của từng câu thoại để điều chỉnh clone & đồng bộ thời gian."""
     t = (text_vi or "").strip()
     chars = max(1, len(re.sub(r"\s+", "", t)))
     natural_pace = chars / max(0.35, duration_sec)
@@ -258,7 +261,6 @@ def detect_segment_expression(text_vi: str, duration_sec: float) -> dict:
     elif re.search(r"\b(thật ra|bí mật|ẩn danh|người thừa kế|phá sản)\b", t, re.I):
         tone = "serious_grave"
 
-    # Điều chỉnh hệ số giãn tốc độ đọc nhẹ (0.85x - 1.28x) để vừa khít thời lượng câu mà không méo giọng
     if natural_pace > 18.0:
         tempo_factor = min(1.28, round(natural_pace / 16.5, 2))
     elif natural_pace < 7.5 and duration_sec > 1.2:
@@ -277,7 +279,6 @@ def extract_segment_ref_clip(
     out_wav_path: str,
     fallback_ref_path: str = "",
 ) -> str:
-    """Cắt đoạn âm thanh gốc [start_t, end_t] (mở rộng nhẹ nếu quá ngắn) làm mẫu clone đúng cảm xúc câu."""
     import numpy as np
     import soundfile as sf
 
@@ -286,13 +287,11 @@ def extract_segment_ref_clip(
         e_sec = max(s_sec + 0.25, float(end_t))
         dur = e_sec - s_sec
 
-        # Nếu phân đoạn quá ngắn (< 0.9s), mở rộng thêm biên 0.35s mỗi đầu để VieNeu-TTS có đủ ngữ điệu & sắc thái
         if dur < 0.90:
             pad = (0.95 - dur) * 0.5 + 0.15
             s_sec = max(0.0, s_sec - pad)
             e_sec = min(len(audio_samples) / float(sr), e_sec + pad)
 
-        # Giới hạn tối đa 7.0s để giữ độ nét và tốc độ clone
         if (e_sec - s_sec) > 7.0:
             e_sec = s_sec + 7.0
 
@@ -311,32 +310,60 @@ def extract_segment_ref_clip(
 
 
 def load_vieneu_engine():
-    """Khởi tạo VieNeu-TTS (tương thích nhiều phiên bản API của thư viện `vieneu`)."""
+    """Tự động quét và khởi tạo class/module của VieNeu-TTS trên mọi phiên bản cài đặt."""
     model_id = os.environ.get("VIENEU_MODEL", "pnnbao-ump/VieNeu-TTS").strip() or "pnnbao-ump/VieNeu-TTS"
     try:
         import torch
         import vieneu  # type: ignore
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        for cls_name in ("VieNeuTTS", "VieNeu", "TTS"):
-            cls = getattr(vieneu, cls_name, None)
-            if cls is not None:
-                for kw in (
-                    {"model_name": model_id, "device": device},
-                    {"model_id": model_id, "device": device},
-                    {"device": device},
-                    {},
-                ):
-                    try:
-                        eng = cls(**kw)
-                        print(f"[INFO] Đã khởi tạo {cls_name} ({model_id}) trên {device}.")
-                        return eng
-                    except TypeError:
-                        continue
-        print(f"[WARN] Không tìm thấy class khởi tạo chuẩn trong vieneu, dùng chế độ dự phòng.")
+        modules_to_scan = [vieneu]
+        if hasattr(vieneu, "__path__"):
+            for _, modname, _ in pkgutil.walk_packages(vieneu.__path__, prefix="vieneu."):
+                try:
+                    modules_to_scan.append(importlib.import_module(modname))
+                except Exception:
+                    continue
+
+        synth_methods = ("synthesize", "tts", "infer", "generate", "speak", "clone", "__call__")
+        candidate_classes = []
+        for mod in modules_to_scan:
+            for attr_name in dir(mod):
+                if attr_name.startswith("_"):
+                    continue
+                obj = getattr(mod, attr_name, None)
+                if inspect.isclass(obj):
+                    if any(callable(getattr(obj, m, None)) for m in synth_methods):
+                        candidate_classes.append((f"{mod.__name__}.{attr_name}", obj))
+
+        for full_name, cls in candidate_classes:
+            for kw in (
+                {"model_name": model_id, "device": device},
+                {"model_id": model_id, "device": device},
+                {"backbone_repo": model_id, "codec_repo": model_id},
+                {"device": device},
+                {},
+            ):
+                try:
+                    eng = cls(**kw)
+                    print(f"[INFO] Đã khởi tạo VieNeu-TTS qua {full_name} trên {device}.")
+                    return eng
+                except Exception:
+                    continue
+
+        # Trường hợp vieneu cung cấp hàm trực tiếp ở mức module
+        for mod in modules_to_scan:
+            for m in ("synthesize", "tts", "infer", "generate"):
+                fn = getattr(mod, m, None)
+                if callable(fn):
+                    print(f"[INFO] Dùng hàm trực tiếp {mod.__name__}.{m} của VieNeu-TTS.")
+                    return mod
+
+        public_attrs = [a for a in dir(vieneu) if not a.startswith("_")]
+        print(f"[WARN] Không khởi tạo được class trong vieneu (attrs={public_attrs}), chuyển sang giọng Việt neural fallback.")
         return None
     except Exception as e:
-        print(f"[WARN] Không khởi tạo được VieNeu-TTS ({e}), dùng dự phòng tổng hợp âm thanh.")
+        print(f"[WARN] Lỗi nạp VieNeu-TTS ({e}), chuyển sang giọng Việt neural fallback.")
         return None
 
 
@@ -349,22 +376,29 @@ def _synthesize_single_line_vieneu(
     target_dur: float,
     out_wav: str,
 ) -> bool:
-    """Tổng hợp 1 phân đoạn bằng VieNeu-TTS với mẫu clone riêng của phân đoạn đó."""
     import numpy as np
     import soundfile as sf
 
     if engine is None:
         return False
 
-    call_candidates = [
-        lambda: engine.synthesize(text=text_vi, ref_audio=ref_audio_path, ref_text=ref_text),
-        lambda: engine.synthesize(text_vi, ref_audio=ref_audio_path, ref_text=ref_text),
-        lambda: engine.synthesize(text_vi, ref_audio_path, ref_text),
-        lambda: engine.tts(text=text_vi, ref_audio=ref_audio_path, ref_text=ref_text),
-        lambda: engine.tts(text_vi, ref_audio=ref_audio_path),
-        lambda: engine.infer(text=text_vi, ref_audio=ref_audio_path, ref_text=ref_text),
-        lambda: engine.infer(text_vi, ref_audio_path),
-    ]
+    call_candidates = []
+    for m_name in ("synthesize", "tts", "infer", "generate", "speak", "clone"):
+        fn = getattr(engine, m_name, None)
+        if callable(fn):
+            call_candidates.extend([
+                lambda f=fn: f(text=text_vi, ref_audio=ref_audio_path, ref_text=ref_text),
+                lambda f=fn: f(text=text_vi, ref_audio_path=ref_audio_path, ref_text=ref_text),
+                lambda f=fn: f(text=text_vi, prompt_speech=ref_audio_path, prompt_text=ref_text),
+                lambda f=fn: f(text_vi, ref_audio_path, ref_text),
+                lambda f=fn: f(text_vi, ref_audio_path),
+                lambda f=fn: f(text=text_vi),
+            ])
+    if callable(engine):
+        call_candidates.extend([
+            lambda: engine(text=text_vi, ref_audio=ref_audio_path, ref_text=ref_text),
+            lambda: engine(text_vi, ref_audio_path),
+        ])
 
     for fn in call_candidates:
         try:
@@ -391,8 +425,70 @@ def _synthesize_single_line_vieneu(
     return False
 
 
+def _synthesize_vietnamese_neural_fallback(
+    text_vi: str,
+    gender: str,
+    speaker_id: str,
+    expr: dict,
+    out_wav: str,
+) -> bool:
+    """Fallback dùng giọng tiếng Việt thật (Nam/Nữ + biến thể cao độ theo từng nhân vật & cảm xúc)."""
+    try:
+        import edge_tts  # type: ignore
+
+        is_female = str(gender).lower() == "female" or str(speaker_id).endswith("_F")
+        voice = "vi-VN-HoaiMyNeural" if is_female else "vi-VN-NamMinhNeural"
+
+        tone = expr.get("tone", "neutral")
+        # Phân biệt tông giọng giữa 2 nhân vật nam (SPEAKER_00_M vs SPEAKER_02_M) và sắc thái câu
+        pitch_shift = "+0Hz"
+        rate_shift = "+0%"
+        if not is_female and "02" in str(speaker_id):
+            pitch_shift = "-14Hz"
+        if tone == "emphatic":
+            pitch_shift = "+8Hz" if is_female else "+6Hz"
+            rate_shift = "+6%"
+        elif tone == "questioning":
+            pitch_shift = "+6Hz"
+        elif tone == "harsh_contempt":
+            pitch_shift = "+4Hz" if is_female else "-8Hz"
+            rate_shift = "+8%"
+        elif tone == "warm_caring":
+            pitch_shift = "-4Hz"
+            rate_shift = "-4%"
+
+        tmp_mp3 = out_wav + ".mp3"
+
+        async def _run_edge():
+            comm = edge_tts.Communicate(text=text_vi, voice=voice, rate=rate_shift, pitch=pitch_shift)
+            await comm.save(tmp_mp3)
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                new_loop = asyncio.new_event_loop()
+                new_loop.run_until_complete(_run_edge())
+                new_loop.close()
+            else:
+                loop.run_until_complete(_run_edge())
+        except RuntimeError:
+            asyncio.run(_run_edge())
+
+        if os.path.exists(tmp_mp3) and os.path.getsize(tmp_mp3) > 256:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", tmp_mp3, "-ac", "1", "-ar", "24000", out_wav],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            os.remove(tmp_mp3)
+            return os.path.exists(out_wav) and os.path.getsize(out_wav) > 512
+    except Exception as e:
+        print(f"[WARN] Fallback edge-tts lỗi: {e}")
+    return False
+
+
 def _fit_audio_to_window(wav_path: str, target_dur: float, tempo_factor: float = 1.0):
-    """Căn chỉnh thời lượng audio tổng hợp cho khớp nhịp phân đoạn [start, end] bằng ffmpeg atempo."""
     if not os.path.exists(wav_path) or target_dur <= 0.15:
         return
     try:
@@ -401,10 +497,8 @@ def _fit_audio_to_window(wav_path: str, target_dur: float, tempo_factor: float =
         if sr <= 0 or len(data) == 0:
             return
         cur_dur = len(data) / float(sr)
-        # Chỉ co/giãn nếu lệch vượt quá ngưỡng tự nhiên
-        if cur_dur > target_dur * 1.08 or abs(tempo_factor - 1.0) >= 0.05:
-            ratio = max(0.75, min(1.45, (cur_dur / target_dur) * tempo_factor))
-            # ffmpeg atempo chỉ nhận giá trị trong [0.5, 100.0]; nếu cần tách 2 stage atempo
+        if cur_dur > target_dur * 1.06 or abs(tempo_factor - 1.0) >= 0.05:
+            ratio = max(0.75, min(1.55, (cur_dur / target_dur) * tempo_factor))
             filters = []
             rem = ratio
             while rem > 2.0:
@@ -428,19 +522,13 @@ def _fit_audio_to_window(wav_path: str, target_dur: float, tempo_factor: float =
         print(f"[WARN] Không căn chỉnh được độ dài clip {wav_path}: {e}")
 
 
-def _generate_fallback_tone_clip(text_vi: str, gender: str, target_dur: float, out_wav: str):
-    """Tạo file wav dự phòng đúng thời lượng khi chưa có engine TTS để luồng ghép âm thanh vẫn chạy thông suốt."""
+def _generate_silence_clip(target_dur: float, out_wav: str):
     import numpy as np
     import soundfile as sf
 
     sr = 24000
-    dur = max(0.3, float(target_dur or 1.0))
-    n = int(round(dur * sr))
-    t = np.linspace(0.0, dur, n, endpoint=False, dtype=np.float32)
-    base_f = 215.0 if str(gender).lower() == "female" else 120.0
-    env = np.sin(np.pi * np.clip(t / dur, 0.0, 1.0)) ** 0.5
-    sig = 0.02 * env * (np.sin(2.0 * np.pi * base_f * t) + 0.35 * np.sin(2.0 * np.pi * (base_f * 1.5) * t))
-    sf.write(out_wav, sig.astype(np.float32), sr)
+    n = max(1, int(round(max(0.25, float(target_dur or 0.5)) * sr)))
+    sf.write(out_wav, np.zeros(n, dtype=np.float32), sr)
 
 
 def _format_srt_time(seconds: float) -> str:
@@ -461,7 +549,6 @@ def build_final_dubbed_track(
     out_mix_wav: str,
     out_srt_path: str,
 ) -> str:
-    """Ghép toàn bộ phân đoạn voice đã clone theo đúng timestamp [start, end] và trộn với nhạc nền."""
     import numpy as np
     import soundfile as sf
 
@@ -490,7 +577,6 @@ def build_final_dubbed_track(
             if seg_wav.ndim > 1:
                 seg_wav = seg_wav.mean(axis=-1)
             if seg_sr != sr and len(seg_wav) > 0:
-                # Resample nhanh bằng nội suy tuyến tính nếu lệch sample rate
                 old_x = np.linspace(0.0, 1.0, len(seg_wav), endpoint=False)
                 new_len = max(1, int(round(len(seg_wav) * sr / float(seg_sr))))
                 new_x = np.linspace(0.0, 1.0, new_len, endpoint=False)
@@ -501,7 +587,6 @@ def build_final_dubbed_track(
             if i1 > i0:
                 voice_track[i0:i1] += seg_wav[: (i1 - i0)]
 
-    # Trộn với nhạc nền (no_vocals.wav) nếu có
     if bgm_wav_path and os.path.exists(bgm_wav_path):
         bgm_wav, bgm_sr = sf.read(bgm_wav_path, dtype="float32")
         if bgm_wav.ndim > 1:
@@ -588,7 +673,6 @@ def main():
     if not bgm_wav_path and os.path.exists("/kaggle/working/work/demucs_out/htdemucs/audio_16k/no_vocals.wav"):
         bgm_wav_path = "/kaggle/working/work/demucs_out/htdemucs/audio_16k/no_vocals.wav"
 
-    # Tải các ref_speaker_*.wav (nếu có) làm dự phòng thứ cấp cho từng speaker_id
     speaker_fallback_refs: dict[str, str] = {}
     for line in dub_lines:
         spk = str(line.get("speaker_id") or "SPEAKER_00")
@@ -615,6 +699,7 @@ def main():
     clip_map: dict[int, str] = {}
     enriched_lines: list[dict] = []
     cloned_count = 0
+    neural_fb_count = 0
 
     try:
         for idx_l, line in enumerate(dub_lines):
@@ -629,7 +714,6 @@ def main():
 
             expr = detect_segment_expression(text_vi, target_dur)
 
-            # 1) Cắt mẫu giọng & sắc thái trực tiếp từ phân đoạn [start_t, end_t]
             seg_ref_wav = os.path.join(refs_dir, f"ref_seg_{line_id:04d}.wav")
             chosen_ref = extract_segment_ref_clip(
                 audio_samples=audio_samples,
@@ -642,6 +726,8 @@ def main():
 
             out_clip_wav = os.path.join(clips_dir, f"dub_seg_{line_id:04d}.wav")
             ok_synth = False
+            mode_used = "silence"
+
             if text_vi:
                 ok_synth = _synthesize_single_line_vieneu(
                     engine=engine,
@@ -652,12 +738,26 @@ def main():
                     target_dur=target_dur,
                     out_wav=out_clip_wav,
                 )
+                if ok_synth:
+                    cloned_count += 1
+                    mode_used = "vieneu_per_segment"
+                else:
+                    ok_fb = _synthesize_vietnamese_neural_fallback(
+                        text_vi=text_vi,
+                        gender=gender,
+                        speaker_id=spk_id,
+                        expr=expr,
+                        out_wav=out_clip_wav,
+                    )
+                    if ok_fb:
+                        ok_synth = True
+                        neural_fb_count += 1
+                        mode_used = "vietnamese_neural_fallback"
 
             if ok_synth:
-                cloned_count += 1
                 _fit_audio_to_window(out_clip_wav, target_dur, expr["tempo_factor"])
             else:
-                _generate_fallback_tone_clip(text_vi or "...", gender, target_dur, out_clip_wav)
+                _generate_silence_clip(target_dur, out_clip_wav)
 
             clip_map[line_id] = out_clip_wav
             enriched_lines.append({
@@ -665,7 +765,7 @@ def main():
                 "tone": expr["tone"],
                 "tempo_factor": expr["tempo_factor"],
                 "seg_ref_audio": os.path.basename(chosen_ref) if chosen_ref else "",
-                "tts_mode": "vieneu_per_segment" if ok_synth else "fallback_placeholder",
+                "tts_mode": mode_used,
                 "dub_clip": os.path.basename(out_clip_wav),
             })
     finally:
@@ -689,6 +789,7 @@ def main():
         "tts_engine": "vieneu_per_segment",
         "total_lines": len(enriched_lines),
         "vieneu_cloned_lines": cloned_count,
+        "neural_fallback_lines": neural_fb_count,
         "dubbed_mix_asset": os.path.basename(out_mix_wav),
         "dubbed_mix_url": mix_url,
         "stage3_srt_asset": os.path.basename(out_srt_s3),
@@ -710,7 +811,7 @@ def main():
     sync.trigger_dispatch("stage3_completed", {"job_id": JOB_ID})
     send_ntfy(
         f"[Stage 3 Done] {JOB_ID}",
-        f"Hoàn tất {len(enriched_lines)} phân đoạn (clone VieNeu theo từng câu: {cloned_count}).",
+        f"Hoàn tất {len(enriched_lines)} phân đoạn (VieNeu clone: {cloned_count}, Neural VN: {neural_fb_count}).",
         tags="white_check_mark",
     )
 
