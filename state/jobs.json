@@ -1,0 +1,11 @@
+{
+  "jobs": {
+    "test": {
+      "job_id": "test",
+      "video_url": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
+      "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
+      "status": "STAGE1_QUEUED",
+      "updated_at": "2026-11-27T10:19:12.340Z"
+    }
+  }
+}
