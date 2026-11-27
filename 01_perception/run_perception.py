@@ -5,12 +5,12 @@ os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 os.environ["FLAGS_use_mkldnn"] = "0"
 os.environ["FLAGS_use_onednn"] = "0"
 os.environ["FLAGS_enable_pir_api"] = "0"
+os.environ["FLAGS_enable_pir_in_executor"] = "0"
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 import base64
-from concurrent.futures import ThreadPoolExecutor
 import gc
 import json
 import re
@@ -132,7 +132,10 @@ class GitHubSync:
         cr.raise_for_status()
         return cr.json()
 
-    def upload_asset(self, tag: str, file_path: str):
+    def upload_asset(self, tag: str, file_path: str) -> str:
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            print(f"[WARN] Bỏ qua upload file rỗng (0 byte): {file_path}")
+            return ""
         release = self.ensure_release(tag)
         upload_url = _clean_url_or_str(release["upload_url"].split("{")[0])
         filename = os.path.basename(file_path)
@@ -265,12 +268,26 @@ def _get_dbnet_config() -> dict:
 
 
 def _create_mobile_dbnet_ocr(lang: str, cfg: dict):
+    import paddle
     from paddleocr import PaddleOCR
 
-    # Cấu hình DBNet + model mobile cho detection và recognition
+    try:
+        paddle.set_flags({"FLAGS_use_mkldnn": False, "FLAGS_use_onednn": False, "FLAGS_enable_pir_api": False})
+    except Exception:
+        pass
+
+    use_gpu = False
+    try:
+        use_gpu = bool(paddle.device.is_compiled_with_cuda())
+    except Exception:
+        use_gpu = False
+    device_str = "gpu:0" if use_gpu else "cpu"
+
+    # Truyền enable_mkldnn=False và device để tránh lỗi ConvertPirAttribute2RuntimeAttribute trên oneDNN CPU
     candidate_kwargs = [
         dict(
-            lang=lang,
+            device=device_str,
+            enable_mkldnn=False,
             text_detection_model_name=cfg["det_model"],
             text_recognition_model_name=cfg["rec_model"],
             text_det_thresh=cfg["dbnet_thresh"],
@@ -282,12 +299,19 @@ def _create_mobile_dbnet_ocr(lang: str, cfg: dict):
             use_textline_orientation=False,
         ),
         dict(
-            lang=lang,
-            text_detection_model_name="PP-OCRv4_mobile_det",
-            text_recognition_model_name="PP-OCRv4_mobile_rec",
+            enable_mkldnn=False,
+            text_detection_model_name=cfg["det_model"],
+            text_recognition_model_name=cfg["rec_model"],
             text_det_thresh=cfg["dbnet_thresh"],
             text_det_box_thresh=cfg["dbnet_box_thresh"],
             text_det_unclip_ratio=cfg["dbnet_unclip_ratio"],
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        ),
+        dict(
+            enable_mkldnn=False,
+            lang=lang,
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
@@ -303,7 +327,9 @@ def _create_mobile_dbnet_ocr(lang: str, cfg: dict):
     last_err = None
     for kw in candidate_kwargs:
         try:
-            return PaddleOCR(**kw)
+            eng = PaddleOCR(**kw)
+            print(f"[INFO] Đã khởi tạo PaddleOCR mobile với device={kw.get('device', 'auto')}, enable_mkldnn={kw.get('enable_mkldnn', 'default')}.")
+            return eng
         except (TypeError, ValueError) as e:
             last_err = e
             continue
@@ -313,7 +339,6 @@ def _create_mobile_dbnet_ocr(lang: str, cfg: dict):
 
 
 def _parse_ocr_detections(ocr_result) -> list[dict]:
-    """Trích xuất danh sách {'poly': [[x,y]...], 'text': str, 'score': float} từ kết quả PaddleOCR."""
     detections: list[dict] = []
     if not ocr_result:
         return detections
@@ -348,7 +373,6 @@ def _parse_ocr_detections(ocr_result) -> list[dict]:
                 if poly_raw is not None:
                     try:
                         arr = poly_raw.tolist() if hasattr(poly_raw, "tolist") else list(poly_raw)
-                        # Nếu là box [x1, y1, x2, y2] chuyển thành 4 đỉnh polygon
                         if len(arr) == 4 and all(isinstance(v, (int, float)) for v in arr):
                             x1, y1, x2, y2 = arr
                             pts = [[int(x1), int(y1)], [int(x2), int(y1)], [int(x2), int(y2)], [int(x1), int(y2)]]
@@ -407,7 +431,6 @@ def _draw_bbox_visualization(
     out_vis_path: str,
     ts_sec: float,
 ):
-    """Vẽ ROI và các bbox DBNet phát hiện được lên khung hình để kiểm tra trực quan."""
     import cv2
     import numpy as np
 
@@ -418,7 +441,6 @@ def _draw_bbox_visualization(
     rx2 = int(w * roi["x2"])
     ry2 = int(h * roi["y2"])
 
-    # Vẽ khung ROI màu vàng
     cv2.rectangle(vis, (rx1, ry1), (rx2, ry2), (0, 220, 255), 2)
     cv2.putText(
         vis,
@@ -430,7 +452,6 @@ def _draw_bbox_visualization(
         2,
     )
 
-    # Vẽ từng bbox DBNet (tọa độ quy đổi về khung hình gốc)
     for idx, det in enumerate(detections_in_crop):
         pts = det.get("poly") or []
         txt = det.get("text") or ""
@@ -545,7 +566,6 @@ def run_ocr_and_draw_bbox(video_path: str, work_dir: str) -> tuple[dict, list[di
 
 
 def build_ocr_segments_without_asr(screen_texts: list[dict], duration_fallback: float = 60.0) -> list[dict]:
-    """Tạo danh sách đoạn tạm từ kết quả OCR (bỏ qua ASR) để xuất SRT/JSON cho Stage 2."""
     segments: list[dict] = []
     for idx, item in enumerate(screen_texts):
         ts = float(item.get("time", idx * 2.0))
@@ -602,8 +622,10 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
             f"{_format_srt_time(start_t)} --> {_format_srt_time(end_t)}\n"
             f"[{src_tag}] {txt}\n"
         )
+    if not blocks:
+        blocks.append("1\n00:00:00,000 --> 00:00:01,000\n[NO_OCR_TEXT_DETECTED]\n")
     with open(out_srt_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(blocks).strip() + ("\n" if blocks else ""))
+        f.write("\n".join(blocks).strip() + "\n")
     print(f"[INFO] Đã xuất file SRT Stage 1 (OCR Mobile + DBNet, không ASR): {out_srt_path} ({idx_out} dòng)")
     return out_srt_path
 
@@ -630,7 +652,6 @@ def main():
     download_video_source(sync, JOB_ID, video_asset, video_path)
     extract_audio_16k(video_path, audio_16k)
 
-    # Chạy tuần tự Demucs rồi OCR + vẽ bbox để tránh tranh chấp tài nguyên
     vocals_wav, bgm_wav = separate_vocals_and_bgm(audio_16k, work_dir)
     subtitle_roi, screen_texts, bbox_zip_path = run_ocr_and_draw_bbox(video_path, work_dir)
 
