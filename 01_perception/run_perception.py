@@ -146,18 +146,28 @@ class GitHubSync:
 
     def download_asset(self, tag: str, filename: str, dest_path: str):
         release = self.ensure_release(tag)
+        clean_name = _clean_url_or_str(filename).lstrip("/")
+        base_name = os.path.basename(clean_name)
+        candidates = {clean_name, base_name}
+
+        matched = None
         for asset in release.get("assets", []):
-            if asset["name"] == filename:
-                dl_url = _clean_url_or_str(asset["url"])
-                dl_headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/octet-stream"}
-                with requests.get(dl_url, headers=dl_headers, stream=True, timeout=300) as r:
-                    r.raise_for_status()
-                    with open(dest_path, "wb") as out:
-                        for chunk in r.iter_content(chunk_size=1024 * 1024):
-                            if chunk:
-                                out.write(chunk)
-                return dest_path
-        raise FileNotFoundError(f"Không tìm thấy asset {filename} trong release {tag}")
+            if asset.get("name") in candidates:
+                matched = asset
+                break
+
+        if matched:
+            dl_url = _clean_url_or_str(matched["url"])
+            dl_headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/octet-stream"}
+            with requests.get(dl_url, headers=dl_headers, stream=True, timeout=300) as r:
+                r.raise_for_status()
+                with open(dest_path, "wb") as out:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            out.write(chunk)
+            return dest_path
+
+        raise FileNotFoundError(f"Không tìm thấy asset {filename} (hoặc {base_name}) trong release {tag}")
 
     def trigger_dispatch(self, event_type: str, client_payload: dict):
         r = requests.post(
@@ -219,8 +229,24 @@ def download_video_source(sync: GitHubSync, tag: str, source_ref: str, dest_path
             subprocess.run([sys.executable, "-m", "gdown", direct_url, "-O", dest_path], check=True)
         else:
             subprocess.run(["curl", "-fSL", ref, "-o", dest_path], check=True)
-    else:
-        sync.download_asset(tag, ref, dest_path)
+        return
+
+    for local_cand in [ref, os.path.join(os.getcwd(), ref), os.path.join("/kaggle/working", ref)]:
+        if local_cand and os.path.exists(local_cand) and os.path.getsize(local_cand) > 1024:
+            if os.path.abspath(local_cand) != os.path.abspath(dest_path):
+                subprocess.run(["cp", "-f", local_cand, dest_path], check=True)
+            return
+
+    for rel_tag in dict.fromkeys([tag, "uploads", "sources"]):
+        try:
+            return sync.download_asset(rel_tag, ref, dest_path)
+        except FileNotFoundError:
+            continue
+
+    raise FileNotFoundError(
+        f"Không tìm thấy video '{ref}' ở thư mục local lẫn GitHub Release ({tag}). "
+        "Hãy kiểm tra bước upload video cục bộ trước khi trigger Stage 1."
+    )
 
 
 def extract_audio_16k(video_path: str, out_wav: str):
