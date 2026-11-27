@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import traceback
+import urllib.request
 import zipfile
 import requests
 
@@ -225,34 +226,38 @@ def ensure_deps():
 
 
 def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
-    """Tạo venv cô lập hoàn toàn cho RapidOCR GPU để không xung đột gói với môi trường Kaggle chính."""
+    """Tạo venv cô lập không cần ensurepip hệ thống (dùng --without-pip + get-pip.py / pip --python)."""
     venv_py = os.path.join(venv_dir, "bin", "python")
-    marker = os.path.join(venv_dir, ".rapidocr_gpu_v2_ready")
+    marker = os.path.join(venv_dir, ".rapidocr_gpu_v3_ready")
     if os.path.exists(venv_py) and os.path.exists(marker):
         return venv_py
 
     if os.path.exists(venv_dir) and not os.path.exists(marker):
         shutil.rmtree(venv_dir, ignore_errors=True)
 
-    if not os.path.exists(venv_py):
-        subprocess.run([sys.executable, "-m", "venv", venv_dir], check=True)
+    # Kaggle Debian/Ubuntu thiếu gói python3-venv (ensurepip lỗi), dùng --without-pip sẽ tạo venv sạch tức thì
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", venv_dir], check=True)
 
-    subprocess.run(
-        [
-            venv_py,
-            "-m",
-            "pip",
-            "install",
-            "-q",
-            "--upgrade",
-            "pip",
-            "numpy>=1.26.4,<2.3.0",
-            "onnxruntime-gpu",
-            "rapidocr",
-            "opencv-python-headless",
-        ],
-        check=True,
+    pkgs = [
+        "numpy>=1.26.4,<2.3.0",
+        "onnxruntime-gpu",
+        "rapidocr",
+        "opencv-python-headless",
+    ]
+
+    # Ưu tiên dùng pip hệ thống cài thẳng vào venv (--python) để không phải bootstrap pip lại
+    res = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q", "--python", venv_py, *pkgs],
+        capture_output=True,
+        text=True,
     )
+    if res.returncode != 0:
+        get_pip = "/tmp/get-pip.py"
+        if not os.path.exists(get_pip):
+            urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py", get_pip)
+        subprocess.run([venv_py, get_pip, "-q"], check=True)
+        subprocess.run([venv_py, "-m", "pip", "install", "-q", *pkgs], check=True)
+
     with open(marker, "w", encoding="utf-8") as f:
         f.write("ok\n")
     return venv_py
