@@ -1,0 +1,18 @@
+{
+  "job_id": "01",
+  "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
+  "asr_enabled": false,
+  "ocr_engine": "rapidocr_mobile_dbnet_jump",
+  "ocr_step_sec": 0.35,
+  "subtitle_roi": {
+    "x1": 0.02,
+    "y1": 0.55,
+    "x2": 0.98,
+    "y2": 0.97
+  },
+  "screen_texts": [],
+  "bbox_zip_asset": "",
+  "scene_context": "",
+  "speaker_refs": {},
+  "segments": []
+}
