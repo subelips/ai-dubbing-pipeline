@@ -194,7 +194,7 @@ def ensure_deps():
         ("numpy", "numpy"),
         ("cv2", "opencv-python"),
         ("gdown", "gdown"),
-        ("onnxruntime", "onnxruntime-gpu"),
+        ("onnxruntime", "onnxruntime"),
         ("rapidocr", "rapidocr"),
     ]
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
@@ -292,12 +292,8 @@ def _get_dbnet_config() -> dict:
 def _create_mobile_dbnet_ocr(cfg: dict):
     from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
 
-    has_cuda = False
-    try:
-        import onnxruntime as ort
-        has_cuda = "CUDAExecutionProvider" in ort.get_available_providers()
-    except Exception:
-        has_cuda = False
+    # Chạy PP-OCRv5 Mobile trên CPUExecutionProvider để tránh lỗi cuDNN 9 frontend trên T4/P100 Kaggle
+    use_cuda = os.environ.get("OCR_USE_CUDA", "0").strip() == "1"
 
     engine_type = EngineType.ONNXRUNTIME
     params = {
@@ -315,17 +311,35 @@ def _create_mobile_dbnet_ocr(cfg: dict):
         "Rec.lang_type": LangRec.CH,
         "Rec.model_type": ModelType.MOBILE,
         "Rec.ocr_version": OCRVersion.PPOCRV5,
+        "EngineConfig.onnxruntime.use_cuda": use_cuda,
     }
-    if has_cuda:
-        params["EngineConfig.onnxruntime.use_cuda"] = True
 
     try:
         ocr = RapidOCR(params=params)
-        print(f"[INFO] Đã khởi tạo RapidOCR PP-OCRv5 Mobile + DBNet (use_cuda={has_cuda}).")
+        print(f"[INFO] Đã khởi tạo RapidOCR PP-OCRv5 Mobile + DBNet (use_cuda={use_cuda}).")
         return ocr
     except Exception as e:
         print(f"[WARN] Fallback RapidOCR cấu hình gọn do: {e}")
         return RapidOCR()
+
+
+def _is_valid_subtitle_detection(txt: str, pts: list, crop_w: int, crop_h: int) -> bool:
+    """Lọc bỏ chữ trên biển tên/biểu ngữ nghiêng góc màn hình (không phải phụ đề thoại ngang)."""
+    s = str(txt or "").strip()
+    if not s:
+        return False
+    # Lọc các chuỗi lẫn ký tự Latin đơn lẻ + chữ Hán dạng biển chức danh (vd: '裁助理 Y宇轩')
+    if re.search(r"[A-Za-z]", s) and re.search(r"[\u4e00-\u9fff]", s) and len(s) <= 8:
+        return False
+    if len(pts) >= 4 and crop_w > 0 and crop_h > 0:
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        bw = max(xs) - min(xs)
+        bh = max(ys) - min(ys)
+        # Bỏ qua box dọc hoặc nghiêng mạnh (chiều cao lớn hơn chiều rộng nhiều và nằm lệch sát mép phải)
+        if bh > bw * 1.15 and min(xs) > crop_w * 0.65:
+            return False
+    return True
 
 
 def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.65) -> list[dict]:
@@ -336,6 +350,7 @@ def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.65) -> list[dic
     except Exception:
         return []
 
+    crop_h, crop_w = crop.shape[:2]
     boxes = getattr(res, "boxes", None)
     txts = getattr(res, "txts", None)
     scores = getattr(res, "scores", None)
@@ -366,6 +381,9 @@ def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.65) -> list[dic
                         pts.append([int(round(float(p[0]))), int(round(float(p[1])))])
             except Exception:
                 pts = []
+
+        if not _is_valid_subtitle_detection(txt, pts, crop_w, crop_h):
+            continue
 
         detections.append({"poly": pts, "text": txt, "score": round(sc, 3)})
     return detections
