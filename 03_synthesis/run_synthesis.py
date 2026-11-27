@@ -211,9 +211,28 @@ def _normalize_gdrive_url(url: str) -> str:
     return clean
 
 
+def _clean_vocals_for_ref(in_wav: str, out_wav: str):
+    """Lọc dải trầm ù (< 85 Hz) và chuẩn hóa nhẹ để mẫu tham chiếu cảm xúc rõ chữ, bớt ồm."""
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            in_wav,
+            "-af",
+            "highpass=f=85,lowpass=f=11500,loudnorm=I=-18:TP=-1.5:LRA=7",
+            out_wav,
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def download_source_media(sync: GitHubSync, tag: str, video_asset: str, work_dir: str) -> tuple[str, str]:
     video_path = os.path.join(work_dir, "input.mp4")
     audio_path = os.path.join(work_dir, "source_audio.wav")
+    clean_vocal_ref = os.path.join(work_dir, "clean_vocal_source.wav")
 
     existing_mp4 = "/kaggle/working/work/input.mp4"
     if os.path.exists(existing_mp4) and os.path.getsize(existing_mp4) > 1024:
@@ -229,14 +248,37 @@ def download_source_media(sync: GitHubSync, tag: str, video_asset: str, work_dir
             except Exception as e:
                 print(f"[WARN] Tải video nguồn thất bại ({e}), thử tải asset âm thanh từ Release.")
 
-    if os.path.exists(video_path) and os.path.getsize(video_path) > 1024:
+    # Ưu tiên track vocals tách từ Stage 1 nếu có để lấy mẫu cảm xúc sạch hơn
+    vocal_candidates = [
+        "/kaggle/working/work/demucs_out/htdemucs/audio_16k/vocals.wav",
+        os.path.join(work_dir, "vocals.wav"),
+    ]
+    for vc in vocal_candidates:
+        if os.path.exists(vc) and os.path.getsize(vc) > 1024:
+            try:
+                _clean_vocals_for_ref(vc, clean_vocal_ref)
+                audio_path = clean_vocal_ref
+                break
+            except Exception:
+                audio_path = vc
+                break
+
+    if not os.path.exists(audio_path) and os.path.exists(video_path) and os.path.getsize(video_path) > 1024:
+        raw_wav = os.path.join(work_dir, "raw_source_24k.wav")
         subprocess.run(
-            ["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "24000", audio_path],
+            ["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "24000", raw_wav],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        return video_path, audio_path
+        try:
+            _clean_vocals_for_ref(raw_wav, clean_vocal_ref)
+            audio_path = clean_vocal_ref
+        except Exception:
+            audio_path = raw_wav
+
+    if os.path.exists(video_path) and os.path.getsize(video_path) > 1024:
+        return video_path, audio_path if os.path.exists(audio_path) else ""
 
     bgm_dl = sync.try_download_asset(tag, "no_vocals.wav", os.path.join(work_dir, "no_vocals.wav"))
     return "", bgm_dl
@@ -259,10 +301,11 @@ def detect_segment_expression(text_vi: str, duration_sec: float) -> dict:
     elif re.search(r"\b(thật ra|bí mật|ẩn danh|người thừa kế|phá sản)\b", t, re.I):
         tone = "serious_grave"
 
-    if natural_pace > 18.0:
-        tempo_factor = min(1.28, round(natural_pace / 16.5, 2))
-    elif natural_pace < 7.5 and duration_sec > 1.2:
-        tempo_factor = max(0.85, round(natural_pace / 9.5, 2))
+    # Giữ tempo_factor mềm (0.90 - 1.16) để tránh làm méo thanh điệu tiếng Việt và tạo cảm giác robot
+    if natural_pace > 19.0:
+        tempo_factor = min(1.16, round(natural_pace / 17.5, 2))
+    elif natural_pace < 7.0 and duration_sec > 1.3:
+        tempo_factor = max(0.90, round(natural_pace / 8.5, 2))
     else:
         tempo_factor = 1.0
 
@@ -277,16 +320,18 @@ def extract_segment_ref_clip(
     out_wav_path: str,
     fallback_ref_path: str = "",
 ) -> str:
+    """Cắt mẫu tham chiếu đúng khoảng câu để giữ cảm xúc từng câu, có kiểm tra năng lượng tránh chỗ lặng."""
     import numpy as np
     import soundfile as sf
 
     if audio_samples is not None and len(audio_samples) > 0 and sr > 0:
         s_sec = max(0.0, float(start_t))
-        e_sec = max(s_sec + 0.25, float(end_t))
+        e_sec = max(s_sec + 0.30, float(end_t))
         dur = e_sec - s_sec
 
-        if dur < 1.20:
-            pad = (1.35 - dur) * 0.5 + 0.20
+        # Nếu câu quá ngắn (< 1.25s), mở rộng nhẹ sang 2 đầu để đủ đặc trưng cảm xúc câu nói
+        if dur < 1.25:
+            pad = (1.35 - dur) * 0.5 + 0.15
             s_sec = max(0.0, s_sec - pad)
             e_sec = min(len(audio_samples) / float(sr), e_sec + pad)
 
@@ -296,9 +341,10 @@ def extract_segment_ref_clip(
         i0 = max(0, int(round(s_sec * sr)))
         i1 = min(len(audio_samples), int(round(e_sec * sr)))
         if i1 - i0 >= int(0.45 * sr):
-            clip = audio_samples[i0:i1]
-            rms = float(np.sqrt(np.mean(clip.astype(np.float32) ** 2)))
-            if rms > 1e-4:
+            clip = audio_samples[i0:i1].astype(np.float32)
+            rms = float(np.sqrt(np.mean(clip ** 2)))
+            # Chỉ dùng clip của chính câu nếu có năng lượng tiếng nói đủ rõ; nếu gần như im lặng mới fallback
+            if rms >= 0.008:
                 sf.write(out_wav_path, clip, sr)
                 return out_wav_path
 
@@ -449,7 +495,6 @@ def _build_ref_kwargs_from_prepared(prep_out, param_names: set[str]) -> dict:
                 kw["ref_codes"] = items[0]
             return kw
 
-        # Nhận diện mảng mã rời rạc (int) = ref_codes và vector đặc trưng (float 1D/2D) = speaker_emb
         for it in items:
             arr = it.detach().cpu().numpy() if (hasattr(it, "detach") and hasattr(it, "cpu")) else it
             if isinstance(arr, np.ndarray):
@@ -465,12 +510,33 @@ def _build_ref_kwargs_from_prepared(prep_out, param_names: set[str]) -> dict:
                 kw["speaker_emb"] = items[0]
         return kw
 
-    # Đơn giá trị (ndarray / tensor): ưu tiên speaker_emb nếu infer yêu cầu speaker_emb
     if "speaker_emb" in param_names:
         return {"speaker_emb": prep_out}
     if "ref_codes" in param_names:
         return {"ref_codes": prep_out}
     return {}
+
+
+def _apply_gen_params_if_supported(kw: dict, param_names: set[str], tone: str):
+    """Truyền tham số sinh cân bằng để rõ chữ, giảm lặp/nhại kiểu robot mà vẫn giữ cảm xúc từng câu."""
+    temp_map = {
+        "emphatic": 0.72,
+        "questioning": 0.68,
+        "harsh_contempt": 0.72,
+        "warm_caring": 0.64,
+        "serious_grave": 0.65,
+        "neutral": 0.66,
+    }
+    target_temp = temp_map.get(tone, 0.66)
+    gen_defaults = {
+        "temperature": target_temp,
+        "top_k": 30,
+        "top_p": 0.90,
+        "repetition_penalty": 1.15,
+    }
+    for k, v in gen_defaults.items():
+        if k in param_names and k not in kw:
+            kw[k] = v
 
 
 def _synthesize_single_line_vieneu_v3(
@@ -480,6 +546,7 @@ def _synthesize_single_line_vieneu_v3(
     ref_audio_path: str,
     gender: str,
     speaker_id: str,
+    tone: str,
     out_wav: str,
 ) -> tuple[bool, list[str]]:
     import numpy as np
@@ -530,7 +597,6 @@ def _synthesize_single_line_vieneu_v3(
 
     call_candidates = []
 
-    # 1. Ưu tiên prepare_reference / encode_reference để trích xuất speaker_emb + ref_codes cho VieNeuTTSv3Turbo
     if has_ref:
         for enc_name in ("prepare_reference", "encode_reference", "get_ref_codes", "extract_speaker_embedding", "encode_speaker"):
             enc_fn = getattr(engine, enc_name, None)
@@ -550,40 +616,59 @@ def _synthesize_single_line_vieneu_v3(
                                 raise
                     ref_repr = ref_code_cache[cache_key]
                     ref_kw = _build_ref_kwargs_from_prepared(ref_repr, param_names)
+                    _apply_gen_params_if_supported(ref_kw, param_names, tone)
                     if ref_kw:
                         if "ref_text" in param_names:
                             ref_kw.setdefault("ref_text", "")
                         return fn_infer(text=text_vi, **ref_kw)
+                    extra_kw = {}
+                    _apply_gen_params_if_supported(extra_kw, param_names, tone)
                     if "speaker_emb" in param_names:
-                        return fn_infer(text=text_vi, speaker_emb=ref_repr)
+                        return fn_infer(text=text_vi, speaker_emb=ref_repr, **extra_kw)
                     if "ref_codes" in param_names:
-                        return fn_infer(text=text_vi, ref_codes=ref_repr)
+                        return fn_infer(text=text_vi, ref_codes=ref_repr, **extra_kw)
                     if "ref_audio" in param_names:
-                        return fn_infer(text=text_vi, ref_audio=ref_repr)
+                        return fn_infer(text=text_vi, ref_audio=ref_repr, **extra_kw)
                     return fn_infer(text_vi, ref_repr)
 
                 call_candidates.append((f"infer via {enc_name}", _call_encoded))
 
-        # 2. Truyền trực tiếp ref_audio nếu engine không dùng prepare_reference
         if not param_names or "ref_audio" in param_names:
-            call_candidates.append(("infer(text, ref_audio=path)", lambda: fn_infer(text=text_vi, ref_audio=ref_audio_path)))
-            if "ref_text" in param_names:
-                call_candidates.append(("infer(text, ref_audio=path, ref_text='')", lambda: fn_infer(text=text_vi, ref_audio=ref_audio_path, ref_text="")))
-            if ref_wav_arr is not None:
-                call_candidates.append(("infer(text, ref_audio=ndarray)", lambda: fn_infer(text=text_vi, ref_audio=ref_wav_arr)))
-        if "ref_audio_path" in param_names:
-            call_candidates.append(("infer(text, ref_audio_path=path)", lambda: fn_infer(text=text_vi, ref_audio_path=ref_audio_path)))
-        if "speaker_wav" in param_names:
-            call_candidates.append(("infer(text, speaker_wav=path)", lambda: fn_infer(text=text_vi, speaker_wav=ref_audio_path)))
+            def _call_ref_path():
+                kw = {"ref_audio": ref_audio_path}
+                if "ref_text" in param_names:
+                    kw["ref_text"] = ""
+                _apply_gen_params_if_supported(kw, param_names, tone)
+                return fn_infer(text=text_vi, **kw)
+            call_candidates.append(("infer(text, ref_audio=path)", _call_ref_path))
 
-    # 3. Preset voice của VieNeu-TTS-V3-Turbo nếu có
+            if ref_wav_arr is not None:
+                def _call_ref_arr():
+                    kw = {"ref_audio": ref_wav_arr}
+                    _apply_gen_params_if_supported(kw, param_names, tone)
+                    return fn_infer(text=text_vi, **kw)
+                call_candidates.append(("infer(text, ref_audio=ndarray)", _call_ref_arr))
+
     if chosen_voice is not None:
         if "voice" in param_names:
-            call_candidates.append((f"infer(text, voice={chosen_voice})", lambda v=chosen_voice: fn_infer(text=text_vi, voice=v)))
+            def _call_voice(v=chosen_voice):
+                kw = {"voice": v}
+                _apply_gen_params_if_supported(kw, param_names, tone)
+                return fn_infer(text=text_vi, **kw)
+            call_candidates.append((f"infer(text, voice={chosen_voice})", _call_voice))
         if "speaker" in param_names:
-            call_candidates.append((f"infer(text, speaker={chosen_voice})", lambda v=chosen_voice: fn_infer(text=text_vi, speaker=v)))
+            def _call_speaker(v=chosen_voice):
+                kw = {"speaker": v}
+                _apply_gen_params_if_supported(kw, param_names, tone)
+                return fn_infer(text=text_vi, **kw)
+            call_candidates.append((f"infer(text, speaker={chosen_voice})", _call_speaker))
 
-    call_candidates.append(("infer(text=text_vi)", lambda: fn_infer(text=text_vi)))
+    def _call_plain_kw():
+        kw = {}
+        _apply_gen_params_if_supported(kw, param_names, tone)
+        return fn_infer(text=text_vi, **kw)
+
+    call_candidates.append(("infer(text=text_vi)", _call_plain_kw))
     call_candidates.append(("infer(text_vi)", lambda: fn_infer(text_vi)))
 
     default_sr = int(getattr(engine, "sample_rate", None) or getattr(engine, "sr", None) or 24000)
@@ -611,7 +696,30 @@ def _synthesize_single_line_vieneu_v3(
     return False, errors
 
 
+def _polish_voice_clip(wav_path: str):
+    """Lọc bớt ù trầm (< 90 Hz) và làm rõ phụ âm nhẹ trên từng clip thoại."""
+    if not os.path.exists(wav_path) or os.path.getsize(wav_path) <= 512:
+        return
+    tmp_clean = wav_path + ".clean.wav"
+    res = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            wav_path,
+            "-af",
+            "highpass=f=90,equalizer=f=3200:width_type=q:w=1.5:g=2.5,acompressor=threshold=-20dB:ratio=2.5:attack=10:release=120",
+            tmp_clean,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode == 0 and os.path.exists(tmp_clean) and os.path.getsize(tmp_clean) > 512:
+        os.replace(tmp_clean, wav_path)
+
+
 def _fit_audio_to_window(wav_path: str, target_dur: float, tempo_factor: float = 1.0):
+    """Căn chỉnh thời lượng mềm (0.88 - 1.22) để không làm biến dạng thanh điệu tiếng Việt."""
     if not os.path.exists(wav_path) or target_dur <= 0.15:
         return
     try:
@@ -620,8 +728,8 @@ def _fit_audio_to_window(wav_path: str, target_dur: float, tempo_factor: float =
         if sr <= 0 or len(data) == 0:
             return
         cur_dur = len(data) / float(sr)
-        if cur_dur > target_dur * 1.06 or abs(tempo_factor - 1.0) >= 0.05:
-            ratio = max(0.75, min(1.55, (cur_dur / target_dur) * tempo_factor))
+        if cur_dur > target_dur * 1.08 or abs(tempo_factor - 1.0) >= 0.05:
+            ratio = max(0.88, min(1.22, (cur_dur / target_dur) * tempo_factor))
             filters = []
             rem = ratio
             while rem > 2.0:
@@ -672,6 +780,7 @@ def build_final_dubbed_track(
     out_mix_wav: str,
     out_srt_path: str,
 ) -> str:
+    """Trộn giọng thoại đã lọc ù với nhạc nền có ducking tự động khi có thoại."""
     import numpy as np
     import soundfile as sf
 
@@ -727,7 +836,16 @@ def build_final_dubbed_track(
         else:
             bgm_wav = bgm_wav[:total_samples]
 
-        final_mix = np.clip(voice_track + 0.55 * bgm_wav, -1.0, 1.0)
+        # Ducking mượt theo bao năng lượng thoại: có thoại hạ bgm còn ~0.16, im lặng giữ bgm ~0.48
+        win = max(1, int(0.05 * sr))
+        abs_v = np.abs(voice_track)
+        kernel = np.ones(win, dtype=np.float32) / float(win)
+        env = np.convolve(abs_v, kernel, mode="same")
+        has_speech = (env > 0.004).astype(np.float32)
+        smooth_speech = np.convolve(has_speech, np.ones(max(1, int(0.15 * sr)), dtype=np.float32) / float(max(1, int(0.15 * sr))), mode="same")
+        bgm_gain = 0.48 - 0.32 * np.clip(smooth_speech, 0.0, 1.0)
+
+        final_mix = np.clip(voice_track + bgm_gain * bgm_wav, -1.0, 1.0)
     else:
         final_mix = np.clip(voice_track, -1.0, 1.0)
 
@@ -778,7 +896,7 @@ sync = GitHubSync(GH_REPO, GH_TOKEN)
 def main():
     send_ntfy(
         f"[Stage 3] {JOB_ID}",
-        f"Bắt đầu tổng hợp giọng nói bằng VieNeu-TTS-V3-Turbo (không fallback edge-tts) cho job {JOB_ID}.",
+        f"Bắt đầu tổng hợp giọng nói bằng VieNeu-TTS-V3-Turbo (giữ cảm xúc từng câu + lọc ù & ducking) cho job {JOB_ID}.",
         tags="loud_sound",
     )
 
@@ -872,9 +990,11 @@ def main():
                     ref_audio_path=chosen_ref,
                     gender=gender,
                     speaker_id=spk_id,
+                    tone=expr["tone"],
                     out_wav=out_clip_wav,
                 )
                 if ok_synth:
+                    _polish_voice_clip(out_clip_wav)
                     cloned_count += 1
                     mode_used = "vieneu_v3_turbo"
                 elif not first_fail_errors and errs:
