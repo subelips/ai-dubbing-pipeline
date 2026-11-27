@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI Dubbing Pipeline — Control Panel</title>
+  <title>AI Dubbing Pipeline — Link Control Panel</title>
   <style>
     :root {
       --bg: #0b0f17;
@@ -29,7 +29,7 @@
     }
 
     .container {
-      max-width: 1120px;
+      max-width: 1080px;
       margin: 0 auto;
       padding: 24px 16px 64px;
     }
@@ -41,16 +41,15 @@
     }
 
     .subtitle {
-      margin: 0 0 24px;
+      margin: 0 0 22px;
       color: var(--muted);
       font-size: 14px;
     }
 
     .grid-2 {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 16px;
-      margin-bottom: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 14px;
     }
 
     .card {
@@ -97,16 +96,6 @@
       border-color: var(--accent);
     }
 
-    input[type="file"] {
-      width: 100%;
-      background: var(--panel-2);
-      border: 1px dashed var(--border);
-      color: var(--text);
-      border-radius: 8px;
-      padding: 10px;
-      font-size: 13px;
-    }
-
     .field {
       margin-bottom: 14px;
     }
@@ -127,7 +116,6 @@
       font-size: 14px;
       font-weight: 600;
       cursor: pointer;
-      transition: background 0.15s ease;
     }
 
     button:hover:not(:disabled) {
@@ -193,8 +181,6 @@
       color: var(--muted);
       font-weight: 600;
       font-size: 12.5px;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
     }
 
     a {
@@ -220,7 +206,7 @@
 <body>
   <div class="container">
     <h1>AI Dubbing Pipeline</h1>
-    <p class="subtitle">Tạo job, đẩy video lên GitHub Release (trực tiếp hoặc qua GitHub Actions), theo dõi trạng thái và tải artifact.</p>
+    <p class="subtitle">Tạo job bằng link video/Google Drive, cập nhật state/jobs.json và kích hoạt Stage 1 từ GitHub Pages.</p>
 
     <!-- 1. Cấu hình GitHub -->
     <div class="card">
@@ -239,9 +225,9 @@
         </div>
       </div>
       <div class="field">
-        <label for="ghToken">GitHub Token (PAT có quyền Contents &amp; Actions Read/Write)</label>
+        <label for="ghToken">GitHub Token (Fine-grained PAT có quyền Contents &amp; Actions Read/Write)</label>
         <input id="ghToken" type="password" placeholder="github_pat_..." />
-        <div class="hint">Lưu cục bộ trên trình duyệt; nên xóa sau khi dùng trên máy lạ.</div>
+        <div class="hint">Lưu cục bộ trong trình duyệt; nên xóa khi dùng trên thiết bị lạ.</div>
       </div>
       <div class="row">
         <button id="btnSaveCfg" type="button">Lưu cấu hình</button>
@@ -249,13 +235,13 @@
       </div>
     </div>
 
-    <!-- 2. Tạo Job mới -->
+    <!-- 2. Tạo Job qua Link -->
     <div class="card">
-      <div class="card-title"><span>2. Tạo Job &amp; Nguồn Video</span></div>
+      <div class="card-title"><span>2. Tạo Job từ Link Video</span></div>
       <div class="grid-2">
         <div class="field">
           <label for="jobId">Job ID</label>
-          <input id="jobId" type="text" placeholder="ví dụ: ep01 hoặc test" />
+          <input id="jobId" type="text" placeholder="ví dụ: ep01" />
         </div>
         <div class="field">
           <label for="sourceLang">Ngôn ngữ gốc</label>
@@ -270,33 +256,14 @@
       </div>
 
       <div class="field">
-        <label for="sourceMode">Cách cung cấp video</label>
-        <select id="sourceMode">
-          <option value="local" selected>Upload trực tiếp file cục bộ lên GitHub Release</option>
-          <option value="url">Link Google Drive / URL trực tiếp</option>
-          <option value="release_asset">Dùng sẵn tên asset đã có trên GitHub Release</option>
-        </select>
-      </div>
-
-      <div id="localFileBox" class="field">
-        <label for="videoFile">Chọn file video cục bộ (.mp4, .mkv, .mov...)</label>
-        <input id="videoFile" type="file" accept="video/*" />
-        <div id="fileMeta" class="hint">Chưa chọn file nào. File sẽ tự chuẩn hóa tên thành &lt;jobId&gt;_source.&lt;ext&gt;.</div>
-      </div>
-
-      <div id="remoteUrlBox" class="field hidden">
         <label for="videoUrl">Link Google Drive hoặc URL video</label>
-        <input id="videoUrl" type="text" placeholder="https://drive.google.com/file/d/.../view?usp=sharing" />
-      </div>
-
-      <div id="releaseAssetBox" class="field hidden">
-        <label for="releaseAssetName">Tên file asset trên Release</label>
-        <input id="releaseAssetName" type="text" placeholder="ví dụ: test_source.mp4" />
+        <input id="videoUrl" type="text" placeholder="https://drive.google.com/file/d/.../view?usp=sharing hoặc link trực tiếp" />
+        <div class="hint">Chỉ hỗ trợ nhập link để ghi vào video_asset / video_url trong state/jobs.json.</div>
       </div>
 
       <div class="grid-2">
         <div class="field">
-          <label for="triggerMode">Cách kích hoạt chạy pipeline</label>
+          <label for="triggerMode">Cách kích hoạt Stage 1</label>
           <select id="triggerMode">
             <option value="dispatch" selected>repository_dispatch</option>
             <option value="workflow_dispatch">workflow_dispatch (GitHub Actions workflow)</option>
@@ -338,7 +305,7 @@
             <tr>
               <th>Job ID</th>
               <th>Trạng thái</th>
-              <th>Nguồn video</th>
+              <th>Link Video</th>
               <th>Artifacts (Release)</th>
               <th>Thao tác</th>
             </tr>
@@ -354,7 +321,7 @@
   </div>
 
   <script>
-    const STORAGE_KEY = "ai_dubbing_pipeline_ui_v2";
+    const STORAGE_KEY = "ai_dubbing_pipeline_link_ui_v1";
 
     const el = {
       ghRepo: document.getElementById("ghRepo"),
@@ -365,14 +332,7 @@
       btnRefreshJobs: document.getElementById("btnRefreshJobs"),
       jobId: document.getElementById("jobId"),
       sourceLang: document.getElementById("sourceLang"),
-      sourceMode: document.getElementById("sourceMode"),
-      localFileBox: document.getElementById("localFileBox"),
-      remoteUrlBox: document.getElementById("remoteUrlBox"),
-      releaseAssetBox: document.getElementById("releaseAssetBox"),
-      videoFile: document.getElementById("videoFile"),
-      fileMeta: document.getElementById("fileMeta"),
       videoUrl: document.getElementById("videoUrl"),
-      releaseAssetName: document.getElementById("releaseAssetName"),
       triggerMode: document.getElementById("triggerMode"),
       dispatchBox: document.getElementById("dispatchBox"),
       workflowBox: document.getElementById("workflowBox"),
@@ -389,6 +349,12 @@
       const ts = new Date().toLocaleTimeString("vi-VN");
       el.logBox.textContent += `\n[${ts}] ${msg}`;
       el.logBox.scrollTop = el.logBox.scrollHeight;
+    }
+
+    function syncTriggerVisibility() {
+      const isWf = el.triggerMode.value === "workflow_dispatch";
+      el.dispatchBox.classList.toggle("hidden", isWf);
+      el.workflowBox.classList.toggle("hidden", !isWf);
     }
 
     function loadConfig() {
@@ -492,93 +458,11 @@
       throw new Error(`Xung đột ghi ${cleanPath} sau ${maxRetries} lần thử.`);
     }
 
-    async function ensureRelease(cfg, tag) {
-      const apiBase = `https://api.github.com/repos/${cfg.repo}`;
-      let res = await fetch(`${apiBase}/releases/tags/${encodeURIComponent(tag)}`, {
-        headers: ghHeaders(cfg.token),
-      });
-      if (res.status === 200) return await res.json();
-      if (res.status === 404) {
-        res = await fetch(`${apiBase}/releases`, {
-          method: "POST",
-          headers: ghHeaders(cfg.token, { "Content-Type": "application/json" }),
-          body: JSON.stringify({
-            tag_name: tag,
-            name: `Artifacts - ${tag}`,
-            draft: false,
-            prerelease: false,
-          }),
-        });
-      }
-      if (!res.ok) {
-        throw new Error(`Không tạo/lấy được Release ${tag} (${res.status}): ${await res.text()}`);
-      }
-      return await res.json();
-    }
-
-    function uploadBinaryXhr(uploadUrl, token, file) {
-      return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", uploadUrl, true);
-        xhr.timeout = 180000;
-        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-        xhr.setRequestHeader("Content-Type", "application/octet-stream");
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              resolve(JSON.parse(xhr.responseText || "{}"));
-            } catch (_) {
-              resolve({});
-            }
-          } else {
-            reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText || xhr.statusText}`));
-          }
-        };
-        xhr.onerror = () => {
-          reject(new Error("Lỗi mạng hoặc bị chặn khi gửi lên uploads.github.com (kiểm tra 4G/CORS/token)."));
-        };
-        xhr.ontimeout = () => {
-          reject(new Error("Hết thời gian chờ khi tải file lên GitHub Release."));
-        };
-        xhr.send(file);
-      });
-    }
-
-    async function uploadVideoToRelease(cfg, jobId, file) {
-      const apiBase = `https://api.github.com/repos/${cfg.repo}`;
-      const release = await ensureRelease(cfg, jobId);
-
-      const extMatch = (file.name || "").match(/\.([a-zA-Z0-9]+)$/);
-      const ext = extMatch ? extMatch[1].toLowerCase() : "mp4";
-      const cleanJob = jobId.replace(/[^\w\-]/g, "_");
-      const assetName = `${cleanJob}_source.${ext}`;
-
-      for (const asset of release.assets || []) {
-        if (asset.name === assetName || asset.name === file.name) {
-          await fetch(`${apiBase}/releases/assets/${asset.id}`, {
-            method: "DELETE",
-            headers: ghHeaders(cfg.token),
-          });
-        }
-      }
-
-      const uploadUrlBase = release.upload_url.split("{")[0];
-      const fullUploadUrl = `${uploadUrlBase}?name=${encodeURIComponent(assetName)}`;
-      log(`Đang upload ${assetName} (${(file.size / (1024 * 1024)).toFixed(2)} MB) lên Release ${jobId}...`);
-
-      const upJson = await uploadBinaryXhr(fullUploadUrl, cfg.token, file);
-      log(`Upload thành công asset: ${assetName}`);
-      return {
-        assetName,
-        downloadUrl: upJson.browser_download_url || assetName,
-      };
-    }
-
     async function triggerStage1(cfg, jobId) {
       const apiBase = `https://api.github.com/repos/${cfg.repo}`;
       if (cfg.triggerMode === "workflow_dispatch") {
         if (!cfg.workflowFile) {
-          throw new Error("Vui lòng nhập tên Workflow File (ví dụ: run_stage1.yml) cho workflow_dispatch.");
+          throw new Error("Vui lòng nhập tên Workflow File cho workflow_dispatch.");
         }
         const url = `${apiBase}/actions/workflows/${encodeURIComponent(cfg.workflowFile)}/dispatches`;
         const res = await fetch(url, {
@@ -589,10 +473,8 @@
             inputs: { job_id: jobId },
           }),
         });
-        if (!res.ok) {
-          throw new Error(`Gửi workflow_dispatch thất bại (${res.status}): ${await res.text()}`);
-        }
-        log(`Đã kích hoạt workflow '${cfg.workflowFile}' (ref=${cfg.workflowRef}) cho job ${jobId}.`);
+        if (!res.ok) throw new Error(`Gửi workflow_dispatch thất bại (${res.status}): ${await res.text()}`);
+        log(`Đã kích hoạt workflow '${cfg.workflowFile}' cho job ${jobId}.`);
         return;
       }
 
@@ -606,9 +488,7 @@
           client_payload: { job_id: jobId },
         }),
       });
-      if (!res.ok) {
-        throw new Error(`Gửi repository_dispatch '${eventName}' thất bại (${res.status}): ${await res.text()}`);
-      }
+      if (!res.ok) throw new Error(`Gửi repository_dispatch '${eventName}' thất bại (${res.status}): ${await res.text()}`);
       log(`Đã gửi repository_dispatch '${eventName}' cho job ${jobId}.`);
     }
 
@@ -652,11 +532,12 @@
             }
           } catch (_) {}
 
+          const linkText = info.video_url || info.video_asset || "—";
           return `
             <tr>
               <td><strong>${id}</strong></td>
               <td><span class="badge ${badgeClass}">${st}</span></td>
-              <td style="max-width: 240px; word-break: break-all;">${info.video_asset || info.video_url || "—"}</td>
+              <td style="max-width: 260px; word-break: break-all;">${linkText}</td>
               <td>${assetLinks}</td>
               <td>
                 <button type="button" class="secondary" onclick="window.__rerunStage1('${id}')">Chạy Stage 1</button>
@@ -687,30 +568,7 @@
       }
     };
 
-    function syncSourceVisibility() {
-      const mode = el.sourceMode.value;
-      el.localFileBox.classList.toggle("hidden", mode !== "local");
-      el.remoteUrlBox.classList.toggle("hidden", mode !== "url");
-      el.releaseAssetBox.classList.toggle("hidden", mode !== "release_asset");
-    }
-
-    function syncTriggerVisibility() {
-      const isWf = el.triggerMode.value === "workflow_dispatch";
-      el.dispatchBox.classList.toggle("hidden", isWf);
-      el.workflowBox.classList.toggle("hidden", !isWf);
-    }
-
-    el.sourceMode.addEventListener("change", syncSourceVisibility);
     el.triggerMode.addEventListener("change", syncTriggerVisibility);
-
-    el.videoFile.addEventListener("change", () => {
-      const f = el.videoFile.files && el.videoFile.files[0];
-      if (!f) {
-        el.fileMeta.textContent = "Chưa chọn file nào.";
-        return;
-      }
-      el.fileMeta.textContent = `Đã chọn: ${f.name} (${(f.size / (1024 * 1024)).toFixed(2)} MB)`;
-    });
 
     el.btnSaveCfg.addEventListener("click", () => {
       try {
@@ -737,24 +595,11 @@
         const cfg = getCfg();
         const jobId = el.jobId.value.trim();
         const sourceLang = el.sourceLang.value;
-        const mode = el.sourceMode.value;
+        const rawUrl = el.videoUrl.value.trim();
 
         if (!jobId) throw new Error("Vui lòng nhập Job ID.");
-
-        let videoAssetValue = "";
-        if (mode === "local") {
-          const file = el.videoFile.files && el.videoFile.files[0];
-          if (!file) throw new Error("Vui lòng chọn file video cục bộ trước khi tạo job.");
-          const up = await uploadVideoToRelease(cfg, jobId, file);
-          videoAssetValue = up.assetName;
-        } else if (mode === "url") {
-          const rawUrl = el.videoUrl.value.trim();
-          if (!rawUrl) throw new Error("Vui lòng nhập link Google Drive hoặc URL video.");
-          videoAssetValue = rawUrl;
-        } else {
-          const assetName = el.releaseAssetName.value.trim();
-          if (!assetName) throw new Error("Vui lòng nhập tên asset đã có trên GitHub Release.");
-          videoAssetValue = assetName;
+        if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
+          throw new Error("Vui lòng nhập link hợp lệ bắt đầu bằng http:// hoặc https://.");
         }
 
         const { data } = await readJsonFile(cfg, "state/jobs.json");
@@ -763,13 +608,14 @@
           ...(data.jobs[jobId] || {}),
           job_id: jobId,
           source_lang: sourceLang,
-          video_asset: videoAssetValue,
+          video_url: rawUrl,
+          video_asset: rawUrl,
           status: "STAGE1_QUEUED",
           updated_at: new Date().toISOString(),
         };
 
         await writeJsonFile(cfg, "state/jobs.json", data, `create/update job ${jobId}`);
-        log(`Đã cập nhật state/jobs.json cho job '${jobId}' (video_asset=${videoAssetValue}).`);
+        log(`Đã cập nhật state/jobs.json cho job '${jobId}'.`);
 
         await triggerStage1(cfg, jobId);
         await refreshJobs();
