@@ -238,21 +238,9 @@
     <!-- 2. Tạo Job qua Link -->
     <div class="card">
       <div class="card-title"><span>2. Tạo Job từ Link Video</span></div>
-      <div class="grid-2">
-        <div class="field">
-          <label for="jobId">Job ID</label>
-          <input id="jobId" type="text" placeholder="" />
-        </div>
-        <div class="field">
-          <label for="sourceLang">Ngôn ngữ gốc</label>
-          <select id="sourceLang">
-            <option value="zh" selected>Tiếng Trung (zh)</option>
-            <option value="ja">Tiếng Nhật (ja)</option>
-            <option value="ko">Tiếng Hàn (ko)</option>
-            <option value="en">Tiếng Anh (en)</option>
-            <option value="vi">Tiếng Việt (vi)</option>
-          </select>
-        </div>
+      <div class="field">
+        <label for="jobId">Job ID</label>
+        <input id="jobId" type="text" placeholder="" />
       </div>
 
       <div class="field">
@@ -331,7 +319,6 @@
       btnSaveCfg: document.getElementById("btnSaveCfg"),
       btnRefreshJobs: document.getElementById("btnRefreshJobs"),
       jobId: document.getElementById("jobId"),
-      sourceLang: document.getElementById("sourceLang"),
       videoUrl: document.getElementById("videoUrl"),
       triggerMode: document.getElementById("triggerMode"),
       dispatchBox: document.getElementById("dispatchBox"),
@@ -576,7 +563,6 @@
         saveConfig();
         const cfg = getCfg();
         const jobId = el.jobId.value.trim();
-        const sourceLang = el.sourceLang.value;
         const rawUrl = el.videoUrl.value.trim();
 
         if (!jobId) throw new Error("Vui lòng nhập Job ID.");
@@ -589,7 +575,6 @@
         data.jobs[jobId] = {
           ...(data.jobs[jobId] || {}),
           job_id: jobId,
-          source_lang: sourceLang,
           video_url: rawUrl,
           video_asset: rawUrl,
           status: "STAGE1_QUEUED",
