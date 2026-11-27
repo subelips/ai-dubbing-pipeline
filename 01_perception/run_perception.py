@@ -278,13 +278,13 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
 
 def _get_dbnet_config() -> dict:
     return {
-        "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.30")),
-        "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.50")),
-        "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.60")),
-        "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "960")),
-        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.65")),
-        "step_sec": max(0.4, float(os.environ.get("OCR_STEP_SEC", "0.8"))),
-        "idle_jump_sec": max(1.0, float(os.environ.get("OCR_IDLE_JUMP_SEC", "2.4"))),
+        "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.25")),
+        "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.45")),
+        "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.75")),
+        "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "1120")),
+        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.50")),
+        "step_sec": max(0.25, float(os.environ.get("OCR_STEP_SEC", "0.45"))),
+        "idle_jump_sec": max(0.6, float(os.environ.get("OCR_IDLE_JUMP_SEC", "1.1"))),
         "save_bbox_vis": os.environ.get("SAVE_BBOX_VIS", "0").strip() == "1",
     }
 
@@ -292,7 +292,6 @@ def _get_dbnet_config() -> dict:
 def _create_mobile_dbnet_ocr(cfg: dict):
     from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
 
-    # Chạy PP-OCRv5 Mobile trên CPUExecutionProvider để tránh lỗi cuDNN 9 frontend trên T4/P100 Kaggle
     use_cuda = os.environ.get("OCR_USE_CUDA", "0").strip() == "1"
 
     engine_type = EngineType.ONNXRUNTIME
@@ -316,7 +315,7 @@ def _create_mobile_dbnet_ocr(cfg: dict):
 
     try:
         ocr = RapidOCR(params=params)
-        print(f"[INFO] Đã khởi tạo RapidOCR PP-OCRv5 Mobile + DBNet (use_cuda={use_cuda}).")
+        print(f"[INFO] Đã khởi tạo RapidOCR PP-OCRv5 Mobile + DBNet (use_cuda={use_cuda}, step={cfg['step_sec']}s, idle={cfg['idle_jump_sec']}s).")
         return ocr
     except Exception as e:
         print(f"[WARN] Fallback RapidOCR cấu hình gọn do: {e}")
@@ -324,25 +323,21 @@ def _create_mobile_dbnet_ocr(cfg: dict):
 
 
 def _is_valid_subtitle_detection(txt: str, pts: list, crop_w: int, crop_h: int) -> bool:
-    """Lọc bỏ chữ trên biển tên/biểu ngữ nghiêng góc màn hình (không phải phụ đề thoại ngang)."""
+    """Lọc chữ rác trên biển/nhãn dọc lệch mép nhưng giữ lại phụ đề ngắn xuất hiện nhanh."""
     s = str(txt or "").strip()
     if not s:
-        return False
-    # Lọc các chuỗi lẫn ký tự Latin đơn lẻ + chữ Hán dạng biển chức danh (vd: '裁助理 Y宇轩')
-    if re.search(r"[A-Za-z]", s) and re.search(r"[\u4e00-\u9fff]", s) and len(s) <= 8:
         return False
     if len(pts) >= 4 and crop_w > 0 and crop_h > 0:
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
         bw = max(xs) - min(xs)
         bh = max(ys) - min(ys)
-        # Bỏ qua box dọc hoặc nghiêng mạnh (chiều cao lớn hơn chiều rộng nhiều và nằm lệch sát mép phải)
-        if bh > bw * 1.15 and min(xs) > crop_w * 0.65:
+        if bh > bw * 1.45 and min(xs) > crop_w * 0.72:
             return False
     return True
 
 
-def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.65) -> list[dict]:
+def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.50) -> list[dict]:
     if ocr_engine is None or crop is None:
         return []
     try:
@@ -368,8 +363,10 @@ def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.65) -> list[dic
         txt = str(txt_raw or "").strip()
         sc = float(scores[i]) if (scores is not None and i < len(scores) and scores[i] is not None) else 1.0
         clean_chars = re.sub(r"[\s\W_]+", "", txt, flags=re.UNICODE)
-        min_len = 1 if (sc >= 0.85 and re.search(r"[\u4e00-\u9fff]", clean_chars)) else 2
-        if sc < min_score or len(clean_chars) < min_len:
+        if not clean_chars or sc < min_score:
+            continue
+        # Phụ đề ngắn chớp nhoáng (1 ký tự) được giữ nếu điểm OCR đạt >= 0.65 hoặc là chữ/số rõ
+        if len(clean_chars) < 2 and sc < 0.65:
             continue
 
         pts = []
@@ -439,7 +436,7 @@ def _draw_bbox_visualization(
 
 
 def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[dict], str, float]:
-    roi = {"x1": 0.02, "y1": 0.52, "x2": 0.98, "y2": 0.96}
+    roi = {"x1": 0.01, "y1": 0.48, "x2": 0.99, "y2": 0.97}
     vis_dir = os.path.join(work_dir, "bbox_vis")
     zip_path = os.path.join(work_dir, f"{JOB_ID}_bbox_vis.zip")
     duration = 60.0
@@ -464,7 +461,8 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
         min_score = db_cfg["min_score"]
 
         def _probe_at(t_sec: float):
-            cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, t_sec) * 1000.0)
+            clamped_t = max(0.0, min(duration, float(t_sec)))
+            cap.set(cv2.CAP_PROP_POS_MSEC, clamped_t * 1000.0)
             ok, frm = cap.read()
             if not ok or frm is None:
                 return None, []
@@ -474,7 +472,25 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                 return frm, []
             return frm, _run_dbnet_ocr_single(ocr, crp, min_score=min_score)
 
-        cur_t = round(min(duration * 0.01, 0.4), 2)
+        def _record_hit(t_val: float, frm, dets_list: list[dict], txts_list: list[str]):
+            nonlocal hits
+            hits += 1
+            vis_name = f"frame_{hits - 1:03d}_{t_val:.2f}s.jpg"
+            if save_vis and frm is not None:
+                vp = os.path.join(vis_dir, vis_name)
+                _draw_bbox_visualization(frm, roi, dets_list, vp, t_val)
+                if os.path.exists(vp):
+                    vis_files.append(vp)
+            screen_texts.append({
+                "time": t_val,
+                "texts": txts_list,
+                "boxes": dets_list,
+                "vis_image": vis_name if save_vis else "",
+            })
+
+        cur_t = round(min(duration * 0.005, 0.2), 2)
+        prev_probed_t = 0.0
+        prev_texts: list[str] = []
         consecutive_empty = 0
         last_jump = step_sec
         steps_visited = 0
@@ -486,48 +502,48 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
             steps_visited += 1
             frame, dets = _probe_at(cur_t)
             if frame is None:
+                prev_probed_t = cur_t
                 cur_t = round(cur_t + step_sec, 2)
                 continue
 
             texts_found = [d["text"] for d in dets if str(d.get("text") or "").strip()]
 
             if dets or texts_found:
-                if last_jump > step_sec * 1.3 and (cur_t - step_sec) > 0.2:
-                    back_t = round(cur_t - step_sec, 2)
-                    steps_visited += 1
-                    b_frame, b_dets = _probe_at(back_t)
-                    b_texts = [d["text"] for d in b_dets if str(d.get("text") or "").strip()]
-                    if b_texts:
-                        hits += 1
-                        vis_name_b = f"frame_{hits - 1:03d}_{back_t:.2f}s.jpg"
-                        if save_vis and b_frame is not None:
-                            vp_b = os.path.join(vis_dir, vis_name_b)
-                            _draw_bbox_visualization(b_frame, roi, b_dets, vp_b, back_t)
-                            vis_files.append(vp_b)
-                        screen_texts.append({
-                            "time": back_t,
-                            "texts": b_texts,
-                            "boxes": b_dets,
-                            "vis_image": vis_name_b if save_vis else "",
-                        })
+                # Nếu vừa nhảy dài hoặc đổi dòng phụ đề, kiểm tra lùi nửa bước / điểm giữa để bắt phụ đề chớp nhoáng
+                gap_since_prev = cur_t - prev_probed_t
+                text_changed = " ".join(texts_found).strip() != " ".join(prev_texts).strip()
+                if (last_jump > step_sec * 1.15 or text_changed) and gap_since_prev > 0.25:
+                    probe_candidates = []
+                    if last_jump > step_sec * 1.15:
+                        probe_candidates.append(round(max(prev_probed_t + 0.15, cur_t - step_sec), 2))
+                    probe_candidates.append(round((prev_probed_t + cur_t) * 0.5, 2))
+                    for extra_t in sorted(set(probe_candidates)):
+                        if 0.0 <= extra_t < cur_t - 0.1:
+                            steps_visited += 1
+                            e_frame, e_dets = _probe_at(extra_t)
+                            e_texts = [d["text"] for d in e_dets if str(d.get("text") or "").strip()]
+                            if e_texts:
+                                _record_hit(extra_t, e_frame, e_dets, e_texts)
 
-                hits += 1
                 consecutive_empty = 0
-                vis_name = f"frame_{hits - 1:03d}_{cur_t:.2f}s.jpg"
-                if save_vis:
-                    vis_path = os.path.join(vis_dir, vis_name)
-                    _draw_bbox_visualization(frame, roi, dets, vis_path, cur_t)
-                    if os.path.exists(vis_path):
-                        vis_files.append(vis_path)
-                screen_texts.append({
-                    "time": cur_t,
-                    "texts": texts_found,
-                    "boxes": dets,
-                    "vis_image": vis_name if save_vis else "",
-                })
+                _record_hit(cur_t, frame, dets, texts_found)
+                prev_texts = texts_found
+                prev_probed_t = cur_t
                 last_jump = step_sec
                 cur_t = round(cur_t + step_sec, 2)
             else:
+                # Nếu trước đó có phụ đề nhưng bước này trống, dò điểm giữa để bắt phụ đề ngắn vừa lóe lên rồi tắt
+                if prev_texts and (cur_t - prev_probed_t) > 0.28:
+                    mid_t = round((prev_probed_t + cur_t) * 0.5, 2)
+                    if prev_probed_t < mid_t < cur_t:
+                        steps_visited += 1
+                        m_frame, m_dets = _probe_at(mid_t)
+                        m_texts = [d["text"] for d in m_dets if str(d.get("text") or "").strip()]
+                        if m_texts and " ".join(m_texts).strip() != " ".join(prev_texts).strip():
+                            _record_hit(mid_t, m_frame, m_dets, m_texts)
+
+                prev_texts = []
+                prev_probed_t = cur_t
                 consecutive_empty += 1
                 last_jump = idle_jump_sec if consecutive_empty >= 2 else step_sec
                 cur_t = round(cur_t + last_jump, 2)
@@ -540,7 +556,7 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                     zf.write(vf, arcname=os.path.basename(vf))
 
         print(
-            f"[INFO] [RapidOCR PP-OCRv5 Mobile + DBNet | JumpStep={step_sec}s/Idle={idle_jump_sec}s] "
+            f"[INFO] [RapidOCR PP-OCRv5 Mobile + DBNet | Step={step_sec}s/Idle={idle_jump_sec}s] "
             f"mốc đã nhảy qua={steps_visited} | hits={hits}"
         )
         return roi, screen_texts, zip_path if (save_vis and vis_files) else "", duration
@@ -556,10 +572,13 @@ def _is_same_subtitle(t1: str, t2: str) -> bool:
         return False
     if s1 == s2:
         return True
+    # Với phụ đề ngắn (< 6 ký tự), chỉ coi là trùng nếu gần như giống hệt để tránh nuốt câu ngắn chớp nhoáng
+    if min(len(s1), len(s2)) < 6:
+        return SequenceMatcher(None, s1, s2).ratio() >= 0.92
     return SequenceMatcher(None, s1, s2).ratio() >= 0.85
 
 
-def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 0.8) -> list[dict]:
+def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 0.45) -> list[dict]:
     grouped: list[dict] = []
     for item in sorted(screen_texts, key=lambda x: float(x.get("time", 0.0))):
         ts = float(item.get("time", 0.0))
@@ -568,7 +587,7 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
         if not joined:
             continue
 
-        if grouped and _is_same_subtitle(grouped[-1]["ocr_text"], joined) and (ts - grouped[-1]["_last_ts"]) <= (step_sec * 2.4):
+        if grouped and _is_same_subtitle(grouped[-1]["ocr_text"], joined) and (ts - grouped[-1]["_last_ts"]) <= (step_sec * 1.8):
             if len(joined) > len(grouped[-1]["ocr_text"]):
                 grouped[-1]["ocr_text"] = joined
                 grouped[-1]["best_text"] = joined
@@ -576,8 +595,8 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
             grouped[-1]["end"] = round(min(duration, ts + step_sec * 0.55), 2)
             continue
 
-        start_t = round(max(0.0, ts - step_sec * 0.35), 2)
-        end_t = round(min(duration, max(start_t + 0.55, ts + step_sec * 0.55)), 2)
+        start_t = round(max(0.0, ts - step_sec * 0.45), 2)
+        end_t = round(min(duration, max(start_t + 0.35, ts + step_sec * 0.55)), 2)
         grouped.append({
             "id": len(grouped),
             "start": start_t,
@@ -598,8 +617,8 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
     for idx, g in enumerate(grouped):
         g["id"] = idx
         g.pop("_last_ts", None)
-        if idx + 1 < len(grouped) and grouped[idx]["end"] > grouped[idx + 1]["start"] - 0.04:
-            grouped[idx]["end"] = round(max(grouped[idx]["start"] + 0.25, grouped[idx + 1]["start"] - 0.04), 2)
+        if idx + 1 < len(grouped) and grouped[idx]["end"] > grouped[idx + 1]["start"] - 0.03:
+            grouped[idx]["end"] = round(max(grouped[idx]["start"] + 0.20, grouped[idx + 1]["start"] - 0.03), 2)
 
     return grouped
 
@@ -607,7 +626,7 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
 def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
     import numpy as np
 
-    if samples is None or len(samples) < max(64, sr // 8):
+    if samples is None or len(samples) < max(64, sr // 10):
         return None, 0.0
     s = samples.astype(np.float32)
     s = s - np.mean(s)
@@ -659,12 +678,12 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
     total_dur = len(wav_data) / float(sr)
 
     for idx, seg in enumerate(segments):
-        prev_end = float(segments[idx - 1]["end"]) + 0.04 if idx > 0 else 0.0
-        next_start = float(segments[idx + 1]["start"]) - 0.04 if idx + 1 < len(segments) else total_dur
+        prev_end = float(segments[idx - 1]["end"]) + 0.03 if idx > 0 else 0.0
+        next_start = float(segments[idx + 1]["start"]) - 0.03 if idx + 1 < len(segments) else total_dur
 
-        search_s = max(prev_end, float(seg["start"]) - 0.35)
-        search_e = min(next_start, float(seg["end"]) + 0.35)
-        if search_e <= search_s + 0.2:
+        search_s = max(prev_end, float(seg["start"]) - 0.30)
+        search_e = min(next_start, float(seg["end"]) + 0.30)
+        if search_e <= search_s + 0.15:
             continue
 
         i0 = max(0, int(search_s * sr))
@@ -677,7 +696,7 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
             if len(active) > 0:
                 new_s = round(max(prev_end, search_s + max(0.0, (active[0] - win) / float(sr))), 2)
                 new_e = round(min(next_start, search_s + min((i1 - i0) / float(sr), (active[-1] + win) / float(sr))), 2)
-                if new_e - new_s >= 0.30:
+                if new_e - new_s >= 0.20:
                     seg["start"] = new_s
                     seg["end"] = new_e
 
@@ -809,7 +828,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
             continue
         idx_out += 1
         start_t = float(seg.get("start", 0.0))
-        end_t = max(start_t + 0.25, float(seg.get("end", start_t + 0.8)))
+        end_t = max(start_t + 0.20, float(seg.get("end", start_t + 0.45)))
         spk = seg.get("speaker_id", "SPEAKER_00")
         src_tag = seg.get("subtitle_source", "rapidocr_mobile_dbnet_jump")
         blocks.append(
