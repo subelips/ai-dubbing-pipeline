@@ -3,377 +3,704 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Video Dubbing Pipeline Control</title>
+  <title>AI Dubbing Pipeline — Control Panel</title>
   <style>
     :root {
-      --bg: #0f172a;
-      --card: #1e293b;
-      --border: #334155;
-      --text: #f8fafc;
-      --muted: #94a3b8;
-      --accent: #38bdf8;
-      --accent-hover: #0284c7;
-      --ok: #22c55e;
+      --bg: #0b0f17;
+      --panel: #131a26;
+      --panel-2: #192232;
+      --border: #273449;
+      --text: #e6edf7;
+      --muted: #8fa1bc;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --ok: #10b981;
       --warn: #f59e0b;
       --err: #ef4444;
     }
-    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    body { margin: 0; background: var(--bg); color: var(--text); padding: 16px; }
-    .container { max-width: 780px; margin: 0 auto; }
-    h1 { font-size: 1.35rem; margin: 0 0 6px; }
-    .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 18px; }
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 16px;
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 24px 16px 64px;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    .subtitle {
+      margin: 0 0 24px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
       margin-bottom: 16px;
     }
-    .card h2 { font-size: 1rem; margin: 0 0 12px; color: var(--accent); }
-    label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
-    input[type="text"], input[type="password"], input[type="url"], input[type="file"] {
-      width: 100%;
-      padding: 10px 12px;
-      border-radius: 8px;
+
+    .card {
+      background: var(--panel);
       border: 1px solid var(--border);
-      background: #0b1220;
-      color: var(--text);
-      font-size: 0.95rem;
-      margin-bottom: 12px;
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 16px;
     }
-    .row { display: flex; gap: 10px; flex-wrap: wrap; }
-    button {
-      padding: 10px 14px;
-      border-radius: 8px;
-      border: none;
+
+    .card-title {
+      margin: 0 0 14px;
+      font-size: 16px;
       font-weight: 600;
-      font-size: 0.9rem;
-      cursor: pointer;
-      background: var(--accent);
-      color: #06121e;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
     }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    button:hover:not(:disabled) { background: var(--accent-hover); color: #fff; }
-    button.secondary { background: #334155; color: var(--text); }
-    button.danger { background: #7f1d1d; color: #fecaca; }
-    .msg {
-      margin-top: 10px;
-      padding: 10px 12px;
-      border-radius: 8px;
-      font-size: 0.88rem;
-      background: #0b1220;
+
+    label {
+      display: block;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+
+    input[type="text"],
+    input[type="password"],
+    select,
+    textarea {
+      width: 100%;
+      background: var(--panel-2);
       border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--accent);
+    }
+
+    input[type="file"] {
+      width: 100%;
+      background: var(--panel-2);
+      border: 1px dashed var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 13px;
+    }
+
+    .field {
+      margin-bottom: 14px;
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    button:hover:not(:disabled) {
+      background: var(--accent-hover);
+    }
+
+    button.secondary {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    button.secondary:hover:not(:disabled) {
+      background: #222f45;
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .status-log {
+      background: #090d14;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12.5px;
+      max-height: 220px;
+      overflow-y: auto;
       white-space: pre-wrap;
       word-break: break-word;
     }
-    .job-item {
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 12px;
-      margin-bottom: 10px;
-      background: #0b1220;
-    }
-    .job-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+
     .badge {
-      padding: 3px 8px;
+      display: inline-block;
+      padding: 2px 8px;
       border-radius: 999px;
-      font-size: 0.78rem;
-      font-weight: 700;
-      background: #334155;
-      color: #f8fafc;
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(59, 130, 246, 0.15);
+      color: #93c5fd;
     }
-    .badge.done { background: rgba(34, 197, 94, 0.2); color: var(--ok); }
-    .badge.run { background: rgba(56, 189, 248, 0.2); color: var(--accent); }
-    .badge.wait { background: rgba(245, 158, 11, 0.2); color: var(--warn); }
-    .badge.err { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
-    .small { font-size: 0.82rem; color: var(--muted); margin-top: 6px; word-break: break-all; }
-    a { color: var(--accent); }
+
+    .badge.ok { background: rgba(16, 185, 129, 0.16); color: #6ee7b7; }
+    .badge.warn { background: rgba(245, 158, 11, 0.16); color: #fcd34d; }
+    .badge.err { background: rgba(239, 68, 68, 0.16); color: #fca5a5; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 12.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    a {
+      color: #60a5fa;
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>🎬 Video Dubbing Pipeline</h1>
-    <div class="subtitle">Hỗ trợ cả link tải trực tiếp (khuyên dùng cho file lớn) &amp; tải file từ thiết bị</div>
+    <h1>AI Dubbing Pipeline</h1>
+    <p class="subtitle">Tạo job, tải video cục bộ lên GitHub Release, theo dõi trạng thái và tải artifact Stage 1 → Stage 3.</p>
 
+    <!-- Cấu hình GitHub -->
     <div class="card">
-      <h2>1. Kết nối Repository</h2>
-      <label for="repoInput">Repository (owner/repo)</label>
-      <input id="repoInput" type="text" placeholder="vd: subelips/ai-dubbing-studio" />
-
-      <label for="tokenInput">GitHub Personal Access Token (lưu trên trình duyệt thiết bị này)</label>
-      <input id="tokenInput" type="password" placeholder="ghp_..." />
-
-      <div class="row">
-        <button onclick="saveConfig()">Lưu cấu hình</button>
-        <button class="secondary" onclick="loadJobs()">Tải danh sách Job</button>
-        <button class="danger" onclick="clearToken()">Xóa Token</button>
+      <div class="card-title">
+        <span>1. Cấu hình GitHub Repository</span>
+        <span id="connBadge" class="badge warn">Chưa kiểm tra</span>
       </div>
-      <div id="cfgMsg" class="msg" style="display:none;"></div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="ghRepo">Repository (owner/repo)</label>
+          <input id="ghRepo" type="text" placeholder="ví dụ: subelips/ai-dubbing-pipeline" />
+        </div>
+        <div class="field">
+          <label for="ghBranch">State Branch</label>
+          <input id="ghBranch" type="text" value="pipeline-state" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="ghToken">GitHub Token (Fine-grained PAT có quyền Contents & Actions Read/Write)</label>
+        <input id="ghToken" type="password" placeholder="github_pat_..." />
+        <div class="hint">Lưu cục bộ trong trình duyệt để thao tác nhanh; cân nhắc xóa khi dùng trên máy lạ.</div>
+      </div>
+      <div class="row">
+        <button id="btnSaveCfg" type="button">Lưu cấu hình</button>
+        <button id="btnRefreshJobs" type="button" class="secondary">Tải danh sách Job</button>
+      </div>
     </div>
 
+    <!-- Tạo Job mới -->
     <div class="card">
-      <h2>2. Khởi chạy Job (Stage 1)</h2>
-      <label for="jobIdInput">Job ID</label>
-      <input id="jobIdInput" type="text" placeholder="vd: ep02" />
+      <div class="card-title"><span>2. Tạo Job &amp; Nguồn Video</span></div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="jobId">Job ID</label>
+          <input id="jobId" type="text" placeholder="ví dụ: ep01 hoặc test01" />
+        </div>
+        <div class="field">
+          <label for="sourceLang">Ngôn ngữ gốc</label>
+          <select id="sourceLang">
+            <option value="zh" selected>Tiếng Trung (zh)</option>
+            <option value="ja">Tiếng Nhật (ja)</option>
+            <option value="ko">Tiếng Hàn (ko)</option>
+            <option value="en">Tiếng Anh (en)</option>
+            <option value="vi">Tiếng Việt (vi)</option>
+          </select>
+        </div>
+      </div>
 
-      <label for="videoUrlInput">Option A — Link tải trực tiếp (.mp4) (khuyên dùng cho file lớn)</label>
-      <input id="videoUrlInput" type="url" placeholder="https://.../video.mp4" />
+      <div class="field">
+        <label for="sourceMode">Nguồn video đầu vào</label>
+        <select id="sourceMode">
+          <option value="local" selected>Upload video cục bộ (đẩy trực tiếp lên GitHub Release)</option>
+          <option value="url">Link Google Drive / URL trực tiếp</option>
+        </select>
+      </div>
 
-      <label for="videoFileInput">Option B — Chọn file video từ thiết bị (tự chia mảnh nếu &gt; 25MB)</label>
-      <input id="videoFileInput" type="file" accept="video/*" />
+      <div id="localFileBox" class="field">
+        <label for="videoFile">Chọn file video cục bộ (.mp4, .mkv, .mov...)</label>
+        <input id="videoFile" type="file" accept="video/*" />
+        <div id="fileMeta" class="hint">Chưa chọn file nào.</div>
+      </div>
+
+      <div id="remoteUrlBox" class="field hidden">
+        <label for="videoUrl">Link Google Drive hoặc URL video</label>
+        <input id="videoUrl" type="text" placeholder="https://drive.google.com/file/d/.../view?usp=sharing" />
+      </div>
+
+      <div class="field">
+        <label for="dispatchEvent">Sự kiện kích hoạt Stage 1 (`repository_dispatch`)</label>
+        <input id="dispatchEvent" type="text" value="stage1_start" />
+        <div class="hint">Khớp với `event_type` mà workflow GitHub Actions của bạn lắng nghe để khởi chạy Stage 1.</div>
+      </div>
 
       <div class="row">
-        <button id="uploadStartBtn" onclick="startJobSmart()">🚀 Chạy Stage 1</button>
-        <button class="secondary" onclick="dispatchStage('stage1_completed')">⏩ Trigger Stage 2</button>
-        <button class="secondary" onclick="dispatchStage('stage2_completed')">🎙️ Trigger Stage 3</button>
+        <button id="btnCreateJob" type="button">Tạo Job &amp; Chạy Stage 1</button>
       </div>
-      <div id="actionMsg" class="msg" style="display:none;"></div>
     </div>
 
+    <!-- Nhật ký thao tác -->
     <div class="card">
-      <h2>3. Trạng thái các Job</h2>
-      <div id="jobsList"><div class="small">Bấm "Tải danh sách Job" để xem dữ liệu từ nhánh pipeline-state.</div></div>
+      <div class="card-title"><span>3. Nhật ký thao tác</span></div>
+      <div id="logBox" class="status-log">Sẵn sàng.</div>
+    </div>
+
+    <!-- Danh sách Job -->
+    <div class="card">
+      <div class="card-title">
+        <span>4. Danh sách Job &amp; Artifacts</span>
+        <span id="jobCount" class="badge">0 job</span>
+      </div>
+      <div style="overflow-x: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Job ID</th>
+              <th>Trạng thái</th>
+              <th>Nguồn video</th>
+              <th>Artifacts (Release)</th>
+              <th>Thao tác</th>
+            </tr>
+          </thead>
+          <tbody id="jobsTableBody">
+            <tr>
+              <td colspan="5" style="color: var(--muted);">Chưa có dữ liệu. Nhấn "Tải danh sách Job".</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
   <script>
-    const WORKFLOW_FILE = "pipeline_orchestrator.yml";
-    const STATE_BRANCH = "pipeline-state";
-    const SINGLE_UPLOAD_LIMIT = 25 * 1024 * 1024; // 25 MB
-    const CHUNK_SIZE = 12 * 1024 * 1024; // 12 MB mỗi mảnh
+    const STORAGE_KEY = "ai_dubbing_pipeline_ui_v1";
 
-    function showBox(id, text, isErr = false) {
-      const el = document.getElementById(id);
-      el.style.display = "block";
-      el.style.borderColor = isErr ? "#ef4444" : "#38bdf8";
-      el.textContent = text;
+    const el = {
+      ghRepo: document.getElementById("ghRepo"),
+      ghBranch: document.getElementById("ghBranch"),
+      ghToken: document.getElementById("ghToken"),
+      connBadge: document.getElementById("connBadge"),
+      btnSaveCfg: document.getElementById("btnSaveCfg"),
+      btnRefreshJobs: document.getElementById("btnRefreshJobs"),
+      jobId: document.getElementById("jobId"),
+      sourceLang: document.getElementById("sourceLang"),
+      sourceMode: document.getElementById("sourceMode"),
+      localFileBox: document.getElementById("localFileBox"),
+      remoteUrlBox: document.getElementById("remoteUrlBox"),
+      videoFile: document.getElementById("videoFile"),
+      fileMeta: document.getElementById("fileMeta"),
+      videoUrl: document.getElementById("videoUrl"),
+      dispatchEvent: document.getElementById("dispatchEvent"),
+      btnCreateJob: document.getElementById("btnCreateJob"),
+      logBox: document.getElementById("logBox"),
+      jobCount: document.getElementById("jobCount"),
+      jobsTableBody: document.getElementById("jobsTableBody"),
+    };
+
+    function log(msg) {
+      const ts = new Date().toLocaleTimeString("vi-VN");
+      el.logBox.textContent += `\n[${ts}] ${msg}`;
+      el.logBox.scrollTop = el.logBox.scrollHeight;
     }
 
-    function getConfig() {
-      const repo = document.getElementById("repoInput").value.trim() || localStorage.getItem("dub_repo") || "";
-      const token = document.getElementById("tokenInput").value.trim() || localStorage.getItem("dub_token") || "";
-      return { repo, token };
+    function loadConfig() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+        if (raw.repo) el.ghRepo.value = raw.repo;
+        if (raw.branch) el.ghBranch.value = raw.branch;
+        if (raw.token) el.ghToken.value = raw.token;
+        if (raw.dispatchEvent) el.dispatchEvent.value = raw.dispatchEvent;
+      } catch (_) {}
     }
 
     function saveConfig() {
-      const repo = document.getElementById("repoInput").value.trim();
-      const token = document.getElementById("tokenInput").value.trim();
-      if (!repo || !token) {
-        showBox("cfgMsg", "Vui lòng nhập đầy đủ Repository (owner/repo) và GitHub Token.", true);
-        return;
-      }
-      localStorage.setItem("dub_repo", repo);
-      localStorage.setItem("dub_token", token);
-      showBox("cfgMsg", "Đã lưu cấu hình trên trình duyệt này.");
-      loadJobs();
+      const payload = {
+        repo: el.ghRepo.value.trim(),
+        branch: el.ghBranch.value.trim() || "pipeline-state",
+        token: el.ghToken.value.trim(),
+        dispatchEvent: el.dispatchEvent.value.trim() || "stage1_start",
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      log("Đã lưu cấu hình GitHub vào trình duyệt.");
     }
 
-    function clearToken() {
-      localStorage.removeItem("dub_token");
-      document.getElementById("tokenInput").value = "";
-      showBox("cfgMsg", "Đã xóa GitHub Token khỏi trình duyệt.");
+    function getCfg() {
+      const repo = el.ghRepo.value.trim().replace(/^https?:\/\/github\.com\//i, "").replace(/\/+$/, "");
+      const branch = el.ghBranch.value.trim() || "pipeline-state";
+      const token = el.ghToken.value.trim();
+      const dispatchEvent = el.dispatchEvent.value.trim() || "stage1_start";
+      if (!repo || !repo.includes("/")) throw new Error("Vui lòng nhập Repository hợp lệ dạng owner/repo.");
+      if (!token) throw new Error("Vui lòng nhập GitHub Token.");
+      return { repo, branch, token, dispatchEvent };
     }
 
-    function ghHeaders(token) {
+    function ghHeaders(token, extra = {}) {
       return {
-        "Authorization": `Bearer ${token}`,
-        "Accept": "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json"
+        ...extra,
       };
     }
 
-    function bufferToBase64(buffer) {
-      const bytes = new Uint8Array(buffer);
-      const step = 0x4000;
-      let binary = "";
-      for (let i = 0; i < bytes.length; i += step) {
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+    function encodeUtf8Base64(str) {
+      const bytes = new TextEncoder().encode(str);
+      let bin = "";
+      for (let i = 0; i < bytes.length; i++) {
+        bin += String.fromCharCode(bytes[i]);
       }
-      return btoa(binary);
+      return btoa(bin);
     }
 
-    async function putFileToState(repo, token, path, contentB64, message) {
-      let sha = null;
-      const checkRes = await fetch(
-        `https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path)}?ref=${STATE_BRANCH}`,
-        { headers: ghHeaders(token) }
-      );
-      if (checkRes.status === 200) {
-        const d = await checkRes.json();
-        sha = d.sha || null;
-      } else if (checkRes.status !== 404) {
-        throw new Error(`Kiểm tra ${path} lỗi (${checkRes.status}): ${await checkRes.text()}`);
+    function decodeUtf8Base64(b64) {
+      const clean = (b64 || "").replace(/\n/g, "");
+      const bin = atob(clean);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) {
+        bytes[i] = bin.charCodeAt(i);
       }
-
-      const body = { message, content: contentB64, branch: STATE_BRANCH };
-      if (sha) body.sha = sha;
-
-      const putRes = await fetch(
-        `https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path)}`,
-        { method: "PUT", headers: ghHeaders(token), body: JSON.stringify(body) }
-      );
-      if (!putRes.ok) {
-        throw new Error(`Ghi ${path} thất bại (${putRes.status}): ${await putRes.text()}`);
-      }
+      return new TextDecoder().decode(bytes);
     }
 
-    async function uploadLargeFileChunked(repo, token, jobId, file) {
-      const totalParts = Math.ceil(file.size / CHUNK_SIZE);
-      const parts = [];
-
-      for (let i = 0; i < totalParts; i++) {
-        const start = i * CHUNK_SIZE;
-        const end = Math.min(file.size, start + CHUNK_SIZE);
-        showBox("actionMsg", `📦 File lớn (${(file.size / 1048576).toFixed(1)} MB) — Đang tải mảnh ${i + 1}/${totalParts}...`);
-        const chunkBuf = await file.slice(start, end).arrayBuffer();
-        const partPath = `uploads_tmp/${jobId}/part_${String(i).padStart(4, "0")}.bin`;
-        await putFileToState(repo, token, partPath, bufferToBase64(chunkBuf), `chunk ${i + 1}/${totalParts} for ${jobId}`);
-        parts.push(partPath);
+    async function readJsonFile(cfg, path) {
+      const url = `https://api.github.com/repos/${cfg.repo}/contents/${path.replace(/^\/+/, "")}?ref=${encodeURIComponent(cfg.branch)}`;
+      const res = await fetch(url, { headers: ghHeaders(cfg.token) });
+      if (res.status === 404) {
+        return { data: {}, sha: null };
       }
-
-      const manifestPath = `uploads_tmp/${jobId}/manifest.json`;
-      const manifestB64 = btoa(JSON.stringify({ job_id: jobId, total_parts: totalParts, parts }, null, 2));
-      await putFileToState(repo, token, manifestPath, manifestB64, `manifest for ${jobId}`);
-      return manifestPath;
+      if (!res.ok) {
+        throw new Error(`Không đọc được ${path} (${res.status}): ${await res.text()}`);
+      }
+      const json = await res.json();
+      const text = json.content ? decodeUtf8Base64(json.content).trim() : "";
+      return {
+        data: text ? JSON.parse(text) : {},
+        sha: json.sha,
+      };
     }
 
-    async function triggerWorkflow(repo, token, jobId, videoAsset) {
-      const wfRes = await fetch(
-        `https://api.github.com/repos/${repo}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
-        {
+    async function writeJsonFile(cfg, path, payload, message, maxRetries = 4) {
+      const cleanPath = path.replace(/^\/+/, "");
+      const url = `https://api.github.com/repos/${cfg.repo}/contents/${cleanPath}`;
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        const { sha } = await readJsonFile(cfg, cleanPath);
+        const body = {
+          message,
+          content: encodeUtf8Base64(JSON.stringify(payload, null, 2)),
+          branch: cfg.branch,
+        };
+        if (sha) body.sha = sha;
+        const res = await fetch(url, {
+          method: "PUT",
+          headers: ghHeaders(cfg.token, { "Content-Type": "application/json" }),
+          body: JSON.stringify(body),
+        });
+        if (res.status === 200 || res.status === 201) return;
+        if (res.status === 409) {
+          await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+          continue;
+        }
+        throw new Error(`Không ghi được ${cleanPath} (${res.status}): ${await res.text()}`);
+      }
+      throw new Error(`Xung đột ghi ${cleanPath} sau ${maxRetries} lần thử.`);
+    }
+
+    async function ensureRelease(cfg, tag) {
+      const apiBase = `https://api.github.com/repos/${cfg.repo}`;
+      let res = await fetch(`${apiBase}/releases/tags/${encodeURIComponent(tag)}`, {
+        headers: ghHeaders(cfg.token),
+      });
+      if (res.status === 200) return await res.json();
+      if (res.status === 404) {
+        res = await fetch(`${apiBase}/releases`, {
           method: "POST",
-          headers: ghHeaders(token),
+          headers: ghHeaders(cfg.token, { "Content-Type": "application/json" }),
           body: JSON.stringify({
-            ref: "main",
-            inputs: { job_id: jobId, video_asset: videoAsset }
-          })
+            tag_name: tag,
+            name: `Artifacts - ${tag}`,
+            draft: false,
+            prerelease: false,
+          }),
+        });
+      }
+      if (!res.ok) {
+        throw new Error(`Không tạo/lấy được Release ${tag} (${res.status}): ${await res.text()}`);
+      }
+      return await res.json();
+    }
+
+    async function uploadVideoToRelease(cfg, jobId, file) {
+      const apiBase = `https://api.github.com/repos/${cfg.repo}`;
+      const release = await ensureRelease(cfg, jobId);
+      const safeName = file.name.replace(/[^\w.\-]/g, "_") || "source_input.mp4";
+
+      for (const asset of release.assets || []) {
+        if (asset.name === safeName) {
+          await fetch(`${apiBase}/releases/assets/${asset.id}`, {
+            method: "DELETE",
+            headers: ghHeaders(cfg.token),
+          });
         }
-      );
-      if (!wfRes.ok) throw new Error(`Kích hoạt workflow thất bại (${wfRes.status}): ${await wfRes.text()}`);
-    }
-
-    async function startJobSmart() {
-      const { repo, token } = getConfig();
-      const jobId = document.getElementById("jobIdInput").value.trim();
-      const videoUrl = document.getElementById("videoUrlInput").value.trim();
-      const file = document.getElementById("videoFileInput").files?.[0];
-
-      if (!repo || !token) return showBox("actionMsg", "Thiếu Repository hoặc Token.", true);
-      if (!jobId) return showBox("actionMsg", "Vui lòng nhập Job ID.", true);
-      if (!videoUrl && !file) {
-        return showBox("actionMsg", "Vui lòng nhập Link tải trực tiếp (.mp4) hoặc chọn file video.", true);
       }
 
-      const btn = document.getElementById("uploadStartBtn");
-      btn.disabled = true;
-      try {
-        let assetRef = "";
-        if (videoUrl) {
-          showBox("actionMsg", `🚀 Đang kích hoạt Stage 1 với link trực tiếp...`);
-          assetRef = videoUrl;
-        } else if (file.size <= SINGLE_UPLOAD_LIMIT) {
-          showBox("actionMsg", `⬆️ Đang tải file (${(file.size / 1048576).toFixed(1)} MB)...`);
-          const tmpPath = `uploads_tmp/${jobId}_source.mp4`;
-          const buf = await file.arrayBuffer();
-          await putFileToState(repo, token, tmpPath, bufferToBase64(buf), `upload video for ${jobId}`);
-          assetRef = tmpPath;
-        } else {
-          assetRef = await uploadLargeFileChunked(repo, token, jobId, file);
-        }
+      const uploadUrlBase = release.upload_url.split("{")[0];
+      log(`Đang upload ${safeName} (${(file.size / (1024 * 1024)).toFixed(2)} MB) lên Release ${jobId}...`);
 
-        await triggerWorkflow(repo, token, jobId, assetRef);
-        showBox("actionMsg", `✅ Đã khởi chạy job "${jobId}" (${assetRef}).`);
-        setTimeout(loadJobs, 2000);
-      } catch (err) {
-        showBox("actionMsg", `❌ Lỗi: ${err.message}`, true);
-      } finally {
-        btn.disabled = false;
+      const upRes = await fetch(`${uploadUrlBase}?name=${encodeURIComponent(safeName)}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${cfg.token}`,
+          "Content-Type": "application/octet-stream",
+        },
+        body: file,
+      });
+
+      if (!upRes.ok) {
+        throw new Error(`Upload video thất bại (${upRes.status}): ${await upRes.text()}`);
       }
+
+      const upJson = await upRes.json();
+      log(`Upload thành công asset: ${safeName}`);
+      return {
+        assetName: safeName,
+        downloadUrl: upJson.browser_download_url || safeName,
+      };
     }
 
-    async function dispatchStage(eventType) {
-      const { repo, token } = getConfig();
-      const jobId = document.getElementById("jobIdInput").value.trim();
-      if (!repo || !token) return showBox("actionMsg", "Thiếu Repository hoặc Token.", true);
-      if (!jobId) return showBox("actionMsg", "Vui lòng nhập Job ID cần kích hoạt stage.", true);
-
-      try {
-        const res = await fetch(
-          `https://api.github.com/repos/${repo}/dispatches`,
-          {
-            method: "POST",
-            headers: ghHeaders(token),
-            body: JSON.stringify({ event_type: eventType, client_payload: { job_id: jobId } })
-          }
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-        showBox("actionMsg", `✅ Đã gửi sự kiện "${eventType}" cho job "${jobId}".`);
-      } catch (err) {
-        showBox("actionMsg", `❌ Lỗi gửi dispatch:\n${err.message}`, true);
+    async function triggerStage1(cfg, jobId, eventNameOverride = null) {
+      const eventName = eventNameOverride || cfg.dispatchEvent || "stage1_start";
+      const url = `https://api.github.com/repos/${cfg.repo}/dispatches`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: ghHeaders(cfg.token, { "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          event_type: eventName,
+          client_payload: { job_id: jobId },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`Gửi dispatch '${eventName}' thất bại (${res.status}): ${await res.text()}`);
       }
+      log(`Đã gửi repository_dispatch '${eventName}' cho job ${jobId}.`);
     }
 
-    function badgeClass(status = "") {
-      if (status === "COMPLETED") return "badge done";
-      if (status.startsWith("FAILED")) return "badge err";
-      if (status.includes("DONE") || status.includes("QUEUED")) return "badge wait";
-      return "badge run";
+    async function getReleaseAssetsMap(cfg, tag) {
+      const url = `https://api.github.com/repos/${cfg.repo}/releases/tags/${encodeURIComponent(tag)}`;
+      const res = await fetch(url, { headers: ghHeaders(cfg.token) });
+      if (!res.ok) return [];
+      const rel = await res.json();
+      return rel.assets || [];
     }
 
-    function escapeHtml(text = "") {
-      return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-    }
+    async function refreshJobs() {
+      const cfg = getCfg();
+      const { data } = await readJsonFile(cfg, "state/jobs.json");
+      el.connBadge.textContent = "Đã kết nối";
+      el.connBadge.className = "badge ok";
 
-    async function loadJobs() {
-      const { repo, token } = getConfig();
-      const listEl = document.getElementById("jobsList");
-      if (!repo || !token) {
-        listEl.innerHTML = `<div class="small">Vui lòng nhập Repository và Token ở mục 1 trước.</div>`;
+      const jobsObj = data.jobs || {};
+      const entries = Object.entries(jobsObj);
+      el.jobCount.textContent = `${entries.length} job`;
+
+      if (!entries.length) {
+        el.jobsTableBody.innerHTML = `<tr><td colspan="5" style="color: var(--muted);">Chưa có job nào trong state/jobs.json.</td></tr>`;
         return;
       }
-      listEl.innerHTML = `<div class="small">Đang tải dữ liệu...</div>`;
 
-      try {
-        const res = await fetch(
-          `https://api.github.com/repos/${repo}/contents/state/jobs.json?ref=${STATE_BRANCH}`,
-          { headers: ghHeaders(token) }
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-        const fileData = await res.json();
-        const decoded = decodeURIComponent(escape(atob(fileData.content.replace(/\n/g, ""))));
-        const parsed = JSON.parse(decoded || '{"jobs":{}}');
-        const jobs = parsed.jobs || {};
-        const entries = Object.entries(jobs).reverse();
+      const rowsHtml = await Promise.all(
+        entries.map(async ([id, info]) => {
+          const st = info.status || "CREATED";
+          const badgeClass =
+            st === "DONE" ? "ok" :
+            /ERR|FAIL|LOI/i.test(st) ? "err" : "warn";
 
-        if (entries.length === 0) {
-          listEl.innerHTML = `<div class="small">Chưa có job nào trong state/jobs.json.</div>`;
-          return;
-        }
+          let assetLinks = `<span style="color: var(--muted);">—</span>`;
+          try {
+            const assets = await getReleaseAssetsMap(cfg, id);
+            if (assets.length) {
+              assetLinks = assets
+                .map((a) => `<a href="${a.browser_download_url}" target="_blank" rel="noopener">${a.name}</a>`)
+                .join("<br/>");
+            }
+          } catch (_) {}
 
-        listEl.innerHTML = entries.map(([id, info]) => `
-          <div class="job-item">
-            <div class="job-top">
-              <strong><code>${id}</code></strong>
-              <span class="${badgeClass(info.status)}">${info.status || "UNKNOWN"}</span>
-            </div>
-            <div class="small">Video asset: ${escapeHtml(info.video_asset || info.video_url || "")}</div>
-            ${info.error ? `<div class="small" style="color:#fca5a5; white-space:pre-wrap;">Lỗi: ${escapeHtml(info.error)}</div>` : ""}
-            ${info.output_url ? `<div class="small">Thành phẩm: <a href="${info.output_url}" target="_blank">Tải MP4</a></div>` : ""}
-          </div>
-        `).join("");
-      } catch (err) {
-        listEl.innerHTML = `<div class="small" style="color:#fca5a5;">Lỗi tải jobs: ${err.message}</div>`;
-      }
+          return `
+            <tr>
+              <td><strong>${id}</strong></td>
+              <td><span class="badge ${badgeClass}">${st}</span></td>
+              <td style="max-width: 240px; word-break: break-all;">${info.video_asset || info.video_url || "—"}</td>
+              <td>${assetLinks}</td>
+              <td>
+                <button type="button" class="secondary" onclick="window.__rerunStage1('${id}')">Chạy Stage 1</button>
+              </td>
+            </tr>
+          `;
+        })
+      );
+
+      el.jobsTableBody.innerHTML = rowsHtml.join("");
+      log(`Đã tải ${entries.length} job từ state/jobs.json.`);
     }
 
-    window.addEventListener("DOMContentLoaded", () => {
-      const savedRepo = localStorage.getItem("dub_repo") || "";
-      const savedToken = localStorage.getItem("dub_token") || "";
-      if (savedRepo) document.getElementById("repoInput").value = savedRepo;
-      if (savedToken) document.getElementById("tokenInput").value = savedToken;
-      if (savedRepo && savedToken) loadJobs();
+    window.__rerunStage1 = async (jobId) => {
+      try {
+        const cfg = getCfg();
+        const { data } = await readJsonFile(cfg, "state/jobs.json");
+        data.jobs = data.jobs || {};
+        if (data.jobs[jobId]) {
+          data.jobs[jobId].status = "STAGE1_QUEUED";
+          data.jobs[jobId].updated_at = new Date().toISOString();
+          await writeJsonFile(cfg, "state/jobs.json", data, `queue stage1: ${jobId}`);
+        }
+        await triggerStage1(cfg, jobId);
+        await refreshJobs();
+      } catch (err) {
+        log(`Lỗi: ${err.message}`);
+      }
+    };
+
+    el.sourceMode.addEventListener("change", () => {
+      const isLocal = el.sourceMode.value === "local";
+      el.localFileBox.classList.toggle("hidden", !isLocal);
+      el.remoteUrlBox.classList.toggle("hidden", isLocal);
     });
+
+    el.videoFile.addEventListener("change", () => {
+      const f = el.videoFile.files && el.videoFile.files[0];
+      if (!f) {
+        el.fileMeta.textContent = "Chưa chọn file nào.";
+        return;
+      }
+      el.fileMeta.textContent = `Đã chọn: ${f.name} (${(f.size / (1024 * 1024)).toFixed(2)} MB)`;
+    });
+
+    el.btnSaveCfg.addEventListener("click", () => {
+      try {
+        saveConfig();
+      } catch (err) {
+        log(`Lỗi: ${err.message}`);
+      }
+    });
+
+    el.btnRefreshJobs.addEventListener("click", async () => {
+      try {
+        await refreshJobs();
+      } catch (err) {
+        el.connBadge.textContent = "Lỗi kết nối";
+        el.connBadge.className = "badge err";
+        log(`Lỗi tải danh sách job: ${err.message}`);
+      }
+    });
+
+    el.btnCreateJob.addEventListener("click", async () => {
+      el.btnCreateJob.disabled = true;
+      try {
+        saveConfig();
+        const cfg = getCfg();
+        const jobId = el.jobId.value.trim();
+        const sourceLang = el.sourceLang.value;
+        const mode = el.sourceMode.value;
+
+        if (!jobId) throw new Error("Vui lòng nhập Job ID.");
+
+        let videoAssetValue = "";
+        if (mode === "local") {
+          const file = el.videoFile.files && el.videoFile.files[0];
+          if (!file) throw new Error("Vui lòng chọn file video cục bộ trước khi tạo job.");
+          const up = await uploadVideoToRelease(cfg, jobId, file);
+          videoAssetValue = up.assetName;
+        } else {
+          const rawUrl = el.videoUrl.value.trim();
+          if (!rawUrl) throw new Error("Vui lòng nhập link Google Drive hoặc URL video.");
+          videoAssetValue = rawUrl;
+        }
+
+        const { data } = await readJsonFile(cfg, "state/jobs.json");
+        data.jobs = data.jobs || {};
+        data.jobs[jobId] = {
+          ...(data.jobs[jobId] || {}),
+          job_id: jobId,
+          source_lang: sourceLang,
+          video_asset: videoAssetValue,
+          status: "STAGE1_QUEUED",
+          updated_at: new Date().toISOString(),
+        };
+
+        await writeJsonFile(cfg, "state/jobs.json", data, `create/update job ${jobId}`);
+        log(`Đã cập nhật state/jobs.json cho job '${jobId}' (video_asset=${videoAssetValue}).`);
+
+        await triggerStage1(cfg, jobId);
+        await refreshJobs();
+      } catch (err) {
+        log(`Lỗi tạo job: ${err.message}`);
+      } finally {
+        el.btnCreateJob.disabled = false;
+      }
+    });
+
+    loadConfig();
   </script>
 </body>
 </html>
