@@ -41,9 +41,15 @@ def get_cfg(key: str, injected: str) -> str:
 JOB_ID = get_cfg("JOB_ID", "__INJECT_JOB_ID__")
 GH_REPO = get_cfg("GH_REPO", "__INJECT_GH_REPO__")
 GH_TOKEN = get_cfg("GH_PAT_TOKEN", "__INJECT_GH_PAT_TOKEN__") or get_cfg("GH_TOKEN", "__INJECT_GH_TOKEN__")
+HF_TOKEN = get_cfg("HF_TOKEN", "__INJECT_HF_TOKEN__")
 NTFY_TOPIC = get_cfg("NTFY_TOPIC", "__INJECT_NTFY_TOPIC__")
 NTFY_SERVER = (get_cfg("NTFY_SERVER", "__INJECT_NTFY_SERVER__") or "https://ntfy.sh").rstrip("/")
 NTFY_TOKEN = get_cfg("NTFY_TOKEN", "__INJECT_NTFY_TOKEN__")
+
+if HF_TOKEN and not os.environ.get("HF_TOKEN"):
+    os.environ["HF_TOKEN"] = HF_TOKEN
+if HF_TOKEN and not os.environ.get("HUGGING_FACE_HUB_TOKEN"):
+    os.environ["HUGGING_FACE_HUB_TOKEN"] = HF_TOKEN
 
 if not JOB_ID:
     raise RuntimeError("Thiếu JOB_ID khi khởi chạy kernel.")
@@ -181,9 +187,9 @@ class GitHubSync:
         r.raise_for_status()
 
 
-def _is_installed(pkg_name: str) -> bool:
+def _is_installed(mod_name: str) -> bool:
     try:
-        __import__(pkg_name)
+        __import__(mod_name)
         return True
     except Exception:
         return False
@@ -198,6 +204,7 @@ def ensure_deps():
         ("gdown", "gdown"),
         ("onnxruntime", "onnxruntime-gpu"),
         ("rapidocr", "rapidocr"),
+        ("pyannote.audio", "pyannote.audio"),
     ]
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
     if missing:
@@ -637,6 +644,143 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
     return pitch_med, cent_med
 
 
+def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: int, work_dir: str) -> dict | None:
+    """Phân tách người nói bằng pyannote.audio và gán nhãn chuẩn cho từng segment."""
+    hf_tok = _clean_url_or_str(os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN)
+    if not hf_tok:
+        print("[WARN] Thiếu HF_TOKEN cho pyannote.audio, dùng VAD/pitch dự phòng.")
+        return None
+
+    model_id = os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip() or "pyannote/speaker-diarization-3.1"
+
+    try:
+        import numpy as np
+        import soundfile as sf
+        import torch
+        from pyannote.audio import Pipeline
+
+        try:
+            pipeline = Pipeline.from_pretrained(model_id, token=hf_tok)
+        except TypeError:
+            pipeline = Pipeline.from_pretrained(model_id, use_auth_token=hf_tok)
+
+        if pipeline is None:
+            print(f"[WARN] Không tải được pipeline pyannote ({model_id}).")
+            return None
+
+        if torch.cuda.is_available():
+            pipeline.to(torch.device("cuda"))
+
+        diarization = pipeline(vocals_wav)
+        annotation = getattr(diarization, "speaker_diarization", diarization)
+
+        turns: list[tuple[float, float, str]] = []
+        for turn, _, speaker in annotation.itertracks(yield_label=True):
+            t0 = float(turn.start)
+            t1 = float(turn.end)
+            if t1 > t0:
+                turns.append((t0, t1, str(speaker)))
+
+        if not turns:
+            print("[WARN] pyannote không trả về lượt nói nào, dùng VAD/pitch dự phòng.")
+            return None
+
+        raw_spk_order = []
+        for _, _, spk_raw in sorted(turns, key=lambda x: x[0]):
+            if spk_raw not in raw_spk_order:
+                raw_spk_order.append(spk_raw)
+
+        # Tính pitch trung bình từng speaker raw của pyannote để gắn hậu tố _M / _F
+        spk_pitches: dict[str, list[float]] = {k: [] for k in raw_spk_order}
+        for t0, t1, spk_raw in turns:
+            i0 = max(0, int(t0 * sr))
+            i1 = min(len(wav_data), int(t1 * sr))
+            if i1 > i0:
+                p_val, _ = _extract_voice_features(wav_data[i0:i1], sr)
+                if p_val is not None:
+                    spk_pitches[spk_raw].append(p_val)
+
+        raw_to_clean: dict[str, str] = {}
+        male_idx = 0
+        female_idx = 0
+        for spk_raw in raw_spk_order:
+            p_list = spk_pitches.get(spk_raw) or []
+            med_p = float(np.median(p_list)) if p_list else None
+            if med_p is not None and med_p >= 185.0:
+                raw_to_clean[spk_raw] = f"SPEAKER_{female_idx:02d}_F"
+                female_idx += 1
+            else:
+                raw_to_clean[spk_raw] = f"SPEAKER_{male_idx:02d}_M"
+                male_idx += 1
+
+        # Gán speaker_id cho từng segment theo tổng thời gian giao thoai lớn nhất (hoặc khoảng cách gần nhất)
+        for seg in segments:
+            s_start = float(seg["start"])
+            s_end = float(seg["end"])
+            overlap_by_spk: dict[str, float] = {}
+            nearest_spk = raw_spk_order[0]
+            best_dist = float("inf")
+
+            for t0, t1, spk_raw in turns:
+                ov = max(0.0, min(s_end, t1) - max(s_start, t0))
+                if ov > 0.0:
+                    overlap_by_spk[spk_raw] = overlap_by_spk.get(spk_raw, 0.0) + ov
+                dist = 0.0 if (t0 <= s_start <= t1 or t0 <= s_end <= t1) else min(abs(t0 - s_end), abs(s_start - t1))
+                if dist < best_dist:
+                    best_dist = dist
+                    nearest_spk = spk_raw
+
+            chosen_raw = max(overlap_by_spk.items(), key=lambda x: x[1])[0] if overlap_by_spk else nearest_spk
+            clean_spk = raw_to_clean.get(chosen_raw, "SPEAKER_00_M")
+            seg["speaker_id"] = clean_spk
+            seg["gender_hint"] = "female" if clean_spk.endswith("_F") else "male"
+
+            i0 = max(0, int(s_start * sr))
+            i1 = min(len(wav_data), int(s_end * sr))
+            p_seg, _ = _extract_voice_features(wav_data[i0:i1], sr) if i1 > i0 else (None, 0.0)
+            if p_seg is not None:
+                seg["pitch_hz"] = p_seg
+
+        speaker_refs = {}
+        spk_groups: dict[str, list[tuple[float, float]]] = {}
+        for seg in segments:
+            spk_groups.setdefault(seg["speaker_id"], []).append((float(seg["start"]), float(seg["end"])))
+
+        for spk, intervals in spk_groups.items():
+            chunks = []
+            total_len = 0
+            for t0, t1 in sorted(intervals, key=lambda x: x[1] - x[0], reverse=True):
+                a0 = max(0, int(t0 * sr))
+                a1 = min(len(wav_data), int(t1 * sr))
+                if a1 > a0:
+                    chunks.append(wav_data[a0:a1])
+                    total_len += a1 - a0
+                if total_len >= sr * 5:
+                    break
+            ref_name = f"ref_speaker_{spk}.wav"
+            ref_path = os.path.join(work_dir, ref_name)
+            merged_wav = np.concatenate(chunks)[: sr * 6] if chunks else np.zeros(sr, dtype=np.float32)
+            sf.write(ref_path, merged_wav, sr)
+
+            pitches = [float(s["pitch_hz"]) for s in segments if s["speaker_id"] == spk and s.get("pitch_hz")]
+            avg_pitch = round(float(np.mean(pitches)), 1) if pitches else None
+            g_hint = "female" if spk.endswith("_F") else "male"
+            speaker_refs[spk] = {
+                "ref_asset": ref_name,
+                "gender_hint": g_hint,
+                "pitch_hz": avg_pitch,
+            }
+
+        del pipeline, diarization
+        free_gpu()
+        print(f"[INFO] pyannote.audio ({model_id}) phân tách thành công {len(speaker_refs)} người nói: {list(speaker_refs.keys())}")
+        return speaker_refs
+    except Exception as e:
+        print(f"[WARN] pyannote.audio lỗi ({e}), chuyển sang VAD/pitch dự phòng.")
+        free_gpu()
+        return None
+
+
 def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], work_dir: str) -> dict:
     import numpy as np
     import soundfile as sf
@@ -649,6 +793,7 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
         wav_data = wav_data.mean(axis=-1)
     total_dur = len(wav_data) / float(sr)
 
+    # Căn chỉnh biên thời gian theo năng lượng giọng hát/thoại (VAD)
     for idx, seg in enumerate(segments):
         prev_end = float(segments[idx - 1]["end"]) + 0.03 if idx > 0 else 0.0
         next_start = float(segments[idx + 1]["start"]) - 0.03 if idx + 1 < len(segments) else total_dur
@@ -672,6 +817,11 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
                     seg["start"] = new_s
                     seg["end"] = new_e
 
+    pyannote_refs = _diarize_with_pyannote(vocals_wav, segments, wav_data, sr, work_dir)
+    if pyannote_refs is not None:
+        return pyannote_refs
+
+    # Dự phòng bằng pitch/centroid nếu không dùng được pyannote
     centroids: list[float] = []
     for seg in segments:
         i0 = max(0, int(float(seg["start"]) * sr))
@@ -776,7 +926,7 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
             "pitch_hz": avg_pitch,
         }
 
-    print(f"[INFO] Căn chỉnh VAD & phân tách người nói tạo {len(speaker_refs)} nhân vật: {list(speaker_refs.keys())}")
+    print(f"[INFO] Căn chỉnh VAD & phân tách người nói (fallback) tạo {len(speaker_refs)} nhân vật: {list(speaker_refs.keys())}")
     return speaker_refs
 
 
@@ -800,7 +950,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
             continue
         idx_out += 1
         start_t = float(seg.get("start", 0.0))
-        end_t = max(start_t + 0.20, float(seg.get("end", start_t + 0.35)))
+        end_t = max(start_t + 0.25, float(seg.get("end", start_t + 0.65)))
         spk = seg.get("speaker_id", "SPEAKER_00")
         src_tag = seg.get("subtitle_source", "rapidocr_mobile_dbnet_jump")
         blocks.append(
@@ -812,7 +962,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
         blocks.append("1\n00:00:00,000 --> 00:00:01,000\n[NO_OCR_TEXT_DETECTED]\n")
     with open(out_srt_path, "w", encoding="utf-8") as f:
         f.write("\n".join(blocks).strip() + "\n")
-    print(f"[INFO] Đã xuất file SRT Stage 1 (RapidOCR Mobile + DBNet + VAD): {out_srt_path} ({idx_out} dòng)")
+    print(f"[INFO] Đã xuất file SRT Stage 1 (RapidOCR Mobile + DBNet + VAD/pyannote): {out_srt_path} ({idx_out} dòng)")
     return out_srt_path
 
 
@@ -822,7 +972,7 @@ sync = GitHubSync(GH_REPO, GH_TOKEN)
 def main():
     send_ntfy(
         f"[Stage 1] {JOB_ID}",
-        f"Bắt đầu nhận diện RapidOCR PP-OCRv5 Mobile + DBNet + VAD (bỏ ASR) cho job {JOB_ID}.",
+        f"Bắt đầu nhận diện RapidOCR PP-OCRv5 Mobile + DBNet + VAD/pyannote cho job {JOB_ID}.",
         tags="film_frames",
     )
     jobs_data, _ = sync.read_json("state/jobs.json")
@@ -871,7 +1021,7 @@ def main():
     with open(os.path.join(work_dir, f"{JOB_ID}_stage1.json"), "w", encoding="utf-8") as f:
         json.dump(stage1_payload, f, ensure_ascii=False, indent=2)
 
-    sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done (rapidocr mobile+dbnet): {JOB_ID}")
+    sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done (rapidocr mobile+dbnet+pyannote): {JOB_ID}")
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
     if JOB_ID in updated_jobs.get("jobs", {}):
@@ -881,7 +1031,7 @@ def main():
     sync.trigger_dispatch("stage1_completed", {"job_id": JOB_ID})
     send_ntfy(
         f"[Stage 1 Done] {JOB_ID}",
-        f"Hoàn tất RapidOCR Mobile + DBNet + VAD ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
+        f"Hoàn tất RapidOCR Mobile + DBNet + pyannote ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
         tags="white_check_mark",
     )
 
