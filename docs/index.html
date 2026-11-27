@@ -214,15 +214,13 @@
         <span>1. Cấu hình GitHub Repository</span>
         <span id="connBadge" class="badge warn">Chưa kiểm tra</span>
       </div>
-      <div class="grid-2">
-        <div class="field">
-          <label for="ghRepo">Repository (owner/repo)</label>
-          <input id="ghRepo" type="text" placeholder="" />
-        </div>
-        <div class="field">
-          <label for="ghBranch">State Branch</label>
-          <input id="ghBranch" type="text" value="pipeline-state" placeholder="" />
-        </div>
+      <div class="field">
+        <label for="ghRepo">Repository (owner/repo)</label>
+        <input id="ghRepo" type="text" placeholder="" />
+      </div>
+      <div class="field hidden">
+        <label for="ghBranch">State Branch</label>
+        <input id="ghBranch" type="text" value="main" placeholder="" />
       </div>
       <div class="field">
         <label for="ghToken">GitHub Token</label>
@@ -348,7 +346,7 @@
       try {
         const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
         if (raw.repo) el.ghRepo.value = raw.repo;
-        if (raw.branch) el.ghBranch.value = raw.branch;
+        el.ghBranch.value = "main";
         if (raw.token) el.ghToken.value = raw.token;
         el.triggerMode.value = "dispatch";
         el.dispatchEvent.value = raw.dispatchEvent || "stage1_start";
@@ -361,7 +359,7 @@
     function saveConfig() {
       const payload = {
         repo: el.ghRepo.value.trim(),
-        branch: el.ghBranch.value.trim() || "pipeline-state",
+        branch: "main",
         token: el.ghToken.value.trim(),
         dispatchEvent: el.dispatchEvent.value.trim() || "stage1_start",
         workflowFile: el.workflowFile.value.trim(),
@@ -374,7 +372,7 @@
 
     function getCfg() {
       const repo = el.ghRepo.value.trim().replace(/^https?:\/\/github\.com\//i, "").replace(/\/+$/, "");
-      const branch = el.ghBranch.value.trim() || "pipeline-state";
+      const branch = "main";
       const token = el.ghToken.value.trim();
       const dispatchEvent = el.dispatchEvent.value.trim() || "stage1_start";
       const workflowFile = el.workflowFile.value.trim();
