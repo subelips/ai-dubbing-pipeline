@@ -206,7 +206,7 @@
 <body>
   <div class="container">
     <h1>AI Dubbing Pipeline</h1>
-    <p class="subtitle">Tạo job bằng link video/Google Drive, cập nhật state/jobs.json và kích hoạt Stage 1 từ GitHub Pages.</p>
+    <p class="subtitle">Tạo job bằng link video, cập nhật state/jobs.json và kích hoạt Stage 1 từ GitHub Pages.</p>
 
     <!-- 1. Cấu hình GitHub -->
     <div class="card">
@@ -217,16 +217,16 @@
       <div class="grid-2">
         <div class="field">
           <label for="ghRepo">Repository (owner/repo)</label>
-          <input id="ghRepo" type="text" placeholder="ví dụ: subelips/ai-dubbing-pipeline" />
+          <input id="ghRepo" type="text" placeholder="" />
         </div>
         <div class="field">
           <label for="ghBranch">State Branch</label>
-          <input id="ghBranch" type="text" value="pipeline-state" />
+          <input id="ghBranch" type="text" value="pipeline-state" placeholder="" />
         </div>
       </div>
       <div class="field">
-        <label for="ghToken">GitHub Token (Fine-grained PAT có quyền Contents &amp; Actions Read/Write)</label>
-        <input id="ghToken" type="password" placeholder="github_pat_..." />
+        <label for="ghToken">GitHub Token</label>
+        <input id="ghToken" type="password" placeholder="" />
         <div class="hint">Lưu cục bộ trong trình duyệt; nên xóa khi dùng trên thiết bị lạ.</div>
       </div>
       <div class="row">
@@ -241,7 +241,7 @@
       <div class="grid-2">
         <div class="field">
           <label for="jobId">Job ID</label>
-          <input id="jobId" type="text" placeholder="ví dụ: ep01" />
+          <input id="jobId" type="text" placeholder="" />
         </div>
         <div class="field">
           <label for="sourceLang">Ngôn ngữ gốc</label>
@@ -256,28 +256,28 @@
       </div>
 
       <div class="field">
-        <label for="videoUrl">Link Google Drive hoặc URL video</label>
-        <input id="videoUrl" type="text" placeholder="https://drive.google.com/file/d/.../view?usp=sharing hoặc link trực tiếp" />
-        <div class="hint">Chỉ hỗ trợ nhập link để ghi vào video_asset / video_url trong state/jobs.json.</div>
+        <label for="videoUrl">Link video</label>
+        <input id="videoUrl" type="text" placeholder="" />
       </div>
 
-      <div class="grid-2">
+      <!-- Ẩn cấu hình trigger, mặc định dùng repository_dispatch -->
+      <div id="triggerConfigBox" class="grid-2 hidden">
         <div class="field">
           <label for="triggerMode">Cách kích hoạt Stage 1</label>
           <select id="triggerMode">
             <option value="dispatch" selected>repository_dispatch</option>
-            <option value="workflow_dispatch">workflow_dispatch (GitHub Actions workflow)</option>
+            <option value="workflow_dispatch">workflow_dispatch</option>
           </select>
         </div>
         <div id="dispatchBox" class="field">
-          <label for="dispatchEvent">Event Type (`repository_dispatch`)</label>
-          <input id="dispatchEvent" type="text" value="stage1_start" />
+          <label for="dispatchEvent">Event Type</label>
+          <input id="dispatchEvent" type="text" value="stage1_start" placeholder="" />
         </div>
         <div id="workflowBox" class="field hidden">
-          <label for="workflowFile">Workflow File &amp; Ref</label>
-          <input id="workflowFile" type="text" placeholder="ví dụ: run_stage1.yml" />
+          <label for="workflowFile">Workflow File</label>
+          <input id="workflowFile" type="text" placeholder="" />
           <div class="hint" style="margin-top: 6px;">
-            <input id="workflowRef" type="text" value="main" placeholder="Branch/Tag (mặc định: main)" />
+            <input id="workflowRef" type="text" value="main" placeholder="" />
           </div>
         </div>
       </div>
@@ -363,10 +363,10 @@
         if (raw.repo) el.ghRepo.value = raw.repo;
         if (raw.branch) el.ghBranch.value = raw.branch;
         if (raw.token) el.ghToken.value = raw.token;
-        if (raw.dispatchEvent) el.dispatchEvent.value = raw.dispatchEvent;
+        el.triggerMode.value = "dispatch";
+        el.dispatchEvent.value = raw.dispatchEvent || "stage1_start";
         if (raw.workflowFile) el.workflowFile.value = raw.workflowFile;
         if (raw.workflowRef) el.workflowRef.value = raw.workflowRef;
-        if (raw.triggerMode) el.triggerMode.value = raw.triggerMode;
       } catch (_) {}
       syncTriggerVisibility();
     }
@@ -379,7 +379,7 @@
         dispatchEvent: el.dispatchEvent.value.trim() || "stage1_start",
         workflowFile: el.workflowFile.value.trim(),
         workflowRef: el.workflowRef.value.trim() || "main",
-        triggerMode: el.triggerMode.value,
+        triggerMode: "dispatch",
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
       log("Đã lưu cấu hình GitHub vào trình duyệt.");
@@ -392,7 +392,7 @@
       const dispatchEvent = el.dispatchEvent.value.trim() || "stage1_start";
       const workflowFile = el.workflowFile.value.trim();
       const workflowRef = el.workflowRef.value.trim() || "main";
-      const triggerMode = el.triggerMode.value;
+      const triggerMode = "dispatch";
       if (!repo || !repo.includes("/")) throw new Error("Vui lòng nhập Repository hợp lệ dạng owner/repo.");
       if (!token) throw new Error("Vui lòng nhập GitHub Token.");
       return { repo, branch, token, dispatchEvent, workflowFile, workflowRef, triggerMode };
@@ -460,24 +460,6 @@
 
     async function triggerStage1(cfg, jobId) {
       const apiBase = `https://api.github.com/repos/${cfg.repo}`;
-      if (cfg.triggerMode === "workflow_dispatch") {
-        if (!cfg.workflowFile) {
-          throw new Error("Vui lòng nhập tên Workflow File cho workflow_dispatch.");
-        }
-        const url = `${apiBase}/actions/workflows/${encodeURIComponent(cfg.workflowFile)}/dispatches`;
-        const res = await fetch(url, {
-          method: "POST",
-          headers: ghHeaders(cfg.token, { "Content-Type": "application/json" }),
-          body: JSON.stringify({
-            ref: cfg.workflowRef || "main",
-            inputs: { job_id: jobId },
-          }),
-        });
-        if (!res.ok) throw new Error(`Gửi workflow_dispatch thất bại (${res.status}): ${await res.text()}`);
-        log(`Đã kích hoạt workflow '${cfg.workflowFile}' cho job ${jobId}.`);
-        return;
-      }
-
       const eventName = cfg.dispatchEvent || "stage1_start";
       const url = `${apiBase}/dispatches`;
       const res = await fetch(url, {
