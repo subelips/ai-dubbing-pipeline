@@ -4,6 +4,8 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
+os.environ.setdefault("ORT_CUDA_CUDNN_CONV_ALGO_SEARCH", "HEURISTIC")
 
 import base64
 from difflib import SequenceMatcher
@@ -194,7 +196,7 @@ def ensure_deps():
         ("numpy", "numpy"),
         ("cv2", "opencv-python"),
         ("gdown", "gdown"),
-        ("onnxruntime", "onnxruntime"),
+        ("onnxruntime", "onnxruntime-gpu"),
         ("rapidocr", "rapidocr"),
     ]
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
@@ -278,13 +280,13 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
 
 def _get_dbnet_config() -> dict:
     return {
-        "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.32")),
-        "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.52")),
-        "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.60")),
+        "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.26")),
+        "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.46")),
+        "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.70")),
         "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "960")),
-        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.65")),
-        "step_sec": max(0.35, float(os.environ.get("OCR_STEP_SEC", "0.65"))),
-        "idle_jump_sec": max(1.0, float(os.environ.get("OCR_IDLE_JUMP_SEC", "1.5"))),
+        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.50")),
+        "step_sec": max(0.25, float(os.environ.get("OCR_STEP_SEC", "0.35"))),
+        "idle_jump_sec": max(0.6, float(os.environ.get("OCR_IDLE_JUMP_SEC", "0.85"))),
         "save_bbox_vis": os.environ.get("SAVE_BBOX_VIS", "0").strip() == "1",
     }
 
@@ -292,7 +294,14 @@ def _get_dbnet_config() -> dict:
 def _create_mobile_dbnet_ocr(cfg: dict):
     from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
 
-    use_cuda = os.environ.get("OCR_USE_CUDA", "0").strip() == "1"
+    want_cuda = os.environ.get("OCR_USE_CUDA", "1").strip() == "1"
+    has_cuda = False
+    if want_cuda:
+        try:
+            import onnxruntime as ort
+            has_cuda = "CUDAExecutionProvider" in ort.get_available_providers()
+        except Exception:
+            has_cuda = False
 
     engine_type = EngineType.ONNXRUNTIME
     params = {
@@ -310,14 +319,14 @@ def _create_mobile_dbnet_ocr(cfg: dict):
         "Rec.lang_type": LangRec.CH,
         "Rec.model_type": ModelType.MOBILE,
         "Rec.ocr_version": OCRVersion.PPOCRV5,
-        "EngineConfig.onnxruntime.use_cuda": use_cuda,
+        "EngineConfig.onnxruntime.use_cuda": has_cuda,
     }
 
     try:
         ocr = RapidOCR(params=params)
         print(
             f"[INFO] Đã khởi tạo RapidOCR PP-OCRv5 Mobile + DBNet "
-            f"(use_cuda={use_cuda}, step={cfg['step_sec']}s, idle={cfg['idle_jump_sec']}s, min_score={cfg['min_score']})."
+            f"(use_cuda={has_cuda}, step={cfg['step_sec']}s, idle={cfg['idle_jump_sec']}s, min_score={cfg['min_score']})."
         )
         return ocr
     except Exception as e:
@@ -326,23 +335,20 @@ def _create_mobile_dbnet_ocr(cfg: dict):
 
 
 def _is_valid_subtitle_detection(txt: str, pts: list, crop_w: int, crop_h: int) -> bool:
-    """Lọc bỏ nhãn tên/biểu ngữ góc hoặc chữ rác không phải phụ đề thoại."""
     s = str(txt or "").strip()
     if not s:
-        return False
-    if re.search(r"[A-Za-z]", s) and re.search(r"[\u4e00-\u9fff]", s) and len(s) <= 8:
         return False
     if len(pts) >= 4 and crop_w > 0 and crop_h > 0:
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
         bw = max(xs) - min(xs)
         bh = max(ys) - min(ys)
-        if bh > bw * 1.15 and min(xs) > crop_w * 0.65:
+        if bh > bw * 1.45 and min(xs) > crop_w * 0.75:
             return False
     return True
 
 
-def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.65) -> list[dict]:
+def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.50) -> list[dict]:
     if ocr_engine is None or crop is None:
         return []
     try:
@@ -370,8 +376,7 @@ def _run_dbnet_ocr_single(ocr_engine, crop, min_score: float = 0.65) -> list[dic
         clean_chars = re.sub(r"[\s\W_]+", "", txt, flags=re.UNICODE)
         if not clean_chars or sc < min_score:
             continue
-        min_len = 1 if (sc >= 0.85 and re.search(r"[\u4e00-\u9fff]", clean_chars)) else 2
-        if len(clean_chars) < min_len:
+        if len(clean_chars) < 2 and sc < 0.55:
             continue
 
         pts = []
@@ -441,7 +446,7 @@ def _draw_bbox_visualization(
 
 
 def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[dict], str, float]:
-    roi = {"x1": 0.04, "y1": 0.62, "x2": 0.96, "y2": 0.96}
+    roi = {"x1": 0.02, "y1": 0.55, "x2": 0.98, "y2": 0.97}
     vis_dir = os.path.join(work_dir, "bbox_vis")
     zip_path = os.path.join(work_dir, f"{JOB_ID}_bbox_vis.zip")
     duration = 60.0
@@ -477,7 +482,7 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                 return frm, []
             return frm, _run_dbnet_ocr_single(ocr, crp, min_score=min_score)
 
-        cur_t = round(min(duration * 0.01, 0.35), 2)
+        cur_t = round(min(duration * 0.005, 0.2), 2)
         consecutive_empty = 0
         steps_visited = 0
         hits = 0
@@ -539,13 +544,13 @@ def _is_same_subtitle(t1: str, t2: str) -> bool:
     if s1 == s2:
         return True
     if min(len(s1), len(s2)) <= 3:
-        return SequenceMatcher(None, s1, s2).ratio() >= 0.75
-    return SequenceMatcher(None, s1, s2).ratio() >= 0.85
+        return SequenceMatcher(None, s1, s2).ratio() >= 0.85
+    return SequenceMatcher(None, s1, s2).ratio() >= 0.88
 
 
-def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 0.65) -> list[dict]:
+def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 0.35) -> list[dict]:
     grouped: list[dict] = []
-    max_merge_gap = max(1.15, step_sec * 1.9)
+    max_merge_gap = max(0.85, step_sec * 1.9)
 
     for item in sorted(screen_texts, key=lambda x: float(x.get("time", 0.0))):
         ts = float(item.get("time", 0.0))
@@ -562,8 +567,8 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
             grouped[-1]["end"] = round(min(duration, ts + step_sec * 0.5), 2)
             continue
 
-        start_t = round(max(0.0, ts - step_sec * 0.4), 2)
-        end_t = round(min(duration, max(start_t + 0.45, ts + step_sec * 0.5)), 2)
+        start_t = round(max(0.0, ts - step_sec * 0.45), 2)
+        end_t = round(min(duration, max(start_t + 0.30, ts + step_sec * 0.5)), 2)
         grouped.append({
             "id": len(grouped),
             "start": start_t,
@@ -584,8 +589,8 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
     for idx, g in enumerate(grouped):
         g["id"] = idx
         g.pop("_last_ts", None)
-        if idx + 1 < len(grouped) and grouped[idx]["end"] > grouped[idx + 1]["start"] - 0.04:
-            grouped[idx]["end"] = round(max(grouped[idx]["start"] + 0.25, grouped[idx + 1]["start"] - 0.04), 2)
+        if idx + 1 < len(grouped) and grouped[idx]["end"] > grouped[idx + 1]["start"] - 0.03:
+            grouped[idx]["end"] = round(max(grouped[idx]["start"] + 0.20, grouped[idx + 1]["start"] - 0.03), 2)
 
     return grouped
 
@@ -593,7 +598,7 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
 def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
     import numpy as np
 
-    if samples is None or len(samples) < max(64, sr // 8):
+    if samples is None or len(samples) < max(64, sr // 10):
         return None, 0.0
     s = samples.astype(np.float32)
     s = s - np.mean(s)
@@ -645,12 +650,12 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
     total_dur = len(wav_data) / float(sr)
 
     for idx, seg in enumerate(segments):
-        prev_end = float(segments[idx - 1]["end"]) + 0.04 if idx > 0 else 0.0
-        next_start = float(segments[idx + 1]["start"]) - 0.04 if idx + 1 < len(segments) else total_dur
+        prev_end = float(segments[idx - 1]["end"]) + 0.03 if idx > 0 else 0.0
+        next_start = float(segments[idx + 1]["start"]) - 0.03 if idx + 1 < len(segments) else total_dur
 
-        search_s = max(prev_end, float(seg["start"]) - 0.35)
-        search_e = min(next_start, float(seg["end"]) + 0.35)
-        if search_e <= search_s + 0.2:
+        search_s = max(prev_end, float(seg["start"]) - 0.30)
+        search_e = min(next_start, float(seg["end"]) + 0.30)
+        if search_e <= search_s + 0.15:
             continue
 
         i0 = max(0, int(search_s * sr))
@@ -663,7 +668,7 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
             if len(active) > 0:
                 new_s = round(max(prev_end, search_s + max(0.0, (active[0] - win) / float(sr))), 2)
                 new_e = round(min(next_start, search_s + min((i1 - i0) / float(sr), (active[-1] + win) / float(sr))), 2)
-                if new_e - new_s >= 0.25:
+                if new_e - new_s >= 0.20:
                     seg["start"] = new_s
                     seg["end"] = new_e
 
@@ -795,7 +800,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
             continue
         idx_out += 1
         start_t = float(seg.get("start", 0.0))
-        end_t = max(start_t + 0.25, float(seg.get("end", start_t + 0.65)))
+        end_t = max(start_t + 0.20, float(seg.get("end", start_t + 0.35)))
         spk = seg.get("speaker_id", "SPEAKER_00")
         src_tag = seg.get("subtitle_source", "rapidocr_mobile_dbnet_jump")
         blocks.append(
