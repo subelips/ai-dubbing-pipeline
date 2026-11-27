@@ -2,8 +2,9 @@ import os
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-os.environ.setdefault("FLAGS_use_mkldnn", "0")
-os.environ.setdefault("FLAGS_enable_pir_api", "0")
+os.environ["FLAGS_use_mkldnn"] = "0"
+os.environ["FLAGS_use_onednn"] = "0"
+os.environ["FLAGS_enable_pir_api"] = "0"
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
@@ -359,8 +360,8 @@ def _split_and_refine_segments(raw_segments, audio_arr, sr: int) -> list[dict]:
         merged_items.append((s_t, e_t, txt))
         i += 1
 
-    segments = []
-    for idx, (raw_s, raw_e, txt) in enumerate(merged_items):
+    raw_cleaned = []
+    for raw_s, raw_e, txt in merged_items:
         s_t = float(raw_s)
         e_t = float(raw_e)
 
@@ -384,10 +385,18 @@ def _split_and_refine_segments(raw_segments, audio_arr, sr: int) -> list[dict]:
         if (e_t - s_t) > max_plausible_dur:
             s_t = max(s_t, e_t - max_plausible_dur)
 
+        # Bỏ các mảnh hallucination siêu ngắn (< 0.24s)
+        if (e_t - s_t) < 0.24:
+            continue
+
+        raw_cleaned.append((round(s_t, 2), round(e_t, 2), txt))
+
+    segments = []
+    for idx, (s_t, e_t, txt) in enumerate(raw_cleaned):
         segments.append({
             "id": idx,
-            "start": round(s_t, 2),
-            "end": round(max(s_t + 0.25, e_t), 2),
+            "start": s_t,
+            "end": max(round(s_t + 0.24, 2), e_t),
             "speaker_id": "SPEAKER_00",
             "gender_hint": "unknown",
             "pitch_hz": None,
@@ -467,23 +476,24 @@ def transcribe_with_faster_whisper(vocals_wav: str) -> list[dict]:
     return segments
 
 
-def _extract_voice_features(samples, sr: int) -> tuple[float | None, "np.ndarray | None"]:
+def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
     import numpy as np
 
     if samples is None or len(samples) < max(64, sr // 8):
-        return None, None
+        return None, 0.0
     s = samples.astype(np.float32)
     s = s - np.mean(s)
     energy = float(np.sqrt(np.mean(s ** 2)))
     if energy < 1e-4:
-        return None, None
+        return None, 0.0
 
     frame_len = max(128, int(0.04 * sr))
     hop = max(64, frame_len // 2)
     min_lag = max(1, int(sr / 450.0))
     max_lag = min(frame_len - 1, int(sr / 75.0))
     frame_pitches = []
-    spectra = []
+    centroids = []
+    freqs = np.fft.rfftfreq(512, d=1.0 / sr)
 
     for start in range(0, len(s) - frame_len + 1, hop):
         fr = s[start: start + frame_len]
@@ -492,10 +502,9 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, "np.ndarray
             continue
         win_fr = fr * np.hanning(frame_len)
         spec = np.abs(np.fft.rfft(win_fr, n=512))
-        log_spec = np.log1p(spec[:160])
-        norm = float(np.linalg.norm(log_spec))
-        if norm > 1e-6:
-            spectra.append(log_spec / norm)
+        s_sum = float(np.sum(spec))
+        if s_sum > 1e-6:
+            centroids.append(float(np.sum(freqs * spec) / s_sum))
 
         corr = np.correlate(fr, fr, mode="full")[frame_len - 1:]
         if corr[0] > 0 and max_lag > min_lag:
@@ -505,30 +514,25 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, "np.ndarray
                 frame_pitches.append(float(sr) / float(b_idx))
 
     pitch_med = round(float(np.median(frame_pitches)), 1) if frame_pitches else None
-    emb = np.mean(spectra, axis=0) if spectra else None
-    if emb is not None:
-        n_emb = float(np.linalg.norm(emb))
-        if n_emb > 1e-6:
-            emb = emb / n_emb
-    return pitch_med, emb
+    cent_med = float(np.median(centroids)) if centroids else 0.0
+    return pitch_med, cent_med
 
 
 def apply_speaker_diarization(vocals_wav: str, segments: list[dict], work_dir: str) -> dict:
     import numpy as np
-    from scipy.cluster.hierarchy import fcluster, linkage
     import soundfile as sf
 
     wav_data, sr = sf.read(vocals_wav)
     if wav_data.ndim > 1:
         wav_data = wav_data.mean(axis=-1)
 
-    embeddings: list["np.ndarray | None"] = []
+    centroids: list[float] = []
     for seg in segments:
         i0 = max(0, int(float(seg["start"]) * sr))
         i1 = min(len(wav_data), int(float(seg["end"]) * sr))
-        pitch, emb = _extract_voice_features(wav_data[i0:i1], sr) if i1 > i0 else (None, None)
+        pitch, cent = _extract_voice_features(wav_data[i0:i1], sr) if i1 > i0 else (None, 0.0)
         seg["pitch_hz"] = pitch
-        embeddings.append(emb)
+        centroids.append(cent)
         if pitch is not None:
             seg["gender_hint"] = "female" if pitch >= 195.0 else "male"
         else:
@@ -541,7 +545,6 @@ def apply_speaker_diarization(vocals_wav: str, segments: list[dict], work_dir: s
         else:
             seg["gender_hint"] = last_known_g
 
-    # Chỉ làm mượt câu ngắn khi pitch không rõ ràng (< 230 Hz), không ghi đè giọng nữ rõ rệt
     if len(segments) >= 3:
         smoothed_g = [s["gender_hint"] for s in segments]
         for i in range(1, len(segments) - 1):
@@ -555,62 +558,65 @@ def apply_speaker_diarization(vocals_wav: str, segments: list[dict], work_dir: s
         for i, g in enumerate(smoothed_g):
             segments[i]["gender_hint"] = g
 
-    male_valid = [
-        (i, embeddings[i])
-        for i, s in enumerate(segments)
-        if s["gender_hint"] == "male"
-        and embeddings[i] is not None
-        and (float(s["end"]) - float(s["start"])) >= 0.70
-        and (s.get("pitch_hz") is None or 65.0 <= float(s["pitch_hz"]) <= 185.0)
-    ]
-    male_cluster_map: dict[int, int] = {}
-    centroids_by_cluster: dict[int, "np.ndarray"] = {}
-    if len(male_valid) >= 4:
-        mat = np.vstack([e for _, e in male_valid])
-        Z = linkage(mat, method="ward")
-        labels = fcluster(Z, t=2, criterion="maxclust")
-        first_seen: dict[int, int] = {}
-        for (seg_idx, _), lbl in zip(male_valid, labels):
-            lbl_int = int(lbl)
-            if lbl_int not in first_seen:
-                first_seen[lbl_int] = seg_idx
-        ordered_lbls = sorted(first_seen.keys(), key=lambda k: first_seen[k])
-        remap = {old_l: new_i for new_i, old_l in enumerate(ordered_lbls)}
-        for (seg_idx, emb), lbl in zip(male_valid, labels):
-            c_id = remap[int(lbl)]
-            male_cluster_map[seg_idx] = c_id
-            centroids_by_cluster.setdefault(c_id, []).append(emb)
-        for c_id, emb_list in list(centroids_by_cluster.items()):
-            mean_e = np.mean(np.vstack(emb_list), axis=0)
-            centroids_by_cluster[c_id] = mean_e / max(1e-6, float(np.linalg.norm(mean_e)))
+    # Gom các câu nam liên tiếp thành từng lượt thoại (turn) rồi phân 2 cụm theo (F0 + Spectral Centroid)
+    male_turns: list[list[int]] = []
+    cur_turn: list[int] = []
+    for i, seg in enumerate(segments):
+        if seg["gender_hint"] != "male":
+            if cur_turn:
+                male_turns.append(cur_turn)
+                cur_turn = []
+            continue
+        if not cur_turn:
+            cur_turn = [i]
+        else:
+            prev_i = cur_turn[-1]
+            gap = float(seg["start"]) - float(segments[prev_i]["end"])
+            if gap <= 1.25:
+                cur_turn.append(i)
+            else:
+                male_turns.append(cur_turn)
+                cur_turn = [i]
+    if cur_turn:
+        male_turns.append(cur_turn)
 
-    for i, s in enumerate(segments):
-        if s["gender_hint"] == "male" and i not in male_cluster_map and embeddings[i] is not None and len(centroids_by_cluster) == 2:
-            sim0 = float(np.dot(embeddings[i], centroids_by_cluster[0]))
-            sim1 = float(np.dot(embeddings[i], centroids_by_cluster[1]))
-            male_cluster_map[i] = 0 if sim0 >= sim1 else 1
+    turn_scores = []
+    for t_idx, idxs in enumerate(male_turns):
+        valid_p = [float(segments[k]["pitch_hz"]) for k in idxs if segments[k].get("pitch_hz") and 65.0 <= float(segments[k]["pitch_hz"]) <= 185.0]
+        valid_c = [centroids[k] for k in idxs if centroids[k] > 0]
+        p_med = float(np.median(valid_p)) if valid_p else 108.0
+        c_med = float(np.median(valid_c)) if valid_c else 1100.0
+        turn_scores.append((t_idx, p_med, c_med))
 
-    last_male_spk = "SPEAKER_00_M"
+    turn_speaker: dict[int, str] = {}
+    if len(turn_scores) >= 2:
+        p_vals = np.array([x[1] for x in turn_scores], dtype=np.float32)
+        c_vals = np.array([x[2] for x in turn_scores], dtype=np.float32)
+        p_norm = (p_vals - np.mean(p_vals)) / max(1.0, float(np.std(p_vals)))
+        c_norm = (c_vals - np.mean(c_vals)) / max(1.0, float(np.std(c_vals)))
+        combo = 0.65 * p_norm + 0.35 * c_norm
+        split_thr = float(np.median(combo))
+        first_spk = "SPEAKER_00_M"
+        second_spk = "SPEAKER_02_M"
+        first_is_low = combo[0] <= split_thr
+        for (t_idx, _, _), sc in zip(turn_scores, combo):
+            is_low = sc <= split_thr
+            turn_speaker[t_idx] = first_spk if (is_low == first_is_low) else second_spk
+    else:
+        for t_idx, _, _ in turn_scores:
+            turn_speaker[t_idx] = "SPEAKER_00_M"
+
+    idx_to_male_spk: dict[int, str] = {}
+    for t_idx, idxs in enumerate(male_turns):
+        spk_name = turn_speaker.get(t_idx, "SPEAKER_00_M")
+        for k in idxs:
+            idx_to_male_spk[k] = spk_name
+
     for i, seg in enumerate(segments):
         if seg["gender_hint"] == "female":
             seg["speaker_id"] = "SPEAKER_01_F"
         else:
-            if i in male_cluster_map:
-                spk = "SPEAKER_00_M" if male_cluster_map[i] == 0 else "SPEAKER_02_M"
-                last_male_spk = spk
-            else:
-                spk = last_male_spk
-            seg["speaker_id"] = spk
-
-    # Đồng bộ cụm thoại liên tục cho các câu nam ngắn nối tiếp nhau (< 0.30s)
-    for i in range(1, len(segments)):
-        prev_s = segments[i - 1]
-        cur_s = segments[i]
-        if prev_s["gender_hint"] == "male" and cur_s["gender_hint"] == "male":
-            gap = float(cur_s["start"]) - float(prev_s["end"])
-            dur_cur = float(cur_s["end"]) - float(cur_s["start"])
-            if gap < 0.30 and dur_cur < 1.2:
-                cur_s["speaker_id"] = prev_s["speaker_id"]
+            seg["speaker_id"] = idx_to_male_spk.get(i, "SPEAKER_00_M")
 
     speaker_refs = {}
     spk_groups: dict[str, list[tuple[float, float]]] = {}
@@ -686,6 +692,7 @@ def _create_single_ocr_engine(lang: str):
     from paddleocr import PaddleOCR
 
     for kw in [
+        dict(lang=lang, enable_mkldnn=False, use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False),
         dict(lang=lang, use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False),
         dict(lang=lang),
     ]:
@@ -705,8 +712,8 @@ def _run_ocr_predict(ocr_engine, img) -> list[str]:
             got_p = _extract_ocr_texts(res_p)
             if got_p:
                 return got_p
-    except Exception as e:
-        print(f"[WARN] ocr.predict lỗi: {e}")
+    except Exception:
+        pass
     try:
         res = ocr_engine.ocr(img)
         got = _extract_ocr_texts(res)
@@ -790,7 +797,7 @@ def run_ocr_on_video(video_path: str, work_dir: str) -> tuple[dict, list[dict], 
                 break
 
         print(f"[INFO] [PaddleOCR] lang={ocr_lang} | ROI {tuple(best_roi.values())} | hits={max(0, best_hits)}/{len(sampled_frames)} mẫu.")
-        return best_roi, best_texts, ocr
+        return best_roi, best_texts, ocr if best_hits > 0 else None
     except Exception as e:
         print(f"[WARN] PaddleOCR bỏ qua: {e}")
         return roi_candidates[0], [], None
