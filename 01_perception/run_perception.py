@@ -1,4 +1,46 @@
+import functools
 import os
+
+# Vá lỗi Python 3.13 + numpy.ufunc cho pyannote/scipy ngay trước khi import thư viện ngoài
+_orig_update_wrapper = functools.update_wrapper
+
+
+def _safe_update_wrapper(
+    wrapper,
+    wrapped,
+    assigned=functools.WRAPPER_ASSIGNMENTS,
+    updated=functools.WRAPPER_UPDATES,
+):
+    for attr in assigned:
+        try:
+            val = getattr(wrapped, attr)
+        except AttributeError:
+            if attr == "__qualname__":
+                val = getattr(wrapped, "__name__", "ufunc")
+            else:
+                continue
+        try:
+            setattr(wrapper, attr, val)
+        except (AttributeError, TypeError):
+            pass
+    for attr in updated:
+        try:
+            getattr(wrapper, attr).update(getattr(wrapped, attr, {}))
+        except (AttributeError, TypeError):
+            pass
+    try:
+        wrapper.__wrapped__ = wrapped
+    except (AttributeError, TypeError):
+        pass
+    return wrapper
+
+
+functools.update_wrapper = _safe_update_wrapper
+functools.wraps = (
+    lambda wrapped, assigned=functools.WRAPPER_ASSIGNMENTS, updated=functools.WRAPPER_UPDATES: functools.partial(
+        _safe_update_wrapper, wrapped=wrapped, assigned=assigned, updated=updated
+    )
+)
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
@@ -8,7 +50,6 @@ os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
 import base64
 from difflib import SequenceMatcher
-import functools
 import gc
 import glob
 import json
@@ -217,6 +258,7 @@ def ensure_deps():
     else:
         try:
             import importlib.metadata as ilm
+
             np_ver = ilm.version("numpy")
             major, minor = [int(x) for x in np_ver.split(".")[:2]]
             if major > 2 or (major == 2 and minor >= 3):
@@ -265,21 +307,21 @@ def _build_cuda_ld_library_path(venv_dir: str = "/tmp/ocr_venv") -> str:
 
 
 def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
-    """Tạo venv cô lập không cần ensurepip hệ thống (dùng --without-pip + pip --python)."""
+    """Tạo venv cô lập không cần ensurepip hệ thống, ghim onnxruntime-gpu==1.20.1 tránh lỗi cuDNN 9.27 FE."""
     venv_py = os.path.join(venv_dir, "bin", "python")
-    marker = os.path.join(venv_dir, ".rapidocr_gpu_v4_ready")
+    marker = os.path.join(venv_dir, ".rapidocr_gpu_v5_ready")
     if os.path.exists(venv_py) and os.path.exists(marker):
         return venv_py
 
     if os.path.exists(venv_dir) and not os.path.exists(marker):
         shutil.rmtree(venv_dir, ignore_errors=True)
 
-    subprocess.run([sys.executable, "-m", "venv", "--without-pip", venv_dir], check=True)
+    subprocess.run([sys.executable, "-S", "-m", "venv", "--without-pip", venv_dir], check=True)
 
     pkgs = [
         "wrapt",
         "numpy>=1.26.4,<2.3.0",
-        "onnxruntime-gpu",
+        "onnxruntime-gpu==1.20.1",
         "rapidocr",
         "opencv-python-headless",
     ]
@@ -293,7 +335,7 @@ def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
         get_pip = "/tmp/get-pip.py"
         if not os.path.exists(get_pip):
             urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py", get_pip)
-        subprocess.run([venv_py, get_pip, "-q"], check=True)
+        subprocess.run([venv_py, "-S", get_pip, "-q"], check=True)
         subprocess.run([venv_py, "-m", "pip", "install", "-q", *pkgs], check=True)
 
     with open(marker, "w", encoding="utf-8") as f:
@@ -305,6 +347,7 @@ def free_gpu():
     gc.collect()
     try:
         import torch
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
@@ -362,6 +405,7 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
     os.makedirs(demucs_out, exist_ok=True)
     cmd = ["demucs", "-n", "htdemucs", "--two-stems", "vocals", "-o", demucs_out, audio_16k]
     import torch
+
     if not torch.cuda.is_available():
         cmd.extend(["-d", "cpu"])
     subprocess.run(cmd, check=True)
@@ -437,6 +481,7 @@ def build_ocr(use_gpu: bool):
         "Rec.model_type": ModelType.MOBILE,
         "Rec.ocr_version": OCRVersion.PPOCRV5,
         "EngineConfig.onnxruntime.use_cuda": use_gpu,
+        "EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_algo_search": "DEFAULT",
     }
     return RapidOCR(params=params), use_gpu
 
@@ -455,6 +500,14 @@ print(
     flush=True,
 )
 
+def pad_to_multiple_of_32(img):
+    h, w = img.shape[:2]
+    pad_h = (32 - h % 32) % 32
+    pad_w = (32 - w % 32) % 32
+    if pad_h == 0 and pad_w == 0:
+        return img
+    return cv2.copyMakeBorder(img, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+
 def is_valid_det(txt: str, pts: list, crop_w: int, crop_h: int) -> bool:
     if not txt:
         return False
@@ -469,7 +522,8 @@ def is_valid_det(txt: str, pts: list, crop_w: int, crop_h: int) -> bool:
 
 def run_one(engine, crop):
     crop_h, crop_w = crop.shape[:2]
-    res = engine(crop)
+    padded_crop = pad_to_multiple_of_32(crop)
+    res = engine(padded_crop)
     boxes = getattr(res, "boxes", None)
     txts = getattr(res, "txts", None)
     scores = getattr(res, "scores", None)
@@ -494,7 +548,9 @@ def run_one(engine, crop):
                 arr = boxes[i].tolist() if hasattr(boxes[i], "tolist") else list(boxes[i])
                 for p in arr:
                     if len(p) >= 2:
-                        pts.append([int(round(float(p[0]))), int(round(float(p[1])))])
+                        px = min(crop_w, max(0, int(round(float(p[0])))))
+                        py = min(crop_h, max(0, int(round(float(p[1])))))
+                        pts.append([px, py])
             except Exception:
                 pts = []
         if is_valid_det(txt, pts, crop_w, crop_h):
@@ -618,7 +674,7 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
             ok, frm = cap.read()
             if ok and frm is not None:
                 fh, fw, _ = frm.shape
-                crp = frm[int(fh * roi["y1"]):int(fh * roi["y2"]), int(fw * roi["x1"]):int(fw * roi["x2"])]
+                crp = frm[int(fh * roi["y1"]) : int(fh * roi["y2"]), int(fw * roi["x1"]) : int(fw * roi["x2"])]
                 if crp.size > 0:
                     cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{cur_t:.2f}s.jpg")
                     cv2.imwrite(cp, crp)
@@ -675,12 +731,14 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                         _draw_bbox_visualization(frm_v, roi, dets, vp, ts)
                         if os.path.exists(vp):
                             vis_files.append(vp)
-                screen_texts.append({
-                    "time": ts,
-                    "texts": texts_found,
-                    "boxes": dets,
-                    "vis_image": vis_name if save_vis else "",
-                })
+                screen_texts.append(
+                    {
+                        "time": ts,
+                        "texts": texts_found,
+                        "boxes": dets,
+                        "vis_image": vis_name if save_vis else "",
+                    }
+                )
                 next_allowed_t = ts + step_sec
             else:
                 consecutive_empty += 1
@@ -731,7 +789,11 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
         if not joined:
             continue
 
-        if grouped and _is_same_subtitle(grouped[-1]["ocr_text"], joined) and (ts - grouped[-1]["_last_ts"]) <= max_merge_gap:
+        if (
+            grouped
+            and _is_same_subtitle(grouped[-1]["ocr_text"], joined)
+            and (ts - grouped[-1]["_last_ts"]) <= max_merge_gap
+        ):
             if len(joined) > len(grouped[-1]["ocr_text"]):
                 grouped[-1]["ocr_text"] = joined
                 grouped[-1]["best_text"] = joined
@@ -741,22 +803,24 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
 
         start_t = round(max(0.0, ts - step_sec * 0.45), 2)
         end_t = round(min(duration, max(start_t + 0.30, ts + step_sec * 0.5)), 2)
-        grouped.append({
-            "id": len(grouped),
-            "start": start_t,
-            "end": end_t,
-            "_last_ts": ts,
-            "speaker_id": "SPEAKER_00",
-            "gender_hint": "unknown",
-            "pitch_hz": None,
-            "asr_raw": "",
-            "asr_text": "",
-            "ocr_text": joined,
-            "best_text": joined,
-            "subtitle_source": "rapidocr_mobile_dbnet_jump",
-            "boxes": item.get("boxes") or [],
-            "vis_image": item.get("vis_image") or "",
-        })
+        grouped.append(
+            {
+                "id": len(grouped),
+                "start": start_t,
+                "end": end_t,
+                "_last_ts": ts,
+                "speaker_id": "SPEAKER_00",
+                "gender_hint": "unknown",
+                "pitch_hz": None,
+                "asr_raw": "",
+                "asr_text": "",
+                "ocr_text": joined,
+                "best_text": joined,
+                "subtitle_source": "rapidocr_mobile_dbnet_jump",
+                "boxes": item.get("boxes") or [],
+                "vis_image": item.get("vis_image") or "",
+            }
+        )
 
     for idx, g in enumerate(grouped):
         g["id"] = idx
@@ -788,7 +852,7 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
     win = np.hanning(frame_len).astype(np.float32)
 
     for start in range(0, len(s) - frame_len + 1, hop):
-        fr = s[start: start + frame_len]
+        fr = s[start : start + frame_len]
         rms = float(np.sqrt(np.mean(fr ** 2)))
         if rms < energy * 0.35:
             continue
@@ -798,7 +862,7 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
         if s_sum > 1e-6:
             centroids.append(float(np.sum(freqs * spec) / s_sum))
 
-        corr = np.correlate(fr, fr, mode="full")[frame_len - 1:]
+        corr = np.correlate(fr, fr, mode="full")[frame_len - 1 :]
         if corr[0] > 0 and max_lag > min_lag:
             sub_c = corr[min_lag:max_lag]
             b_idx = int(np.argmax(sub_c)) + min_lag
@@ -810,51 +874,20 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
     return pitch_med, cent_med
 
 
-def _patch_py313_ufunc_wrapper():
-    """Tránh lỗi Python 3.13 khi pyannote/scipy gọi functools.update_wrapper lên numpy.ufunc."""
-    if getattr(functools.update_wrapper, "_py313_ufunc_patched", False):
-        return
-    orig_update_wrapper = functools.update_wrapper
-
-    def safe_update_wrapper(
-        wrapper,
-        wrapped,
-        assigned=functools.WRAPPER_ASSIGNMENTS,
-        updated=functools.WRAPPER_UPDATES,
-    ):
-        try:
-            return orig_update_wrapper(wrapper, wrapped, assigned=assigned, updated=updated)
-        except (AttributeError, TypeError):
-            for attr in assigned:
-                try:
-                    setattr(wrapper, attr, getattr(wrapped, attr))
-                except (AttributeError, TypeError):
-                    pass
-            for attr in updated:
-                try:
-                    getattr(wrapper, attr).update(getattr(wrapped, attr, {}))
-                except (AttributeError, TypeError):
-                    pass
-            try:
-                wrapper.__wrapped__ = wrapped
-            except (AttributeError, TypeError):
-                pass
-            return wrapper
-
-    safe_update_wrapper._py313_ufunc_patched = True
-    functools.update_wrapper = safe_update_wrapper
-
-
 def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: int, work_dir: str) -> dict | None:
-    hf_tok = _clean_url_or_str(os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN)
+    hf_tok = _clean_url_or_str(
+        os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN
+    )
     if not hf_tok:
         print("[WARN] Thiếu HF_TOKEN cho pyannote.audio, dùng VAD/pitch dự phòng.")
         return None
 
-    model_id = os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip() or "pyannote/speaker-diarization-3.1"
+    model_id = (
+        os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip()
+        or "pyannote/speaker-diarization-3.1"
+    )
 
     try:
-        _patch_py313_ufunc_wrapper()
         import numpy as np
         import soundfile as sf
         import torch
@@ -925,7 +958,11 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
                 ov = max(0.0, min(s_end, t1) - max(s_start, t0))
                 if ov > 0.0:
                     overlap_by_spk[spk_raw] = overlap_by_spk.get(spk_raw, 0.0) + ov
-                dist = 0.0 if (t0 <= s_start <= t1 or t0 <= s_end <= t1) else min(abs(t0 - s_end), abs(s_start - t1))
+                dist = (
+                    0.0
+                    if (t0 <= s_start <= t1 or t0 <= s_end <= t1)
+                    else min(abs(t0 - s_end), abs(s_start - t1))
+                )
                 if dist < best_dist:
                     best_dist = dist
                     nearest_spk = spk_raw
@@ -973,7 +1010,10 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
 
         del pipeline, diarization, waveform_tensor
         free_gpu()
-        print(f"[INFO] pyannote.audio ({model_id}) phân tách thành công {len(speaker_refs)} người nói: {list(speaker_refs.keys())}")
+        print(
+            f"[INFO] pyannote.audio ({model_id}) phân tách thành công {len(speaker_refs)} người nói: "
+            f"{list(speaker_refs.keys())}"
+        )
         return speaker_refs
     except Exception as e:
         print(f"[WARN] pyannote.audio lỗi ({e}), chuyển sang VAD/pitch dự phòng.")
@@ -1011,7 +1051,9 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
             active = np.where(chunk >= max(1e-3, peak * 0.12))[0]
             if len(active) > 0:
                 new_s = round(max(prev_end, search_s + max(0.0, (active[0] - win) / float(sr))), 2)
-                new_e = round(min(next_start, search_s + min((i1 - i0) / float(sr), (active[-1] + win) / float(sr))), 2)
+                new_e = round(
+                    min(next_start, search_s + min((i1 - i0) / float(sr), (active[-1] + win) / float(sr))), 2
+                )
                 if new_e - new_s >= 0.20:
                     seg["start"] = new_s
                     seg["end"] = new_e
@@ -1061,7 +1103,11 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
 
     turn_scores = []
     for t_idx, idxs in enumerate(male_turns):
-        valid_p = [float(segments[k]["pitch_hz"]) for k in idxs if segments[k].get("pitch_hz") and 65.0 <= float(segments[k]["pitch_hz"]) <= 185.0]
+        valid_p = [
+            float(segments[k]["pitch_hz"])
+            for k in idxs
+            if segments[k].get("pitch_hz") and 65.0 <= float(segments[k]["pitch_hz"]) <= 185.0
+        ]
         valid_c = [centroids[k] for k in idxs if centroids[k] > 0]
         p_med = float(statistics.median(valid_p)) if valid_p else 108.0
         c_med = float(statistics.median(valid_c)) if valid_c else 1100.0
@@ -1124,7 +1170,10 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
             "pitch_hz": avg_pitch,
         }
 
-    print(f"[INFO] Căn chỉnh VAD & phân tách người nói (fallback) tạo {len(speaker_refs)} nhân vật: {list(speaker_refs.keys())}")
+    print(
+        f"[INFO] Căn chỉnh VAD & phân tách người nói (fallback) tạo {len(speaker_refs)} nhân vật: "
+        f"{list(speaker_refs.keys())}"
+    )
     return speaker_refs
 
 
@@ -1219,7 +1268,11 @@ def main():
     with open(os.path.join(work_dir, f"{JOB_ID}_stage1.json"), "w", encoding="utf-8") as f:
         json.dump(stage1_payload, f, ensure_ascii=False, indent=2)
 
-    sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done (rapidocr venv gpu+pyannote): {JOB_ID}")
+    sync.write_json(
+        f"state/{JOB_ID}_stage1.json",
+        stage1_payload,
+        f"stage1 done (rapidocr venv gpu+pyannote): {JOB_ID}",
+    )
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
     if JOB_ID in updated_jobs.get("jobs", {}):
