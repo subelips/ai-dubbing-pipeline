@@ -7,8 +7,12 @@ on:
         description: "Job ID cần chạy"
         required: true
         default: "ep01"
+      video_url:
+        description: "Link trực tiếp tới file video (.mp4 / Google Drive)"
+        required: false
+        default: ""
       video_asset:
-        description: "Link video (.mp4 / Google Drive) hoặc tên file asset"
+        description: "Link video hoặc tên file asset (tùy chọn tương thích)"
         required: false
         default: ""
       stage:
@@ -40,7 +44,7 @@ jobs:
         id: ctx
         env:
           INPUT_JOB_ID: ${{ github.event.inputs.job_id || github.event.client_payload.job_id || 'ep01' }}
-          INPUT_VIDEO_ASSET: ${{ github.event.inputs.video_asset || github.event.client_payload.video_asset || '' }}
+          INPUT_VIDEO_URL: ${{ github.event.inputs.video_url || github.event.inputs.video_asset || github.event.client_payload.video_url || github.event.client_payload.video_asset || '' }}
           INPUT_STAGE: ${{ github.event.inputs.stage || '' }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action || '' }}
@@ -51,7 +55,7 @@ jobs:
           repo = os.environ["GH_REPO"]
           token = os.environ["GH_PAT_TOKEN"]
           job_id = os.environ["INPUT_JOB_ID"].strip()
-          video_asset = os.environ["INPUT_VIDEO_ASSET"].strip()
+          video_url = os.environ["INPUT_VIDEO_URL"].strip()
           event_name = os.environ["EVENT_NAME"]
           action = os.environ["EVENT_ACTION"]
           raw_stage = os.environ["INPUT_STAGE"].strip().lower()
@@ -105,9 +109,11 @@ jobs:
 
           jobs = data.setdefault("jobs", {})
           job_entry = jobs.setdefault(job_id, {})
-          if video_asset:
-              job_entry["video_asset"] = video_asset
-          elif "video_asset" not in job_entry:
+          if video_url:
+              job_entry["video_url"] = video_url
+              job_entry["video_asset"] = video_url
+          elif "video_url" not in job_entry and "video_asset" not in job_entry:
+              job_entry["video_url"] = "source_input.mp4"
               job_entry["video_asset"] = "source_input.mp4"
 
           if target_stage == "stage1":
