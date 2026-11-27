@@ -360,7 +360,6 @@ def load_vieneu_v3_turbo():
 
     init_errors = []
     for _, full_name, cls, methods_found in candidate_classes:
-        # Ưu tiên khởi tạo mặc định trước để V3TurboVieNeuTTS tự dùng repo V3-Turbo mặc định của nó nếu có
         kw_list = [
             {"device": device},
             {},
@@ -375,7 +374,7 @@ def load_vieneu_v3_turbo():
             try:
                 eng = cls(**kw)
                 sig_info = {}
-                for m in methods_found:
+                for m in ("prepare_reference", *methods_found):
                     fn = getattr(eng, m, None)
                     if callable(fn):
                         try:
@@ -425,6 +424,55 @@ def _extract_audio_from_vieneu_output(out, default_sr: int = 24000):
     return arr, default_sr
 
 
+def _build_ref_kwargs_from_prepared(prep_out, param_names: set[str]) -> dict:
+    """Chuyển kết quả từ prepare_reference / encode_reference thành kwargs cho infer(...)."""
+    import numpy as np
+
+    if prep_out is None:
+        return {}
+
+    if isinstance(prep_out, dict):
+        kw = {}
+        for k in ("speaker_emb", "ref_codes", "style", "spk_emb", "embedding"):
+            if k in prep_out and prep_out[k] is not None and (not param_names or k in param_names):
+                kw[k] = prep_out[k]
+        if kw:
+            return kw
+
+    if isinstance(prep_out, (tuple, list)):
+        items = list(prep_out)
+        kw = {}
+        if len(items) == 1:
+            if "speaker_emb" in param_names:
+                kw["speaker_emb"] = items[0]
+            elif "ref_codes" in param_names:
+                kw["ref_codes"] = items[0]
+            return kw
+
+        # Nhận diện mảng mã rời rạc (int) = ref_codes và vector đặc trưng (float 1D/2D) = speaker_emb
+        for it in items:
+            arr = it.detach().cpu().numpy() if (hasattr(it, "detach") and hasattr(it, "cpu")) else it
+            if isinstance(arr, np.ndarray):
+                if np.issubdtype(arr.dtype, np.integer) and "ref_codes" in param_names and "ref_codes" not in kw:
+                    kw["ref_codes"] = it
+                elif np.issubdtype(arr.dtype, np.floating) and "speaker_emb" in param_names and "speaker_emb" not in kw:
+                    kw["speaker_emb"] = it
+        if not kw and len(items) >= 2:
+            if "ref_codes" in param_names and "speaker_emb" in param_names:
+                kw["ref_codes"] = items[0]
+                kw["speaker_emb"] = items[1]
+            elif "speaker_emb" in param_names:
+                kw["speaker_emb"] = items[0]
+        return kw
+
+    # Đơn giá trị (ndarray / tensor): ưu tiên speaker_emb nếu infer yêu cầu speaker_emb
+    if "speaker_emb" in param_names:
+        return {"speaker_emb": prep_out}
+    if "ref_codes" in param_names:
+        return {"ref_codes": prep_out}
+    return {}
+
+
 def _synthesize_single_line_vieneu_v3(
     engine,
     ref_code_cache: dict[str, object],
@@ -439,9 +487,10 @@ def _synthesize_single_line_vieneu_v3(
 
     has_ref = bool(ref_audio_path and os.path.exists(ref_audio_path) and os.path.getsize(ref_audio_path) > 512)
     ref_wav_arr = None
+    ref_sr = 24000
     if has_ref:
         try:
-            ref_wav_arr, _ = sf.read(ref_audio_path, dtype="float32")
+            ref_wav_arr, ref_sr = sf.read(ref_audio_path, dtype="float32")
             if ref_wav_arr.ndim > 1:
                 ref_wav_arr = ref_wav_arr.mean(axis=-1)
         except Exception:
@@ -481,26 +530,41 @@ def _synthesize_single_line_vieneu_v3(
 
     call_candidates = []
 
-    # 1. Nếu engine có hàm encode_reference / get_ref_codes, mã hóa file mẫu trước
+    # 1. Ưu tiên prepare_reference / encode_reference để trích xuất speaker_emb + ref_codes cho VieNeuTTSv3Turbo
     if has_ref:
-        for enc_name in ("encode_reference", "get_ref_codes", "extract_speaker_embedding", "encode_speaker"):
+        for enc_name in ("prepare_reference", "encode_reference", "get_ref_codes", "extract_speaker_embedding", "encode_speaker"):
             enc_fn = getattr(engine, enc_name, None)
             if callable(enc_fn):
-                def _call_encoded(ef=enc_fn):
-                    cache_key = f"{enc_name}:{ref_audio_path}"
+                def _call_encoded(ef=enc_fn, ename=enc_name):
+                    cache_key = f"{ename}:{ref_audio_path}"
                     if cache_key not in ref_code_cache:
-                        ref_code_cache[cache_key] = ef(ref_audio_path)
+                        try:
+                            ref_code_cache[cache_key] = ef(ref_audio_path)
+                        except Exception:
+                            if ref_wav_arr is not None:
+                                try:
+                                    ref_code_cache[cache_key] = ef(ref_wav_arr, ref_sr)
+                                except Exception:
+                                    ref_code_cache[cache_key] = ef(ref_wav_arr)
+                            else:
+                                raise
                     ref_repr = ref_code_cache[cache_key]
-                    if "ref_codes" in param_names:
+                    ref_kw = _build_ref_kwargs_from_prepared(ref_repr, param_names)
+                    if ref_kw:
                         if "ref_text" in param_names:
-                            return fn_infer(text=text_vi, ref_codes=ref_repr, ref_text="")
+                            ref_kw.setdefault("ref_text", "")
+                        return fn_infer(text=text_vi, **ref_kw)
+                    if "speaker_emb" in param_names:
+                        return fn_infer(text=text_vi, speaker_emb=ref_repr)
+                    if "ref_codes" in param_names:
                         return fn_infer(text=text_vi, ref_codes=ref_repr)
                     if "ref_audio" in param_names:
                         return fn_infer(text=text_vi, ref_audio=ref_repr)
                     return fn_infer(text_vi, ref_repr)
+
                 call_candidates.append((f"infer via {enc_name}", _call_encoded))
 
-        # 2. Truyền trực tiếp ref_audio (đường dẫn hoặc ndarray), không truyền ref_text tiếng Trung
+        # 2. Truyền trực tiếp ref_audio nếu engine không dùng prepare_reference
         if not param_names or "ref_audio" in param_names:
             call_candidates.append(("infer(text, ref_audio=path)", lambda: fn_infer(text=text_vi, ref_audio=ref_audio_path)))
             if "ref_text" in param_names:
@@ -512,7 +576,7 @@ def _synthesize_single_line_vieneu_v3(
         if "speaker_wav" in param_names:
             call_candidates.append(("infer(text, speaker_wav=path)", lambda: fn_infer(text=text_vi, speaker_wav=ref_audio_path)))
 
-    # 3. Preset voice của VieNeu-TTS-V3-Turbo nếu zero-shot ref không hỗ trợ
+    # 3. Preset voice của VieNeu-TTS-V3-Turbo nếu có
     if chosen_voice is not None:
         if "voice" in param_names:
             call_candidates.append((f"infer(text, voice={chosen_voice})", lambda v=chosen_voice: fn_infer(text=text_vi, voice=v)))
@@ -729,6 +793,7 @@ def main():
     os.makedirs(clips_dir, exist_ok=True)
 
     ensure_deps()
+    import numpy as np
     import soundfile as sf
 
     video_path, src_audio_path = download_source_media(sync, JOB_ID, video_asset, work_dir)
@@ -748,6 +813,7 @@ def main():
 
     audio_samples = None
     audio_sr = 24000
+    global_fallback_ref = ""
     if src_audio_path and os.path.exists(src_audio_path):
         try:
             samples, sr = sf.read(src_audio_path, dtype="float32")
@@ -755,6 +821,10 @@ def main():
                 samples = samples.mean(axis=-1)
             audio_samples = samples
             audio_sr = int(sr)
+            if len(audio_samples) >= audio_sr:
+                gf_path = os.path.join(refs_dir, "global_fallback_ref.wav")
+                sf.write(gf_path, audio_samples[: min(len(audio_samples), audio_sr * 4)], audio_sr)
+                global_fallback_ref = gf_path
         except Exception as e:
             print(f"[WARN] Không đọc được âm thanh gốc để cắt mẫu theo phân đoạn: {e}")
 
@@ -786,7 +856,7 @@ def main():
                 start_t=start_t,
                 end_t=end_t,
                 out_wav_path=seg_ref_wav,
-                fallback_ref_path=speaker_fallback_refs.get(spk_id, ""),
+                fallback_ref_path=speaker_fallback_refs.get(spk_id, "") or global_fallback_ref,
             )
 
             out_clip_wav = os.path.join(clips_dir, f"dub_seg_{line_id:04d}.wav")
