@@ -264,6 +264,9 @@ def _get_dbnet_config() -> dict:
         "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.50")),
         "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.60")),
         "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "960")),
+        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.65")),
+        "step_sec": max(0.5, float(os.environ.get("OCR_STEP_SEC", "1.5"))),
+        "idle_jump_sec": max(1.0, float(os.environ.get("OCR_IDLE_JUMP_SEC", "3.0"))),
     }
 
 
@@ -283,7 +286,6 @@ def _create_mobile_dbnet_ocr(lang: str, cfg: dict):
         use_gpu = False
     device_str = "gpu:0" if use_gpu else "cpu"
 
-    # Truyền enable_mkldnn=False và device để tránh lỗi ConvertPirAttribute2RuntimeAttribute trên oneDNN CPU
     candidate_kwargs = [
         dict(
             device=device_str,
@@ -338,7 +340,7 @@ def _create_mobile_dbnet_ocr(lang: str, cfg: dict):
     return PaddleOCR(lang=lang)
 
 
-def _parse_ocr_detections(ocr_result) -> list[dict]:
+def _parse_ocr_detections(ocr_result, min_score: float = 0.65) -> list[dict]:
     detections: list[dict] = []
     if not ocr_result:
         return detections
@@ -368,6 +370,9 @@ def _parse_ocr_detections(ocr_result) -> list[dict]:
                 poly_raw = polys[i] if i < len(polys) else None
                 txt = str(rec_texts[i]).strip() if i < len(rec_texts) else ""
                 sc = float(rec_scores[i]) if i < len(rec_scores) and rec_scores[i] is not None else 1.0
+                clean_chars = re.sub(r"[\s\W_]+", "", txt, flags=re.UNICODE)
+                if sc < min_score or len(clean_chars) < 2:
+                    continue
 
                 pts = []
                 if poly_raw is not None:
@@ -383,8 +388,7 @@ def _parse_ocr_detections(ocr_result) -> list[dict]:
                     except Exception:
                         pts = []
 
-                if pts or txt:
-                    detections.append({"poly": pts, "text": txt, "score": round(sc, 3)})
+                detections.append({"poly": pts, "text": txt, "score": round(sc, 3)})
             continue
 
         if isinstance(item, (list, tuple)):
@@ -394,6 +398,9 @@ def _parse_ocr_detections(ocr_result) -> list[dict]:
                     info = entry[1]
                     txt = str(info[0]).strip() if isinstance(info, (list, tuple)) and info else ""
                     sc = float(info[1]) if isinstance(info, (list, tuple)) and len(info) >= 2 else 1.0
+                    clean_chars = re.sub(r"[\s\W_]+", "", txt, flags=re.UNICODE)
+                    if sc < min_score or len(clean_chars) < 2:
+                        continue
                     pts = []
                     try:
                         for p in raw_box:
@@ -406,20 +413,20 @@ def _parse_ocr_detections(ocr_result) -> list[dict]:
     return detections
 
 
-def _run_dbnet_ocr(ocr_engine, img) -> list[dict]:
+def _run_dbnet_ocr(ocr_engine, img, min_score: float = 0.65) -> list[dict]:
     if ocr_engine is None or img is None:
         return []
     try:
         if hasattr(ocr_engine, "predict"):
             res_p = list(ocr_engine.predict(img))
-            dets = _parse_ocr_detections(res_p)
+            dets = _parse_ocr_detections(res_p, min_score=min_score)
             if dets:
                 return dets
     except Exception as e:
         print(f"[WARN] DBNet mobile predict lỗi: {e}")
     try:
         res = ocr_engine.ocr(img)
-        return _parse_ocr_detections(res)
+        return _parse_ocr_detections(res, min_score=min_score)
     except Exception:
         return []
 
@@ -477,11 +484,12 @@ def _draw_bbox_visualization(
     cv2.imwrite(out_vis_path, vis)
 
 
-def run_ocr_and_draw_bbox(video_path: str, work_dir: str) -> tuple[dict, list[dict], str]:
+def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[dict], str, float]:
     roi = {"x1": 0.02, "y1": 0.52, "x2": 0.98, "y2": 0.96}
     vis_dir = os.path.join(work_dir, "bbox_vis")
     os.makedirs(vis_dir, exist_ok=True)
     zip_path = os.path.join(work_dir, f"{JOB_ID}_bbox_vis.zip")
+    duration = 60.0
 
     try:
         import cv2
@@ -512,87 +520,109 @@ def run_ocr_and_draw_bbox(video_path: str, work_dir: str) -> tuple[dict, list[di
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         duration = total_frames / fps if fps > 0 else 60.0
 
-        num_samples = int(os.environ.get("OCR_SAMPLE_COUNT", "10"))
-        num_samples = max(4, min(20, num_samples))
-        sample_times = [round(duration * k / float(num_samples + 1), 2) for k in range(1, num_samples + 1)]
+        step_sec = db_cfg["step_sec"]
+        idle_jump_sec = db_cfg["idle_jump_sec"]
+        min_score = db_cfg["min_score"]
 
+        cur_t = round(min(duration * 0.02, 0.5), 2)
+        consecutive_empty = 0
+        steps_visited = 0
         hits = 0
         screen_texts: list[dict] = []
         vis_files: list[str] = []
 
-        for idx_s, ts in enumerate(sample_times):
-            cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
+        while cur_t < duration:
+            cap.set(cv2.CAP_PROP_POS_MSEC, cur_t * 1000.0)
             ok, frame = cap.read()
             if not ok or frame is None:
+                cur_t = round(cur_t + step_sec, 2)
                 continue
 
+            steps_visited += 1
             h, w, _ = frame.shape
             crop = frame[int(h * roi["y1"]):int(h * roi["y2"]), int(w * roi["x1"]):int(w * roi["x2"])]
-            if crop.size == 0:
-                continue
-
-            dets = _run_dbnet_ocr(ocr, crop)
+            dets = _run_dbnet_ocr(ocr, crop, min_score=min_score) if crop.size > 0 else []
             texts_found = [d["text"] for d in dets if str(d.get("text") or "").strip()]
-
-            vis_name = f"frame_{idx_s:02d}_{ts:.2f}s.jpg"
-            vis_path = os.path.join(vis_dir, vis_name)
-            _draw_bbox_visualization(frame, roi, dets, vis_path, ts)
-            if os.path.exists(vis_path):
-                vis_files.append(vis_path)
 
             if dets or texts_found:
                 hits += 1
+                consecutive_empty = 0
+                vis_name = f"frame_{hits - 1:02d}_{cur_t:.2f}s.jpg"
+                vis_path = os.path.join(vis_dir, vis_name)
+                _draw_bbox_visualization(frame, roi, dets, vis_path, cur_t)
+                if os.path.exists(vis_path):
+                    vis_files.append(vis_path)
                 screen_texts.append({
-                    "time": ts,
+                    "time": cur_t,
                     "texts": texts_found,
                     "boxes": dets,
                     "vis_image": vis_name,
                 })
+                cur_t = round(cur_t + step_sec, 2)
+            else:
+                consecutive_empty += 1
+                jump = idle_jump_sec if consecutive_empty >= 2 else step_sec
+                cur_t = round(cur_t + jump, 2)
 
         cap.release()
 
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for vf in vis_files:
-                zf.write(vf, arcname=os.path.basename(vf))
+        if vis_files:
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for vf in vis_files:
+                    zf.write(vf, arcname=os.path.basename(vf))
 
         print(
-            f"[INFO] [PaddleOCR Mobile + DBNet] lang={ocr_lang} det={db_cfg['det_model']} rec={db_cfg['rec_model']} "
-            f"| ROI {tuple(roi.values())} | hits={hits}/{len(sample_times)} | ảnh bbox={len(vis_files)}"
+            f"[INFO] [PaddleOCR Mobile + DBNet | JumpStep={step_sec}s/Idle={idle_jump_sec}s] "
+            f"lang={ocr_lang} det={db_cfg['det_model']} rec={db_cfg['rec_model']} "
+            f"| mốc đã nhảy qua={steps_visited} | hits={hits} | ảnh bbox={len(vis_files)}"
         )
-        return roi, screen_texts, zip_path
+        return roi, screen_texts, zip_path if vis_files else "", duration
     except Exception as e:
         print(f"[WARN] PaddleOCR Mobile / DBNet bỏ qua: {e}")
-        return roi, [], ""
+        return roi, [], "", duration
 
 
-def build_ocr_segments_without_asr(screen_texts: list[dict], duration_fallback: float = 60.0) -> list[dict]:
-    segments: list[dict] = []
-    for idx, item in enumerate(screen_texts):
-        ts = float(item.get("time", idx * 2.0))
-        next_ts = float(screen_texts[idx + 1]["time"]) if idx + 1 < len(screen_texts) else min(duration_fallback, ts + 2.5)
-        start_t = round(max(0.0, ts - 0.3), 2)
-        end_t = round(max(start_t + 0.8, min(next_ts - 0.05, ts + 2.2)), 2)
+def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 1.5) -> list[dict]:
+    """Tạo đoạn thoại từ các mốc nhảy có chữ OCR, gộp các mốc trùng chữ liên tiếp."""
+    grouped: list[dict] = []
+    for item in screen_texts:
+        ts = float(item.get("time", 0.0))
         texts = [str(t).strip() for t in (item.get("texts") or []) if str(t).strip()]
         joined = " ".join(texts).strip()
-        if not joined and not item.get("boxes"):
+        if not joined:
             continue
-        display_txt = joined or f"[BBOX_ONLY x{len(item.get('boxes') or [])}]"
-        segments.append({
-            "id": idx,
+
+        if grouped and grouped[-1]["ocr_text"] == joined and (ts - grouped[-1]["_last_ts"]) <= (step_sec * 2.2):
+            grouped[-1]["_last_ts"] = ts
+            grouped[-1]["end"] = round(min(duration, ts + step_sec * 0.8), 2)
+            continue
+
+        start_t = round(max(0.0, ts - 0.25), 2)
+        end_t = round(min(duration, max(start_t + 0.8, ts + step_sec * 0.8)), 2)
+        grouped.append({
+            "id": len(grouped),
             "start": start_t,
             "end": end_t,
+            "_last_ts": ts,
             "speaker_id": "SPEAKER_00",
             "gender_hint": "unknown",
             "pitch_hz": None,
             "asr_raw": "",
             "asr_text": "",
             "ocr_text": joined,
-            "best_text": display_txt,
-            "subtitle_source": "ocr_mobile_dbnet",
+            "best_text": joined,
+            "subtitle_source": "ocr_mobile_dbnet_jump",
             "boxes": item.get("boxes") or [],
             "vis_image": item.get("vis_image") or "",
         })
-    return segments
+
+    for idx, g in enumerate(grouped):
+        g["id"] = idx
+        g.pop("_last_ts", None)
+        if idx + 1 < len(grouped) and grouped[idx]["end"] > grouped[idx + 1]["start"] - 0.04:
+            grouped[idx]["end"] = round(max(grouped[idx]["start"] + 0.25, grouped[idx + 1]["start"] - 0.04), 2)
+
+    return grouped
 
 
 def _format_srt_time(seconds: float) -> str:
@@ -616,7 +646,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
         idx_out += 1
         start_t = float(seg.get("start", 0.0))
         end_t = max(start_t + 0.25, float(seg.get("end", start_t + 0.8)))
-        src_tag = seg.get("subtitle_source", "ocr_mobile_dbnet")
+        src_tag = seg.get("subtitle_source", "ocr_mobile_dbnet_jump")
         blocks.append(
             f"{idx_out}\n"
             f"{_format_srt_time(start_t)} --> {_format_srt_time(end_t)}\n"
@@ -626,7 +656,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
         blocks.append("1\n00:00:00,000 --> 00:00:01,000\n[NO_OCR_TEXT_DETECTED]\n")
     with open(out_srt_path, "w", encoding="utf-8") as f:
         f.write("\n".join(blocks).strip() + "\n")
-    print(f"[INFO] Đã xuất file SRT Stage 1 (OCR Mobile + DBNet, không ASR): {out_srt_path} ({idx_out} dòng)")
+    print(f"[INFO] Đã xuất file SRT Stage 1 (Jump Step OCR Mobile + DBNet, không ASR): {out_srt_path} ({idx_out} dòng)")
     return out_srt_path
 
 
@@ -636,7 +666,7 @@ sync = GitHubSync(GH_REPO, GH_TOKEN)
 def main():
     send_ntfy(
         f"[Stage 1] {JOB_ID}",
-        f"Bắt đầu nhận diện (PaddleOCR Mobile + DBNet bbox + Demucs, tạm bỏ ASR) cho job {JOB_ID}.",
+        f"Bắt đầu nhận diện theo bước nhảy (PaddleOCR Mobile + DBNet bbox + Demucs, tạm bỏ ASR) cho job {JOB_ID}.",
         tags="film_frames",
     )
     jobs_data, _ = sync.read_json("state/jobs.json")
@@ -653,9 +683,9 @@ def main():
     extract_audio_16k(video_path, audio_16k)
 
     vocals_wav, bgm_wav = separate_vocals_and_bgm(audio_16k, work_dir)
-    subtitle_roi, screen_texts, bbox_zip_path = run_ocr_and_draw_bbox(video_path, work_dir)
-
-    segments = build_ocr_segments_without_asr(screen_texts)
+    subtitle_roi, screen_texts, bbox_zip_path, duration = run_ocr_with_jump_step(video_path, work_dir)
+    step_sec = _get_dbnet_config()["step_sec"]
+    segments = build_ocr_segments_from_jumps(screen_texts, duration=duration, step_sec=step_sec)
 
     srt_s1_path = os.path.join(work_dir, f"{JOB_ID}_stage1.srt")
     export_stage1_srt(segments, srt_s1_path)
@@ -668,7 +698,8 @@ def main():
         "job_id": JOB_ID,
         "video_asset": video_asset,
         "asr_enabled": False,
-        "ocr_engine": "paddleocr_mobile_dbnet",
+        "ocr_engine": "paddleocr_mobile_dbnet_jump",
+        "ocr_step_sec": step_sec,
         "subtitle_roi": subtitle_roi,
         "screen_texts": screen_texts,
         "bbox_zip_asset": os.path.basename(bbox_zip_path) if bbox_zip_path else "",
@@ -679,7 +710,7 @@ def main():
     with open(os.path.join(work_dir, f"{JOB_ID}_stage1.json"), "w", encoding="utf-8") as f:
         json.dump(stage1_payload, f, ensure_ascii=False, indent=2)
 
-    sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done (ocr mobile+dbnet): {JOB_ID}")
+    sync.write_json(f"state/{JOB_ID}_stage1.json", stage1_payload, f"stage1 done (jump ocr): {JOB_ID}")
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
     if JOB_ID in updated_jobs.get("jobs", {}):
@@ -689,7 +720,7 @@ def main():
     sync.trigger_dispatch("stage1_completed", {"job_id": JOB_ID})
     send_ntfy(
         f"[Stage 1 Done] {JOB_ID}",
-        f"Hoàn tất OCR Mobile + DBNet ({len(screen_texts)} khung có bbox/chữ, tạm bỏ ASR) -> sang Stage 2.",
+        f"Hoàn tất Jump OCR Mobile + DBNet ({len(segments)} đoạn sạch, tạm bỏ ASR) -> sang Stage 2.",
         tags="white_check_mark",
     )
 
