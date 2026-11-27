@@ -2587,8 +2587,7 @@
     {
       "time": 114.8,
       "texts": [
-        "裁助理",
-        "Y宇轩"
+        "裁助理"
       ],
       "boxes": [
         {
@@ -2612,28 +2611,6 @@
           ],
           "text": "裁助理",
           "score": 0.993
-        },
-        {
-          "poly": [
-            [
-              716,
-              327
-            ],
-            [
-              770,
-              300
-            ],
-            [
-              783,
-              326
-            ],
-            [
-              728,
-              353
-            ]
-          ],
-          "text": "Y宇轩",
-          "score": 0.82
         }
       ],
       "vis_image": ""
@@ -2699,17 +2676,17 @@
     "SPEAKER_00_M": {
       "ref_asset": "ref_speaker_SPEAKER_00_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 115.8
+      "pitch_hz": 116.3
     },
     "SPEAKER_02_M": {
       "ref_asset": "ref_speaker_SPEAKER_02_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 96.0
+      "pitch_hz": 95.4
     },
     "SPEAKER_01_F": {
       "ref_asset": "ref_speaker_SPEAKER_01_F.wav",
       "gender_hint": "female",
-      "pitch_hz": 323.6
+      "pitch_hz": 328.9
     }
   },
   "segments": [
@@ -2719,7 +2696,7 @@
       "end": 4.07,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 113.8,
+      "pitch_hz": 113.7,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "你的饭给狗吃了",
@@ -2757,7 +2734,7 @@
       "end": 5.24,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 120.8,
+      "pitch_hz": 121.2,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "你就该吃狗的",
@@ -2833,7 +2810,7 @@
       "end": 7.58,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 111.6,
+      "pitch_hz": 115.6,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "该你吃了",
@@ -2871,7 +2848,7 @@
       "end": 27.28,
       "speaker_id": "SPEAKER_02_M",
       "gender_hint": "male",
-      "pitch_hz": 102.1,
+      "pitch_hz": 98.2,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "我的妻子对餐饮要求",
@@ -2909,7 +2886,7 @@
       "end": 28.25,
       "speaker_id": "SPEAKER_02_M",
       "gender_hint": "male",
-      "pitch_hz": 105.3,
+      "pitch_hz": 104.3,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "苛刻到极致",
@@ -2943,7 +2920,7 @@
     },
     {
       "id": 6,
-      "start": 28.74,
+      "start": 28.62,
       "end": 29.54,
       "speaker_id": "SPEAKER_02_M",
       "gender_hint": "male",
@@ -2982,7 +2959,7 @@
     {
       "id": 7,
       "start": 29.71,
-      "end": 30.65,
+      "end": 30.64,
       "speaker_id": "SPEAKER_02_M",
       "gender_hint": "male",
       "pitch_hz": 96.2,
@@ -3020,10 +2997,10 @@
     {
       "id": 8,
       "start": 31.06,
-      "end": 32.5,
+      "end": 32.52,
       "speaker_id": "SPEAKER_02_M",
       "gender_hint": "male",
-      "pitch_hz": 114.8,
+      "pitch_hz": 115.4,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "所以我每天四点起",
@@ -3099,7 +3076,7 @@
       "end": 36.75,
       "speaker_id": "SPEAKER_01_F",
       "gender_hint": "female",
-      "pitch_hz": 335.4,
+      "pitch_hz": 336.6,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "今天食材新鲜吗",
@@ -3137,7 +3114,7 @@
       "end": 38.48,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 100.2,
+      "pitch_hz": 102.6,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "都是早上四点",
@@ -3175,7 +3152,7 @@
       "end": 40.08,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 96.1,
+      "pitch_hz": 95.9,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "从菜市场买最新鲜的食材",
@@ -3213,7 +3190,7 @@
       "end": 40.75,
       "speaker_id": "SPEAKER_01_F",
       "gender_hint": "female",
-      "pitch_hz": 238.4,
+      "pitch_hz": 245.8,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "菜擦洗了几遍",
@@ -3251,7 +3228,7 @@
       "end": 41.3,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 133.4,
+      "pitch_hz": 133.7,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "三遍",
@@ -3327,7 +3304,7 @@
       "end": 44.08,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 116.4,
+      "pitch_hz": 116.1,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "浸泡了十五分钟",
@@ -3400,10 +3377,10 @@
     {
       "id": 18,
       "start": 44.91,
-      "end": 45.47,
+      "end": 45.5,
       "speaker_id": "SPEAKER_01_F",
       "gender_hint": "female",
-      "pitch_hz": 360.0,
+      "pitch_hz": 361.5,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "你走吧",
@@ -3514,10 +3491,10 @@
     {
       "id": 21,
       "start": 49.19,
-      "end": 50.91,
+      "end": 50.49,
       "speaker_id": "SPEAKER_01_F",
       "gender_hint": "female",
-      "pitch_hz": 294.1,
+      "pitch_hz": 300.0,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "会引起别人不必要的揣测",
@@ -3555,7 +3532,7 @@
       "end": 56.97,
       "speaker_id": "SPEAKER_02_M",
       "gender_hint": "male",
-      "pitch_hz": 96.9,
+      "pitch_hz": 97.1,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "那你趁热吃",
@@ -3593,7 +3570,7 @@
       "end": 58.73,
       "speaker_id": "SPEAKER_02_M",
       "gender_hint": "male",
-      "pitch_hz": 93.5,
+      "pitch_hz": 92.7,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "凉了对胃不好",
@@ -3631,7 +3608,7 @@
       "end": 63.28,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 122.8,
+      "pitch_hz": 125.3,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "父亲",
@@ -3745,7 +3722,7 @@
       "end": 66.89,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 101.4,
+      "pitch_hz": 99.5,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "照顾妻子",
@@ -3783,7 +3760,7 @@
       "end": 69.19,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 95.6,
+      "pitch_hz": 94.1,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "只是我作为丈夫的责任",
@@ -3817,7 +3794,7 @@
     },
     {
       "id": 29,
-      "start": 69.95,
+      "start": 69.94,
       "end": 70.99,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
@@ -3897,7 +3874,7 @@
       "end": 74.4,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 118.2,
+      "pitch_hz": 118.5,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "我们夏氏集团",
@@ -3935,7 +3912,7 @@
       "end": 76.0,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 157.5,
+      "pitch_hz": 149.5,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "早在三年前就破产了",
@@ -3973,7 +3950,7 @@
       "end": 77.8,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 114.8,
+      "pitch_hz": 115.1,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "你堂堂陆氏集团继承人",
@@ -4049,7 +4026,7 @@
       "end": 80.6,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 108.6,
+      "pitch_hz": 108.4,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "来我们公司做一个小职员",
@@ -4125,7 +4102,7 @@
       "end": 83.89,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 125.5,
+      "pitch_hz": 126.2,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "我隐瞒身份",
@@ -4163,7 +4140,7 @@
       "end": 85.68,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 99.5,
+      "pitch_hz": 98.2,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "一是不想让公司上下知道",
@@ -4201,7 +4178,7 @@
       "end": 88.08,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 90.2,
+      "pitch_hz": 90.0,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "夏氏靠陆氏撐腰",
@@ -4239,7 +4216,7 @@
       "end": 89.19,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 95.1,
+      "pitch_hz": 95.0,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "免得人心浮动",
@@ -4315,7 +4292,7 @@
       "end": 92.19,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 133.6,
+      "pitch_hz": 133.8,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "明瑤她不懂事",
@@ -4353,7 +4330,7 @@
       "end": 94.48,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 107.3,
+      "pitch_hz": 105.4,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "不知道你的好",
@@ -4429,7 +4406,7 @@
       "end": 97.68,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 124.2,
+      "pitch_hz": 126.0,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "真的很感激你啊",
@@ -4467,7 +4444,7 @@
       "end": 98.44,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
-      "pitch_hz": 115.7,
+      "pitch_hz": 133.2,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "不用",
@@ -4502,10 +4479,10 @@
     {
       "id": 47,
       "start": 101.24,
-      "end": 102.78,
+      "end": 102.79,
       "speaker_id": "SPEAKER_02_M",
       "gender_hint": "male",
-      "pitch_hz": 85.7,
+      "pitch_hz": 84.8,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "我车钥匙落在餐厅了",
@@ -4578,14 +4555,14 @@
     {
       "id": 49,
       "start": 114.52,
-      "end": 116.04,
+      "end": 115.24,
       "speaker_id": "SPEAKER_02_M",
       "gender_hint": "male",
       "pitch_hz": null,
       "asr_raw": "",
       "asr_text": "",
-      "ocr_text": "裁助理 Y宇轩",
-      "best_text": "裁助理 Y宇轩",
+      "ocr_text": "裁助理",
+      "best_text": "裁助理",
       "subtitle_source": "rapidocr_mobile_dbnet_jump",
       "boxes": [
         {
@@ -4609,28 +4586,66 @@
           ],
           "text": "裁助理",
           "score": 0.993
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 50,
+      "start": 115.32,
+      "end": 116.04,
+      "speaker_id": "SPEAKER_01_F",
+      "gender_hint": "female",
+      "pitch_hz": 350.0,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "裁助理 宇轩",
+      "best_text": "裁助理 宇轩",
+      "subtitle_source": "rapidocr_mobile_dbnet_jump",
+      "boxes": [
+        {
+          "poly": [
+            [
+              764,
+              310
+            ],
+            [
+              848,
+              273
+            ],
+            [
+              860,
+              300
+            ],
+            [
+              776,
+              337
+            ]
+          ],
+          "text": "裁助理",
+          "score": 0.992
         },
         {
           "poly": [
             [
-              716,
-              327
+              766,
+              332
             ],
             [
-              770,
-              300
+              826,
+              306
             ],
             [
-              783,
-              326
+              837,
+              331
             ],
             [
-              728,
-              353
+              778,
+              358
             ]
           ],
-          "text": "Y宇轩",
-          "score": 0.82
+          "text": "宇轩",
+          "score": 0.996
         }
       ],
       "vis_image": ""
