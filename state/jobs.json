@@ -9,8 +9,8 @@
       "status": "STAGE1_DONE"
     },
     "test": {
-      "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
-      "status": "STAGE2_RUNNING",
+      "video_asset": "uploads_tmp/test_source.mp4",
+      "status": "STAGE1_RUNNING",
       "output_url": "https://github.com/subelips/ai-dubbing-pipeline/releases/download/test/final_dubbed_test.mp4"
     }
   }
