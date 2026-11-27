@@ -182,7 +182,13 @@ def _is_installed(pkg_name: str) -> bool:
         return False
 
 
+PADDLE_ISOLATED_DIR = "/kaggle/working/paddle_gpu_libs"
+
+
 def _ensure_paddle_gpu():
+    if os.path.isdir(PADDLE_ISOLATED_DIR) and PADDLE_ISOLATED_DIR not in sys.path:
+        sys.path.insert(0, PADDLE_ISOLATED_DIR)
+
     need_gpu_install = False
     try:
         import paddle
@@ -192,8 +198,8 @@ def _ensure_paddle_gpu():
         need_gpu_install = True
 
     if need_gpu_install:
-        print("[INFO] Cài đặt paddlepaddle-gpu (CUDA 12) để chạy PaddleOCR trên GPU...")
-        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "paddlepaddle"], check=False)
+        print("[INFO] Cài đặt paddlepaddle-gpu vào thư mục cách ly (không ghi đè CUDA/NCCL của PyTorch)...")
+        os.makedirs(PADDLE_ISOLATED_DIR, exist_ok=True)
         subprocess.run(
             [
                 sys.executable,
@@ -201,15 +207,26 @@ def _ensure_paddle_gpu():
                 "pip",
                 "install",
                 "-q",
+                "--no-deps",
+                "--target",
+                PADDLE_ISOLATED_DIR,
                 "paddlepaddle-gpu",
                 "-i",
                 "https://www.paddlepaddle.org.cn/packages/stable/cu126/",
             ],
             check=False,
         )
+        if PADDLE_ISOLATED_DIR not in sys.path:
+            sys.path.insert(0, PADDLE_ISOLATED_DIR)
 
 
 def ensure_deps():
+    # Nạp torch trước để khóa thư viện CUDA/NCCL gốc của PyTorch trên hệ thống
+    try:
+        import torch  # noqa: F401
+    except Exception:
+        pass
+
     _ensure_paddle_gpu()
     wanted = [
         ("demucs", "demucs"),
@@ -301,6 +318,9 @@ def _get_dbnet_config() -> dict:
 
 
 def _create_mobile_dbnet_ocr(lang: str, cfg: dict):
+    if os.path.isdir(PADDLE_ISOLATED_DIR) and PADDLE_ISOLATED_DIR not in sys.path:
+        sys.path.insert(0, PADDLE_ISOLATED_DIR)
+
     import paddle
     from paddleocr import PaddleOCR
 
@@ -578,7 +598,6 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
         min_score = db_cfg["min_score"]
         batch_size = db_cfg["batch_size"]
 
-        # Lập danh sách mốc nhảy toàn video rồi chạy theo từng batch trên GPU
         jump_times: list[float] = []
         t_cursor = round(min(duration * 0.01, 0.4), 2)
         while t_cursor < duration:
@@ -595,7 +614,6 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
             batch_ts: list[float] = []
             while idx_t < len(jump_times) and len(batch_ts) < batch_size:
                 ts_val = jump_times[idx_t]
-                # Nếu liên tiếp >= 2 mốc không có chữ, bỏ qua thêm 1 mốc để nhảy nhanh qua đoạn trống
                 if consecutive_empty >= 2 and batch_ts:
                     idx_t += 1
                     consecutive_empty = 0
