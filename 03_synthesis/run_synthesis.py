@@ -5,7 +5,6 @@ os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
-import asyncio
 import base64
 import gc
 import importlib
@@ -186,7 +185,6 @@ def ensure_deps():
         ("soundfile", "soundfile"),
         ("numpy", "numpy"),
         ("gdown", "gdown"),
-        ("edge_tts", "edge-tts"),
         ("vieneu", "vieneu"),
     ]
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
@@ -287,17 +285,17 @@ def extract_segment_ref_clip(
         e_sec = max(s_sec + 0.25, float(end_t))
         dur = e_sec - s_sec
 
-        if dur < 0.90:
-            pad = (0.95 - dur) * 0.5 + 0.15
+        if dur < 1.20:
+            pad = (1.35 - dur) * 0.5 + 0.20
             s_sec = max(0.0, s_sec - pad)
             e_sec = min(len(audio_samples) / float(sr), e_sec + pad)
 
-        if (e_sec - s_sec) > 7.0:
-            e_sec = s_sec + 7.0
+        if (e_sec - s_sec) > 6.5:
+            e_sec = s_sec + 6.5
 
         i0 = max(0, int(round(s_sec * sr)))
         i1 = min(len(audio_samples), int(round(e_sec * sr)))
-        if i1 - i0 >= int(0.35 * sr):
+        if i1 - i0 >= int(0.45 * sr):
             clip = audio_samples[i0:i1]
             rms = float(np.sqrt(np.mean(clip.astype(np.float32) ** 2)))
             if rms > 1e-4:
@@ -309,229 +307,244 @@ def extract_segment_ref_clip(
     return ""
 
 
-def load_vieneu_engine():
-    """Tự động quét và khởi tạo đúng TTS/clone engine của VieNeu-TTS, tránh nhầm các class nội bộ như CaptureLock."""
-    model_id = os.environ.get("VIENEU_MODEL", "pnnbao-ump/VieNeu-TTS").strip() or "pnnbao-ump/VieNeu-TTS"
-    try:
-        import torch
-        import vieneu  # type: ignore
+def load_vieneu_v3_turbo():
+    """Khởi tạo bắt buộc VieNeu-TTS-V3-Turbo (không fallback sang edge-tts)."""
+    import torch
+    import vieneu  # type: ignore
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        modules_to_scan = [vieneu]
-        if hasattr(vieneu, "__path__"):
-            for _, modname, _ in pkgutil.walk_packages(vieneu.__path__, prefix="vieneu."):
-                try:
-                    modules_to_scan.append(importlib.import_module(modname))
-                except Exception:
-                    continue
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model_id = os.environ.get("VIENEU_MODEL", "pnnbao-ump/VieNeu-TTS-v3-Turbo").strip() or "pnnbao-ump/VieNeu-TTS-v3-Turbo"
 
-        synth_methods = ("synthesize", "tts", "infer", "generate", "speak", "clone", "__call__")
-        exclude_suffixes = (
-            "lock", "config", "cfg", "error", "exception", "warning",
-            "state", "context", "pool", "queue", "manager", "helper",
-            "utils", "util", "parser", "arg", "args", "dataset", "loader",
-        )
+    modules_to_scan = [vieneu]
+    if hasattr(vieneu, "__path__"):
+        for _, modname, _ in pkgutil.walk_packages(vieneu.__path__, prefix="vieneu."):
+            try:
+                modules_to_scan.append(importlib.import_module(modname))
+            except Exception:
+                continue
 
-        candidate_classes = []
-        for mod in modules_to_scan:
-            mod_name = getattr(mod, "__name__", "")
-            is_private_mod = any(part.startswith("_") for part in mod_name.split(".")[1:])
-            for attr_name in dir(mod):
-                if attr_name.startswith("_"):
-                    continue
-                low = attr_name.lower()
-                if any(low.endswith(suf) or suf in low.split("_") for suf in exclude_suffixes):
-                    continue
-                obj = getattr(mod, attr_name, None)
-                if inspect.isclass(obj):
-                    methods_found = [m for m in synth_methods if callable(getattr(obj, m, None))]
-                    if methods_found:
-                        score = 0
-                        if any(k in low for k in ("tts", "engine", "vieneu", "clone", "synth", "voice")):
-                            score += 10
-                        if "turbo" in low or "v3" in low or "model" in low:
-                            score += 4
-                        if not is_private_mod:
-                            score += 5
-                        score += len(methods_found)
-                        candidate_classes.append((score, f"{mod_name}.{attr_name}", obj, methods_found))
+    synth_methods = ("infer", "synthesize", "tts", "generate", "speak", "clone", "__call__")
+    exclude_suffixes = (
+        "lock", "config", "cfg", "error", "exception", "warning",
+        "state", "context", "pool", "queue", "manager", "helper",
+        "utils", "util", "parser", "arg", "args", "dataset", "loader",
+    )
 
-        candidate_classes.sort(key=lambda x: x[0], reverse=True)
-        print(f"[INFO] Tìm thấy {len(candidate_classes)} class ứng viên VieNeu: {[x[1] for x in candidate_classes[:6]]}")
+    candidate_classes = []
+    for mod in modules_to_scan:
+        mod_name = getattr(mod, "__name__", "")
+        for attr_name in dir(mod):
+            if attr_name.startswith("_"):
+                continue
+            low = attr_name.lower()
+            if any(low.endswith(suf) or suf in low.split("_") for suf in exclude_suffixes):
+                continue
+            obj = getattr(mod, attr_name, None)
+            if inspect.isclass(obj) and not inspect.isabstract(obj):
+                methods_found = [m for m in synth_methods if callable(getattr(obj, m, None))]
+                if methods_found:
+                    score = 0
+                    if "v3turbo" in low or ("v3" in low and "turbo" in low):
+                        score += 50
+                    elif "turbo" in low:
+                        score += 20
+                    elif "vieneu" in low or "tts" in low:
+                        score += 10
+                    if "gpu" in low and device == "cuda":
+                        score += 5
+                    score += len(methods_found)
+                    candidate_classes.append((score, f"{mod_name}.{attr_name}", obj, methods_found))
 
-        for _, full_name, cls, methods_found in candidate_classes:
-            kw_list = [
-                {"model_name": model_id, "device": device},
-                {"model_id": model_id, "device": device},
-                {"repo_id": model_id, "device": device},
-                {"backbone_repo": model_id, "codec_repo": model_id, "device": device},
-                {"backbone_repo": model_id, "codec_repo": model_id},
-                {"model_name": model_id},
-                {"model_id": model_id},
-                {"device": device},
-                {},
-            ]
-            last_err = None
-            for kw in kw_list:
-                try:
-                    eng = cls(**kw)
-                    print(f"[INFO] Đã khởi tạo VieNeu-TTS qua {full_name} (methods={methods_found}, kwargs={list(kw.keys())}) trên {device}.")
-                    return eng
-                except Exception as e:
-                    last_err = e
-                    continue
-            print(f"[WARN] Không khởi tạo được {full_name}: {last_err}")
+    candidate_classes.sort(key=lambda x: x[0], reverse=True)
+    print(f"[INFO] Ứng viên VieNeu-TTS-V3-Turbo: {[x[1] for x in candidate_classes[:6]]}")
 
-        for mod in modules_to_scan:
-            for m in ("synthesize", "tts", "infer", "generate", "clone"):
-                fn = getattr(mod, m, None)
-                if callable(fn):
-                    print(f"[INFO] Dùng hàm trực tiếp {mod.__name__}.{m} của VieNeu-TTS.")
-                    return mod
+    init_errors = []
+    for _, full_name, cls, methods_found in candidate_classes:
+        # Ưu tiên khởi tạo mặc định trước để V3TurboVieNeuTTS tự dùng repo V3-Turbo mặc định của nó nếu có
+        kw_list = [
+            {"device": device},
+            {},
+            {"model_name": model_id, "device": device},
+            {"model_id": model_id, "device": device},
+            {"repo_id": model_id, "device": device},
+            {"backbone_repo": model_id, "device": device},
+            {"model_name": model_id},
+            {"model_id": model_id},
+        ]
+        for kw in kw_list:
+            try:
+                eng = cls(**kw)
+                sig_info = {}
+                for m in methods_found:
+                    fn = getattr(eng, m, None)
+                    if callable(fn):
+                        try:
+                            sig_info[m] = str(inspect.signature(fn))
+                        except Exception:
+                            sig_info[m] = "(...)"
+                print(f"[INFO] Đã khởi tạo {full_name} (kwargs={list(kw.keys())}) trên {device}. Signatures={sig_info}")
+                return eng, full_name, sig_info
+            except Exception as e:
+                init_errors.append(f"{full_name}({list(kw.keys())}): {type(e).__name__}: {e}")
+                continue
 
-        public_attrs = [a for a in dir(vieneu) if not a.startswith("_")]
-        print(f"[WARN] Không khởi tạo được engine nào trong vieneu (attrs={public_attrs}), chuyển sang giọng Việt neural fallback.")
-        return None
-    except Exception as e:
-        print(f"[WARN] Lỗi nạp VieNeu-TTS ({e}), chuyển sang giọng Việt neural fallback.")
-        return None
+    raise RuntimeError(
+        "Không khởi tạo được VieNeu-TTS-V3-Turbo:\n" + "\n".join(init_errors[:10])
+    )
 
 
-def _synthesize_single_line_vieneu(
+def _extract_audio_from_vieneu_output(out, default_sr: int = 24000):
+    import numpy as np
+
+    if out is None:
+        return None, default_sr
+
+    if isinstance(out, str):
+        return out, default_sr
+
+    if isinstance(out, dict):
+        sr = int(out.get("sample_rate") or out.get("sr") or default_sr)
+        for k in ("audio", "wav", "waveform", "samples", "output", "data"):
+            if k in out and out[k] is not None:
+                return _extract_audio_from_vieneu_output(out[k], sr)
+        return None, sr
+
+    if isinstance(out, (tuple, list)):
+        if len(out) == 0:
+            return None, default_sr
+        if len(out) >= 2 and isinstance(out[1], (int, float)) and not hasattr(out[1], "__len__"):
+            return _extract_audio_from_vieneu_output(out[0], int(out[1]))
+        return _extract_audio_from_vieneu_output(out[0], default_sr)
+
+    if hasattr(out, "detach") and hasattr(out, "cpu"):
+        out = out.detach().cpu().numpy()
+
+    arr = np.asarray(out, dtype=np.float32).squeeze()
+    if arr.ndim == 0 or arr.size < 160:
+        return None, default_sr
+    return arr, default_sr
+
+
+def _synthesize_single_line_vieneu_v3(
     engine,
+    ref_code_cache: dict[str, object],
     text_vi: str,
     ref_audio_path: str,
-    ref_text: str,
-    expr: dict,
-    target_dur: float,
+    gender: str,
+    speaker_id: str,
     out_wav: str,
-) -> bool:
+) -> tuple[bool, list[str]]:
     import numpy as np
     import soundfile as sf
 
-    if engine is None:
-        return False
-
     has_ref = bool(ref_audio_path and os.path.exists(ref_audio_path) and os.path.getsize(ref_audio_path) > 512)
-    errors = []
+    ref_wav_arr = None
+    if has_ref:
+        try:
+            ref_wav_arr, _ = sf.read(ref_audio_path, dtype="float32")
+            if ref_wav_arr.ndim > 1:
+                ref_wav_arr = ref_wav_arr.mean(axis=-1)
+        except Exception:
+            ref_wav_arr = None
 
-    def _build_calls_for_callable(fn, label: str):
-        calls = []
-        if has_ref:
-            calls.extend([
-                (f"{label}(text, ref_audio, ref_text)", lambda f=fn: f(text=text_vi, ref_audio=ref_audio_path, ref_text=ref_text)),
-                (f"{label}(text, ref_audio_path, ref_text)", lambda f=fn: f(text=text_vi, ref_audio_path=ref_audio_path, ref_text=ref_text)),
-                (f"{label}(text, prompt_speech, prompt_text)", lambda f=fn: f(text=text_vi, prompt_speech=ref_audio_path, prompt_text=ref_text)),
-                (f"{label}(text, ref_audio)", lambda f=fn: f(text=text_vi, ref_audio=ref_audio_path)),
-                (f"{label}(pos: text, ref_audio, ref_text)", lambda f=fn: f(text_vi, ref_audio_path, ref_text)),
-                (f"{label}(pos: text, ref_audio)", lambda f=fn: f(text_vi, ref_audio_path)),
-            ])
-        calls.append((f"{label}(text)", lambda f=fn: f(text=text_vi)))
-        calls.append((f"{label}(pos: text)", lambda f=fn: f(text_vi)))
-        return calls
+    preset_voices = []
+    for attr in ("voices", "voice_map", "available_voices", "speakers"):
+        v_obj = getattr(engine, attr, None)
+        if isinstance(v_obj, dict):
+            preset_voices = list(v_obj.keys())
+            break
+        if isinstance(v_obj, (list, tuple)):
+            preset_voices = list(v_obj)
+            break
+
+    is_female = str(gender).lower() == "female" or str(speaker_id).endswith("_F")
+    chosen_voice = None
+    if preset_voices:
+        female_keys = [v for v in preset_voices if any(k in str(v).lower() for k in ("nu", "nữ", "female", "woman", "girl", "ngoc", "mai", "linh", "my"))]
+        male_keys = [v for v in preset_voices if any(k in str(v).lower() for k in ("nam", "male", "man", "boy", "minh", "tung", "hung", "duy"))]
+        if is_female and female_keys:
+            chosen_voice = female_keys[0]
+        elif not is_female and male_keys:
+            chosen_voice = male_keys[1] if ("02" in str(speaker_id) and len(male_keys) >= 2) else male_keys[0]
+        else:
+            chosen_voice = preset_voices[0]
+
+    fn_infer = getattr(engine, "infer", None) or getattr(engine, "synthesize", None) or getattr(engine, "tts", None)
+    if not callable(fn_infer) and callable(engine):
+        fn_infer = engine
+
+    try:
+        sig = inspect.signature(fn_infer)
+        param_names = set(sig.parameters.keys())
+    except Exception:
+        param_names = set()
 
     call_candidates = []
-    for m_name in ("synthesize", "tts", "infer", "generate", "speak", "clone"):
-        fn = getattr(engine, m_name, None)
-        if callable(fn):
-            call_candidates.extend(_build_calls_for_callable(fn, f"{type(engine).__name__}.{m_name}"))
-    if callable(engine):
-        call_candidates.extend(_build_calls_for_callable(engine, f"{type(engine).__name__}.__call__"))
+
+    # 1. Nếu engine có hàm encode_reference / get_ref_codes, mã hóa file mẫu trước
+    if has_ref:
+        for enc_name in ("encode_reference", "get_ref_codes", "extract_speaker_embedding", "encode_speaker"):
+            enc_fn = getattr(engine, enc_name, None)
+            if callable(enc_fn):
+                def _call_encoded(ef=enc_fn):
+                    cache_key = f"{enc_name}:{ref_audio_path}"
+                    if cache_key not in ref_code_cache:
+                        ref_code_cache[cache_key] = ef(ref_audio_path)
+                    ref_repr = ref_code_cache[cache_key]
+                    if "ref_codes" in param_names:
+                        if "ref_text" in param_names:
+                            return fn_infer(text=text_vi, ref_codes=ref_repr, ref_text="")
+                        return fn_infer(text=text_vi, ref_codes=ref_repr)
+                    if "ref_audio" in param_names:
+                        return fn_infer(text=text_vi, ref_audio=ref_repr)
+                    return fn_infer(text_vi, ref_repr)
+                call_candidates.append((f"infer via {enc_name}", _call_encoded))
+
+        # 2. Truyền trực tiếp ref_audio (đường dẫn hoặc ndarray), không truyền ref_text tiếng Trung
+        if not param_names or "ref_audio" in param_names:
+            call_candidates.append(("infer(text, ref_audio=path)", lambda: fn_infer(text=text_vi, ref_audio=ref_audio_path)))
+            if "ref_text" in param_names:
+                call_candidates.append(("infer(text, ref_audio=path, ref_text='')", lambda: fn_infer(text=text_vi, ref_audio=ref_audio_path, ref_text="")))
+            if ref_wav_arr is not None:
+                call_candidates.append(("infer(text, ref_audio=ndarray)", lambda: fn_infer(text=text_vi, ref_audio=ref_wav_arr)))
+        if "ref_audio_path" in param_names:
+            call_candidates.append(("infer(text, ref_audio_path=path)", lambda: fn_infer(text=text_vi, ref_audio_path=ref_audio_path)))
+        if "speaker_wav" in param_names:
+            call_candidates.append(("infer(text, speaker_wav=path)", lambda: fn_infer(text=text_vi, speaker_wav=ref_audio_path)))
+
+    # 3. Preset voice của VieNeu-TTS-V3-Turbo nếu zero-shot ref không hỗ trợ
+    if chosen_voice is not None:
+        if "voice" in param_names:
+            call_candidates.append((f"infer(text, voice={chosen_voice})", lambda v=chosen_voice: fn_infer(text=text_vi, voice=v)))
+        if "speaker" in param_names:
+            call_candidates.append((f"infer(text, speaker={chosen_voice})", lambda v=chosen_voice: fn_infer(text=text_vi, speaker=v)))
+
+    call_candidates.append(("infer(text=text_vi)", lambda: fn_infer(text=text_vi)))
+    call_candidates.append(("infer(text_vi)", lambda: fn_infer(text_vi)))
+
+    default_sr = int(getattr(engine, "sample_rate", None) or getattr(engine, "sr", None) or 24000)
+    errors = []
 
     for desc, fn in call_candidates:
         try:
             out = fn()
-            if out is None:
-                errors.append(f"{desc} -> returned None")
-                continue
-            if isinstance(out, str) and os.path.exists(out):
-                data, sr = sf.read(out, dtype="float32")
-                sf.write(out_wav, data, sr)
-                return True
-            if isinstance(out, (tuple, list)) and len(out) >= 2:
-                wav_arr, sr = out[0], int(out[1])
-                arr_np = np.asarray(wav_arr, dtype=np.float32).squeeze()
-                if arr_np.size > 0:
-                    sf.write(out_wav, arr_np, sr)
-                    return True
-            arr_np = np.asarray(out, dtype=np.float32).squeeze()
-            if arr_np.size > 0:
-                sf.write(out_wav, arr_np, 24000)
-                return True
-            errors.append(f"{desc} -> empty output ({type(out).__name__})")
+            parsed_audio, sr_out = _extract_audio_from_vieneu_output(out, default_sr)
+            if isinstance(parsed_audio, str) and os.path.exists(parsed_audio):
+                data, sr_file = sf.read(parsed_audio, dtype="float32")
+                if data.size >= 160:
+                    sf.write(out_wav, data, sr_file)
+                    return True, errors
+            elif parsed_audio is not None and isinstance(parsed_audio, np.ndarray) and parsed_audio.size >= 160:
+                sf.write(out_wav, parsed_audio, sr_out)
+                return True, errors
+            out_shape = getattr(out, "shape", None)
+            out_keys = list(out.keys()) if isinstance(out, dict) else None
+            errors.append(f"{desc} -> empty/unparsed (type={type(out).__name__}, shape={out_shape}, keys={out_keys})")
         except Exception as e:
             errors.append(f"{desc} -> {type(e).__name__}: {e}")
             continue
 
-    if not getattr(_synthesize_single_line_vieneu, "_logged_fail", False):
-        _synthesize_single_line_vieneu._logged_fail = True
-        print(f"[WARN] VieNeu không tổng hợp được câu đầu tiên (has_ref={has_ref}):")
-        for err_line in errors[:6]:
-            print(f"   - {err_line}")
-
-    return False
-
-
-def _synthesize_vietnamese_neural_fallback(
-    text_vi: str,
-    gender: str,
-    speaker_id: str,
-    expr: dict,
-    out_wav: str,
-) -> bool:
-    """Fallback dùng giọng tiếng Việt thật (Nam/Nữ + biến thể cao độ theo từng nhân vật & cảm xúc)."""
-    try:
-        import edge_tts  # type: ignore
-
-        is_female = str(gender).lower() == "female" or str(speaker_id).endswith("_F")
-        voice = "vi-VN-HoaiMyNeural" if is_female else "vi-VN-NamMinhNeural"
-
-        tone = expr.get("tone", "neutral")
-        pitch_shift = "+0Hz"
-        rate_shift = "+0%"
-        if not is_female and "02" in str(speaker_id):
-            pitch_shift = "-14Hz"
-        if tone == "emphatic":
-            pitch_shift = "+8Hz" if is_female else "+6Hz"
-            rate_shift = "+6%"
-        elif tone == "questioning":
-            pitch_shift = "+6Hz"
-        elif tone == "harsh_contempt":
-            pitch_shift = "+4Hz" if is_female else "-8Hz"
-            rate_shift = "+8%"
-        elif tone == "warm_caring":
-            pitch_shift = "-4Hz"
-            rate_shift = "-4%"
-
-        tmp_mp3 = out_wav + ".mp3"
-
-        async def _run_edge():
-            comm = edge_tts.Communicate(text=text_vi, voice=voice, rate=rate_shift, pitch=pitch_shift)
-            await comm.save(tmp_mp3)
-
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                new_loop = asyncio.new_event_loop()
-                new_loop.run_until_complete(_run_edge())
-                new_loop.close()
-            else:
-                loop.run_until_complete(_run_edge())
-        except RuntimeError:
-            asyncio.run(_run_edge())
-
-        if os.path.exists(tmp_mp3) and os.path.getsize(tmp_mp3) > 256:
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", tmp_mp3, "-ac", "1", "-ar", "24000", out_wav],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            os.remove(tmp_mp3)
-            return os.path.exists(out_wav) and os.path.getsize(out_wav) > 512
-    except Exception as e:
-        print(f"[WARN] Fallback edge-tts lỗi: {e}")
-    return False
+    return False, errors
 
 
 def _fit_audio_to_window(wav_path: str, target_dur: float, tempo_factor: float = 1.0):
@@ -701,7 +714,7 @@ sync = GitHubSync(GH_REPO, GH_TOKEN)
 def main():
     send_ntfy(
         f"[Stage 3] {JOB_ID}",
-        f"Bắt đầu tổng hợp & clone từng phân đoạn bằng VieNeu-TTS cho job {JOB_ID}.",
+        f"Bắt đầu tổng hợp giọng nói bằng VieNeu-TTS-V3-Turbo (không fallback edge-tts) cho job {JOB_ID}.",
         tags="loud_sound",
     )
 
@@ -745,11 +758,13 @@ def main():
         except Exception as e:
             print(f"[WARN] Không đọc được âm thanh gốc để cắt mẫu theo phân đoạn: {e}")
 
-    engine = load_vieneu_engine()
+    engine, engine_cls_name, sig_info = load_vieneu_v3_turbo()
+    ref_code_cache: dict[str, object] = {}
     clip_map: dict[int, str] = {}
     enriched_lines: list[dict] = []
     cloned_count = 0
-    neural_fb_count = 0
+    non_empty_lines = 0
+    first_fail_errors: list[str] = []
 
     try:
         for idx_l, line in enumerate(dub_lines):
@@ -779,30 +794,21 @@ def main():
             mode_used = "silence"
 
             if text_vi:
-                ok_synth = _synthesize_single_line_vieneu(
+                non_empty_lines += 1
+                ok_synth, errs = _synthesize_single_line_vieneu_v3(
                     engine=engine,
+                    ref_code_cache=ref_code_cache,
                     text_vi=text_vi,
                     ref_audio_path=chosen_ref,
-                    ref_text=src_txt,
-                    expr=expr,
-                    target_dur=target_dur,
+                    gender=gender,
+                    speaker_id=spk_id,
                     out_wav=out_clip_wav,
                 )
                 if ok_synth:
                     cloned_count += 1
-                    mode_used = "vieneu_per_segment"
-                else:
-                    ok_fb = _synthesize_vietnamese_neural_fallback(
-                        text_vi=text_vi,
-                        gender=gender,
-                        speaker_id=spk_id,
-                        expr=expr,
-                        out_wav=out_clip_wav,
-                    )
-                    if ok_fb:
-                        ok_synth = True
-                        neural_fb_count += 1
-                        mode_used = "vietnamese_neural_fallback"
+                    mode_used = "vieneu_v3_turbo"
+                elif not first_fail_errors and errs:
+                    first_fail_errors = errs
 
             if ok_synth:
                 _fit_audio_to_window(out_clip_wav, target_dur, expr["tempo_factor"])
@@ -823,6 +829,12 @@ def main():
             del engine
         free_gpu()
 
+    if non_empty_lines > 0 and cloned_count == 0:
+        raise RuntimeError(
+            f"VieNeu-TTS-V3-Turbo ({engine_cls_name}, sig={sig_info}) không sinh được audio nào (0/{non_empty_lines}).\n"
+            + "\n".join(first_fail_errors[:10])
+        )
+
     out_mix_wav = os.path.join(work_dir, f"{JOB_ID}_dubbed_mix.wav")
     out_srt_s3 = os.path.join(work_dir, f"{JOB_ID}_stage3.srt")
     build_final_dubbed_track(enriched_lines, clip_map, bgm_wav_path, out_mix_wav, out_srt_s3)
@@ -836,10 +848,9 @@ def main():
 
     stage3_payload = {
         "job_id": JOB_ID,
-        "tts_engine": "vieneu_per_segment",
+        "tts_engine": engine_cls_name,
         "total_lines": len(enriched_lines),
         "vieneu_cloned_lines": cloned_count,
-        "neural_fallback_lines": neural_fb_count,
         "dubbed_mix_asset": os.path.basename(out_mix_wav),
         "dubbed_mix_url": mix_url,
         "stage3_srt_asset": os.path.basename(out_srt_s3),
@@ -851,17 +862,19 @@ def main():
     with open(os.path.join(work_dir, f"{JOB_ID}_stage3.json"), "w", encoding="utf-8") as f:
         json.dump(stage3_payload, f, ensure_ascii=False, indent=2)
 
-    sync.write_json(f"state/{JOB_ID}_stage3.json", stage3_payload, f"stage3 done: {JOB_ID}")
+    sync.write_json(f"state/{JOB_ID}_stage3.json", stage3_payload, f"stage3 done (vieneu-v3-turbo): {JOB_ID}")
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
     if JOB_ID in updated_jobs.get("jobs", {}):
         updated_jobs["jobs"][JOB_ID]["status"] = "DONE"
+        if mp4_url:
+            updated_jobs["jobs"][JOB_ID]["output_url"] = mp4_url
         sync.write_json("state/jobs.json", updated_jobs, f"update status DONE: {JOB_ID}")
 
     sync.trigger_dispatch("stage3_completed", {"job_id": JOB_ID})
 
     ntfy_lines = [
-        f"Hoàn tất {len(enriched_lines)} phân đoạn (VieNeu clone: {cloned_count}, Neural VN: {neural_fb_count}).",
+        f"Hoàn tất {cloned_count}/{len(enriched_lines)} phân đoạn bằng VieNeu-TTS-V3-Turbo ({engine_cls_name}).",
     ]
     if mp4_url:
         ntfy_lines.append(f"Video lồng tiếng: {mp4_url}")
