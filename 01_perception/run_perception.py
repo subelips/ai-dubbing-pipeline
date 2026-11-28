@@ -357,7 +357,10 @@ class GitHubSync:
 
 
 def _is_installed(pkg_name: str) -> bool:
-    return importlib.util.find_spec(pkg_name) is not None
+    try:
+        return importlib.util.find_spec(pkg_name) is not None
+    except ModuleNotFoundError:
+        return False
 
 
 def ensure_deps():
@@ -381,10 +384,13 @@ def ensure_deps():
     ]
     missing = [pip_spec for mod_name, pip_spec in wanted if not _is_installed(mod_name)]
     if missing:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-q", "--no-deps", *missing],
-            check=False,
-        )
+        heavy_pkgs = {"pyannote.audio", "transformers>=4.49.0", "accelerate", "qwen-vl-utils", "demucs"}
+        needs_deps = any(p in heavy_pkgs for p in missing)
+        pip_cmd = [sys.executable, "-m", "pip", "install", "-q"]
+        if not needs_deps:
+            pip_cmd.append("--no-deps")
+        pip_cmd.extend(missing)
+        subprocess.run(pip_cmd, check=False)
 
 
 def prefetch_qwen_model_async(model_id: str):
