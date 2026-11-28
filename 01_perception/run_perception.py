@@ -770,6 +770,8 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                         **inputs,
                         max_new_tokens=max_new_tokens,
                         do_sample=False,
+                        repetition_penalty=1.05,
+                        no_repeat_ngram_size=12,
                     )
 
                 in_len = inputs["input_ids"].shape[1]
@@ -829,24 +831,8 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                         rgb_r = cv2_mod.cvtColor(bgr_r, cv2_mod.COLOR_BGR2RGB)
                         im_r = Image.fromarray(rgb_r)
                         try:
-                            chat_r = processor.apply_chat_template(
-                                [
-                                    {
-                                        "role": "user",
-                                        "content": [
-                                            {"type": "image", "image": im_r},
-                                            {
-                                                "type": "text",
-                                                "text": "Đọc chính xác dòng chữ phụ đề trong ảnh. Chỉ trả về đúng nội dung chữ, không giải thích, không thêm nhãn.",
-                                            },
-                                        ],
-                                    }
-                                ],
-                                tokenize=False,
-                                add_generation_prompt=True,
-                                enable_thinking=False,
-                            )
-                        except TypeError:
+                            chat_r = _build_chat_str(im_r)
+                        except Exception:
                             chat_r = processor.apply_chat_template(
                                 [
                                     {
@@ -866,7 +852,13 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                         inp_r = processor(text=[chat_r], images=[im_r], padding=True, return_tensors="pt")
                         inp_r = {k: (v.to(target_dev) if hasattr(v, "to") else v) for k, v in inp_r.items()}
                         with torch.inference_mode():
-                            g_r = model.generate(**inp_r, max_new_tokens=max_new_tokens, do_sample=False)
+                            g_r = model.generate(
+                                **inp_r,
+                                max_new_tokens=max_new_tokens,
+                                do_sample=False,
+                                repetition_penalty=1.08,
+                                no_repeat_ngram_size=10,
+                            )
                         l_r = inp_r["input_ids"].shape[1]
                         dec_r = processor.batch_decode(
                             [g_r[0][l_r:]], skip_special_tokens=True, clean_up_tokenization_spaces=False
