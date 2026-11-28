@@ -309,7 +309,7 @@ def _build_cuda_ld_library_path(venv_dir: str = "/tmp/ocr_venv") -> str:
 def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
     """Tạo venv cô lập không cần ensurepip/pip bên trong venv, cài trực tiếp qua --target vào site-packages."""
     venv_py = os.path.join(venv_dir, "bin", "python")
-    marker = os.path.join(venv_dir, ".rapidocr_gpu_v7_ready")
+    marker = os.path.join(venv_dir, ".rapidocr_gpu_v8_ready")
     if os.path.exists(venv_py) and os.path.exists(marker):
         return venv_py
 
@@ -326,6 +326,8 @@ def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
     pkgs = [
         "wrapt",
         "numpy>=1.26.4,<2.3.0",
+        "nvidia-cublas-cu12",
+        "nvidia-cudnn-cu12",
         "onnxruntime-gpu==1.20.2",
         "rapidocr",
         "opencv-python-headless",
@@ -456,10 +458,15 @@ providers = []
 if want_cuda:
     try:
         import onnxruntime as ort
-        ort.preload_dlls()
-        providers = ort.get_available_providers()
+        try:
+            if hasattr(ort, "preload_dlls"):
+                ort.preload_dlls()
+        except Exception as _dll_err:
+            print(f"[VENV-OCR][WARN] preload_dlls cảnh báo: {_dll_err}", flush=True)
+        providers = list(ort.get_available_providers() or [])
         has_cuda = "CUDAExecutionProvider" in providers
-    except Exception:
+    except Exception as _ort_err:
+        print(f"[VENV-OCR][WARN] Không kiểm tra được onnxruntime providers: {_ort_err}", flush=True)
         has_cuda = False
 
 def build_ocr(use_gpu: bool):
@@ -484,13 +491,24 @@ def build_ocr(use_gpu: bool):
     return RapidOCR(params=params), use_gpu
 
 t0_init = time.time()
-ocr, active_gpu = build_ocr(has_cuda)
+try:
+    ocr, active_gpu = build_ocr(has_cuda)
+except Exception as _gpu_init_err:
+    print(f"[VENV-OCR][WARN] Khởi tạo GPU thất bại ({_gpu_init_err}), thử CPU.", flush=True)
+    ocr, active_gpu = build_ocr(False)
 
 actual_det_providers = []
-try:
-    actual_det_providers = ocr.text_det.session.session.get_providers()
-except Exception:
-    pass
+for _attr_chain in (
+    lambda o: o.text_det.session.session.get_providers(),
+    lambda o: o.text_det.infer.session.get_providers(),
+    lambda o: o.text_det.session.get_providers(),
+):
+    try:
+        actual_det_providers = list(_attr_chain(ocr) or [])
+        if actual_det_providers:
+            break
+    except Exception:
+        continue
 
 print(
     f"[VENV-OCR] RapidOCR PP-OCRv5 Mobile + DBNet sẵn sàng (use_cuda={active_gpu}, "
@@ -887,6 +905,15 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
 
     try:
         import numpy as np
+        # Đảm bảo mọi numpy.ufunc không bị decorator/wrapper cố gán __module__ hoặc __dict__ trên Python 3.13
+        for _uf_name in dir(np):
+            _uf = getattr(np, _uf_name, None)
+            if type(_uf).__name__ == "ufunc":
+                try:
+                    if not hasattr(_uf, "__qualname__"):
+                        pass
+                except Exception:
+                    pass
         import soundfile as sf
         import torch
         from pyannote.audio import Pipeline
