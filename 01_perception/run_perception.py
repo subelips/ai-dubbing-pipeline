@@ -56,7 +56,7 @@ def _patch_pyannote_ufunc_compat():
 
     try:
         import numpy as np
-        for _mod_attr in ("_core", "core"):
+        for _mod_attr in ("_core",):
             _sub = getattr(np, _mod_attr, None)
             _umath = getattr(_sub, "_multiarray_umath", None) if _sub is not None else None
             if _umath is not None and not hasattr(_umath, "_blas_supports_fpe"):
@@ -135,27 +135,29 @@ import traceback
 import zipfile
 import requests
 
-def _install_numpy_ma_py313_hook():
-    """Tự động vá `ufunc.__qualname__` trong `numpy.ma.core` trên Python 3.13 trước khi module này được nạp."""
+def _install_numpy_py313_hook():
+    """Vá tự động `numpy.ma.core` và `numpy._core.strings` trên Python 3.13 trước khi được nạp."""
     import importlib.abc
-    import importlib.machinery
     import importlib.util
 
-    if "numpy.ma.core" in sys.modules:
+    targets = {"numpy.ma.core", "numpy._core.strings", "numpy.core.strings"}
+    if targets.issubset(sys.modules.keys()):
         return
 
-    class _NumpyMaCorePatcher(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    class _NumpyPy313Patcher(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        def __init__(self):
+            self._origins = {}
+
         def find_spec(self, fullname, path, target=None):
-            if fullname != "numpy.ma.core":
+            if fullname not in targets:
                 return None
-            # Tìm spec gốc bỏ qua finder này
             for finder in sys.meta_path:
                 if finder is self:
                     continue
                 if hasattr(finder, "find_spec"):
                     spec = finder.find_spec(fullname, path, target)
                     if spec is not None and spec.origin and spec.origin.endswith(".py"):
-                        self._orig_origin = spec.origin
+                        self._origins[fullname] = spec.origin
                         return importlib.util.spec_from_loader(fullname, self, origin=spec.origin)
             return None
 
@@ -163,18 +165,26 @@ def _install_numpy_ma_py313_hook():
             return None
 
         def exec_module(self, module):
-            with open(self._orig_origin, "r", encoding="utf-8") as fh:
+            origin = self._origins[module.__name__]
+            with open(origin, "r", encoding="utf-8") as fh:
                 source = fh.read()
-            source = source.replace(
-                "ufunc.__qualname__",
-                "getattr(ufunc, '__qualname__', getattr(ufunc, '__name__', 'ufunc'))",
-            )
-            code = compile(source, self._orig_origin, "exec")
+            if module.__name__ == "numpy.ma.core":
+                source = source.replace(
+                    "ufunc.__qualname__",
+                    "getattr(ufunc, '__qualname__', getattr(ufunc, '__name__', 'ufunc'))",
+                )
+            elif module.__name__ in ("numpy._core.strings", "numpy.core.strings"):
+                source = source.replace(
+                    'ufunc.__module__ = "numpy.strings"',
+                    'try:\n            ufunc.__module__ = "numpy.strings"\n        except (AttributeError, TypeError):\n            pass',
+                )
+            code = compile(source, origin, "exec")
             exec(code, module.__dict__)
 
-    sys.meta_path.insert(0, _NumpyMaCorePatcher())
+    if not any(type(f).__name__ == "_NumpyPy313Patcher" for f in sys.meta_path):
+        sys.meta_path.insert(0, _NumpyPy313Patcher())
 
-_install_numpy_ma_py313_hook()
+_install_numpy_py313_hook()
 
 
 
@@ -484,7 +494,7 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
     if not sampled_entries:
         return {}, False
 
-    _install_numpy_ma_py313_hook()
+    _install_numpy_py313_hook()
     _patch_pyannote_ufunc_compat()
     import torch
     from PIL import Image
