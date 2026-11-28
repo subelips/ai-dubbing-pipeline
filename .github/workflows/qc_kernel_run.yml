@@ -199,13 +199,13 @@ jobs:
                       print(f"[WARN] Không đọc được status: {e}", flush=True)
                       status = "UNKNOWN"
                   print(f"[INFO] attempt {attempt}: status={status}", flush=True)
-                  if status != "QUEUED":
+                  if status not in ("QUEUED", "UNKNOWN"):
                       break
-              if status != "QUEUED":
+              if status not in ("QUEUED", "UNKNOWN"):
                   break
 
-          if status == "QUEUED":
-              sys.exit(f"[FAIL] Kernel vẫn QUEUED sau {max_attempts} lần đẩy lại.")
+          if status in ("QUEUED", "UNKNOWN"):
+              sys.exit(f"[FAIL] Kernel vẫn {status} sau {max_attempts} lần đẩy lại.")
 
           if status == "RUNNING":
               print("[INFO] Kernel đã RUNNING — bắt đầu theo dõi tới khi xong.", flush=True)
