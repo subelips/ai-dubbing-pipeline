@@ -110,6 +110,9 @@ def _patch_pyannote_ufunc_compat():
 
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("HF_HOME", "/kaggle/working/hf_cache")
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/kaggle/working/hf_cache/hub")
+os.environ.setdefault("TORCH_HOME", "/kaggle/working/torch_cache")
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
@@ -1128,22 +1131,32 @@ def _extract_acoustic_fingerprint(samples, sr: int):
     return feat / nrm
 
 
-def _infer_gender_from_visual_and_pitch(visual_spk: str, pitch_hz: float | None) -> str:
-    v = (visual_spk or "").lower()
-    has_female_kw = any(k in v for k in ("nữ", "nu", "female", "woman", "girl", "cô", "chị", "bà"))
-    has_male_kw = any(k in v for k in ("nam", "male", "man", "boy", "anh", "chú", "ông", "thầy"))
+def _infer_cluster_gender(pitches: list[float], visual_hints: list[str]) -> str:
+    """Xác định giới tính ở cấp cụm speaker (ổn định hơn so với xét từng câu ngắn)."""
+    female_votes = 0
+    male_votes = 0
+    for v in visual_hints:
+        vl = (v or "").lower()
+        f_kw = any(k in vl for k in ("nữ", "nu", "female", "woman", "girl", "cô", "chị", "bà"))
+        m_kw = any(k in vl for k in ("nam", "male", "man", "boy", "anh", "chú", "ông", "thầy"))
+        if f_kw and not m_kw:
+            female_votes += 1
+        elif m_kw and not f_kw:
+            male_votes += 1
 
-    if has_female_kw and not has_male_kw:
+    if female_votes > male_votes:
         return "female"
-    if has_male_kw and not has_female_kw:
+    if male_votes > female_votes:
         return "male"
-    if pitch_hz is not None:
-        return "female" if float(pitch_hz) >= 188.0 else "male"
+
+    valid_p = [float(p) for p in pitches if p is not None and 65.0 <= float(p) <= 380.0]
+    if valid_p:
+        return "female" if float(statistics.median(valid_p)) >= 185.0 else "male"
     return "male"
 
 
 def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: int, work_dir: str) -> dict | None:
-    """Chạy pyannote.audio nếu có token, đồng thời kết hợp embedding từng câu + gợi ý nhân vật từ Qwen2.5-VL-3B."""
+    """Chạy pyannote.audio làm trục phân tách người nói chính, tránh gắn nhầm do đặc trưng câu ngắn."""
     hf_tok = _clean_url_or_str(
         os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN
     )
@@ -1155,173 +1168,130 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
     import numpy as np
     import soundfile as sf
 
-    pyannote_turns: list[tuple[float, float, str]] = []
-    if hf_tok:
-        try:
-            _patch_pyannote_ufunc_compat()
-            import torch
-            from pyannote.audio import Pipeline
+    if not hf_tok:
+        return None
 
+    pyannote_turns: list[tuple[float, float, str]] = []
+    t_dia = time.time()
+    try:
+        _patch_pyannote_ufunc_compat()
+        import torch
+        from pyannote.audio import Pipeline
+
+        cache_dir = os.environ.get("HUGGINGFACE_HUB_CACHE") or None
+        try:
+            pipeline = Pipeline.from_pretrained(model_id, token=hf_tok, cache_dir=cache_dir)
+        except TypeError:
             try:
                 pipeline = Pipeline.from_pretrained(model_id, token=hf_tok)
             except TypeError:
                 pipeline = Pipeline.from_pretrained(model_id, use_auth_token=hf_tok)
 
-            if pipeline is not None:
-                if torch.cuda.is_available():
-                    pipeline.to(torch.device("cuda"))
-                waveform_tensor = torch.from_numpy(wav_data.astype(np.float32)).unsqueeze(0)
-                diarization = pipeline({"waveform": waveform_tensor, "sample_rate": int(sr)})
-                annotation = getattr(diarization, "speaker_diarization", diarization)
-                for turn, _, speaker in annotation.itertracks(yield_label=True):
-                    if float(turn.end) > float(turn.start):
-                        pyannote_turns.append((float(turn.start), float(turn.end), str(speaker)))
-                del pipeline, diarization, waveform_tensor
-                free_gpu()
-        except Exception as e:
-            tb_full = traceback.format_exc()[-1200:]
-            print(f"[WARN] pyannote.audio bỏ qua ({e}), dùng Audio-Visual clustering trực tiếp trên từng câu.\n{tb_full}", flush=True)
-            free_gpu()
+        if pipeline is None:
+            return None
 
-    seg_feats = []
+        if torch.cuda.is_available():
+            pipeline.to(torch.device("cuda"))
+
+        dia_kwargs = {}
+        num_spk_env = os.environ.get("PYANNOTE_NUM_SPEAKERS", "").strip()
+        min_spk_env = os.environ.get("PYANNOTE_MIN_SPEAKERS", "").strip()
+        max_spk_env = os.environ.get("PYANNOTE_MAX_SPEAKERS", "").strip()
+        if num_spk_env.isdigit() and int(num_spk_env) > 0:
+            dia_kwargs["num_speakers"] = int(num_spk_env)
+        else:
+            if min_spk_env.isdigit() and int(min_spk_env) > 0:
+                dia_kwargs["min_speakers"] = int(min_spk_env)
+            if max_spk_env.isdigit() and int(max_spk_env) > 0:
+                dia_kwargs["max_speakers"] = int(max_spk_env)
+
+        waveform_tensor = torch.from_numpy(wav_data.astype(np.float32)).unsqueeze(0)
+        diarization = pipeline({"waveform": waveform_tensor, "sample_rate": int(sr)}, **dia_kwargs)
+        annotation = getattr(diarization, "speaker_diarization", diarization)
+        for turn, _, speaker in annotation.itertracks(yield_label=True):
+            if float(turn.end) > float(turn.start):
+                pyannote_turns.append((float(turn.start), float(turn.end), str(speaker)))
+
+        del pipeline, diarization, waveform_tensor
+        free_gpu()
+        print(
+            f"[PYANNOTE] Xong {len(pyannote_turns)} lượt nói trong {time.time() - t_dia:.2f}s.",
+            flush=True,
+        )
+    except Exception as e:
+        tb_full = traceback.format_exc()[-1200:]
+        print(f"[WARN] pyannote.audio lỗi ({e}), chuyển sang fallback.\n{tb_full}", flush=True)
+        free_gpu()
+        return None
+
+    if not pyannote_turns:
+        return None
+
+    raw_spk_per_seg: list[str] = []
     for seg in segments:
         s0 = float(seg["start"])
         s1 = float(seg["end"])
-        dur = max(0.05, s1 - s0)
-        core_s = s0 + dur * 0.15
-        core_e = s1 - dur * 0.15
-        if core_e <= core_s + 0.12:
-            core_s, core_e = s0, s1
-
-        i0 = max(0, int(core_s * sr))
-        i1 = min(len(wav_data), int(core_e * sr))
+        i0 = max(0, int(s0 * sr))
+        i1 = min(len(wav_data), int(s1 * sr))
         chunk = wav_data[i0:i1] if i1 > i0 else np.zeros(0, dtype=np.float32)
 
         pitch_val, _ = _extract_voice_features(chunk, sr) if len(chunk) >= max(64, sr // 10) else (None, 0.0)
         seg["pitch_hz"] = pitch_val
 
-        v_spk = str(seg.get("visual_speaker") or "unknown").strip().lower()
-        g_hint = _infer_gender_from_visual_and_pitch(v_spk, pitch_val)
-        seg["gender_hint"] = g_hint
+        ov_map: dict[str, float] = {}
+        for pt0, pt1, p_spk in pyannote_turns:
+            ov = max(0.0, min(s1, pt1) - max(s0, pt0))
+            if ov > 0.0:
+                ov_map[p_spk] = ov_map.get(p_spk, 0.0) + ov
 
-        py_label = ""
-        if pyannote_turns:
-            ov_map: dict[str, float] = {}
-            for pt0, pt1, p_spk in pyannote_turns:
-                ov = max(0.0, min(s1, pt1) - max(s0, pt0))
-                if ov > 0.0:
-                    ov_map[p_spk] = ov_map.get(p_spk, 0.0) + ov
-            if ov_map:
-                py_label = max(ov_map.items(), key=lambda x: x[1])[0]
-
-        fp = _extract_acoustic_fingerprint(chunk, sr)
-        seg_feats.append({
-            "fp": fp,
-            "pitch": pitch_val,
-            "gender": g_hint,
-            "v_spk": v_spk,
-            "py_label": py_label,
-            "dur": dur,
-        })
-
-    sim_threshold = float(os.environ.get("AV_SPEAKER_SIM_THRESHOLD", "0.84"))
-    clusters: list[dict] = []
-
-    for idx_s, info in enumerate(seg_feats):
-        fp = info["fp"]
-        g_s = info["gender"]
-        p_s = info["pitch"]
-        v_s = info["v_spk"]
-        py_s = info["py_label"]
-        can_seed_cluster = (fp is not None) and (info["dur"] >= 0.45)
-
-        best_c_idx = -1
-        best_score = -1.0
-
-        for c_i, cl in enumerate(clusters):
-            if cl["gender"] != g_s:
-                continue
-            if v_s not in ("", "unknown", "off_screen") and cl["v_speakers"]:
-                v_tokens_s = set(re.findall(r"\w+", v_s))
-                cl_tokens = set()
-                for vt in cl["v_speakers"]:
-                    cl_tokens.update(re.findall(r"\w+", vt))
-                if v_tokens_s and cl_tokens and len(v_tokens_s & cl_tokens) == 0:
-                    continue
-
-            if fp is None or cl["centroid"] is None:
-                continue
-
-            cos_sim = float(np.dot(fp, cl["centroid"]))
-            pitch_bonus = 0.0
-            if p_s is not None and cl["pitch_med"] is not None:
-                dp = abs(float(p_s) - float(cl["pitch_med"]))
-                if dp <= 16.0:
-                    pitch_bonus = 0.03
-                elif dp >= 32.0:
-                    pitch_bonus = -0.06
-
-            py_bonus = 0.02 if (py_s and py_s in cl["py_labels"]) else 0.0
-            total_sc = cos_sim + pitch_bonus + py_bonus
-
-            if cos_sim >= sim_threshold and total_sc > best_score:
-                best_score = total_sc
-                best_c_idx = c_i
-
-        if best_c_idx >= 0:
-            cl = clusters[best_c_idx]
-            cl["members"].append(idx_s)
-            if fp is not None:
-                if cl["centroid"] is None:
-                    cl["centroid"] = fp
-                else:
-                    n_m = float(len(cl["members"]))
-                    upd = cl["centroid"] * ((n_m - 1.0) / n_m) + fp / n_m
-                    nrm = float(np.linalg.norm(upd))
-                    cl["centroid"] = upd / nrm if nrm > 1e-8 else cl["centroid"]
-            if p_s is not None:
-                cl["pitches"].append(float(p_s))
-                cl["pitch_med"] = float(statistics.median(cl["pitches"]))
-            if v_s and v_s != "unknown":
-                cl["v_speakers"].add(v_s)
-            if py_s:
-                cl["py_labels"].add(py_s)
+        if ov_map:
+            raw_spk_per_seg.append(max(ov_map.items(), key=lambda x: x[1])[0])
         else:
-            if can_seed_cluster or not clusters:
-                clusters.append({
-                    "members": [idx_s],
-                    "centroid": fp,
-                    "gender": g_s,
-                    "pitches": [float(p_s)] if p_s is not None else [],
-                    "pitch_med": float(p_s) if p_s is not None else None,
-                    "v_speakers": {v_s} if (v_s and v_s != "unknown") else set(),
-                    "py_labels": {py_s} if py_s else set(),
-                })
-            else:
-                same_g = [i for i, c in enumerate(clusters) if c["gender"] == g_s]
-                target_i = same_g[0] if same_g else 0
-                clusters[target_i]["members"].append(idx_s)
+            raw_spk_per_seg.append("")
 
-    ordered_clusters = sorted(clusters, key=lambda c: min(c["members"]))
+    for idx_s, spk_lbl in enumerate(raw_spk_per_seg):
+        if spk_lbl:
+            continue
+        cur_s = float(segments[idx_s]["start"])
+        cur_e = float(segments[idx_s]["end"])
+        best_lbl = ""
+        best_gap = 0.40
+        for j_s, other_lbl in enumerate(raw_spk_per_seg):
+            if not other_lbl or j_s == idx_s:
+                continue
+            o_s = float(segments[j_s]["start"])
+            o_e = float(segments[j_s]["end"])
+            gap = max(0.0, max(cur_s - o_e, o_s - cur_e))
+            if gap <= best_gap:
+                best_gap = gap
+                best_lbl = other_lbl
+        raw_spk_per_seg[idx_s] = best_lbl or "PY_SPK_00"
+
+    raw_groups: dict[str, list[int]] = {}
+    for idx_s, lbl in enumerate(raw_spk_per_seg):
+        raw_groups.setdefault(lbl, []).append(idx_s)
+
+    ordered_raw = sorted(raw_groups.items(), key=lambda kv: min(kv[1]))
     male_cnt = 0
     female_cnt = 0
+    speaker_refs = {}
 
-    for cl in ordered_clusters:
-        if cl["gender"] == "female":
-            label = f"SPEAKER_{female_cnt:02d}_F"
+    for raw_lbl, mem_idxs in ordered_raw:
+        pitches = [float(segments[k]["pitch_hz"]) for k in mem_idxs if segments[k].get("pitch_hz") is not None]
+        v_hints = [str(segments[k].get("visual_speaker") or "") for k in mem_idxs]
+        gender = _infer_cluster_gender(pitches, v_hints)
+
+        if gender == "female":
+            final_label = f"SPEAKER_{female_cnt:02d}_F"
             female_cnt += 1
         else:
-            label = f"SPEAKER_{male_cnt:02d}_M"
+            final_label = f"SPEAKER_{male_cnt:02d}_M"
             male_cnt += 1
-        cl["label"] = label
-        for m_idx in cl["members"]:
-            segments[m_idx]["speaker_id"] = label
-            segments[m_idx]["gender_hint"] = cl["gender"]
 
-    speaker_refs = {}
-    for cl in ordered_clusters:
-        spk = cl["label"]
-        mem_idxs = cl["members"]
+        for k in mem_idxs:
+            segments[k]["speaker_id"] = final_label
+            segments[k]["gender_hint"] = gender
+
         ranked_m = sorted(mem_idxs, key=lambda k: float(segments[k]["end"]) - float(segments[k]["start"]), reverse=True)
         chunks = []
         total_samples = 0
@@ -1336,25 +1306,25 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
             if total_samples >= sr * 5:
                 break
 
-        ref_name = f"ref_speaker_{spk}.wav"
+        ref_name = f"ref_speaker_{final_label}.wav"
         ref_path = os.path.join(work_dir, ref_name)
         merged_wav = np.concatenate(chunks)[: sr * 6] if chunks else np.zeros(sr, dtype=np.float32)
         sf.write(ref_path, merged_wav, sr)
 
-        avg_pitch = round(float(statistics.mean(cl["pitches"])), 1) if cl["pitches"] else None
-        speaker_refs[spk] = {
+        avg_pitch = round(float(statistics.mean(pitches)), 1) if pitches else None
+        speaker_refs[final_label] = {
             "ref_asset": ref_name,
-            "gender_hint": cl["gender"],
+            "gender_hint": gender,
             "pitch_hz": avg_pitch,
             "segments_count": len(mem_idxs),
+            "pyannote_label": raw_lbl,
         }
 
     print(
-        f"[INFO] Audio-Visual Speaker Diarization phân tách {len(speaker_refs)} người nói: "
+        f"[INFO] Pyannote Speaker Diarization phân tách {len(speaker_refs)} người nói: "
         f"{list(speaker_refs.keys())}"
     )
     return speaker_refs
-
 
 def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], work_dir: str) -> dict:
     import numpy as np
