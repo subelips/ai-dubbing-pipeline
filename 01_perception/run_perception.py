@@ -65,8 +65,6 @@ def _patch_pyannote_ufunc_compat():
                 except Exception:
                     pass
 
-        # Trên Python 3.13, numpy.ma.core truy cập trực tiếp `ufunc.__qualname__` (C slot không có sẵn).
-        # Thay vì đụng vào C-type slot, chỉ chặn nếu có code đọc qua getattr hoặc vá numpy.ma.core trước khi import.
         _orig_getattr = builtins.getattr
         if not getattr(_orig_getattr, "_ufunc_patched", False):
             def _safe_getattr(obj, name, *default):
@@ -135,6 +133,7 @@ import traceback
 import zipfile
 import requests
 
+
 def _install_numpy_py313_hook():
     """Vá tự động `numpy.ma.core` và `numpy._core.strings` trên Python 3.13 trước khi được nạp."""
     import importlib.abc
@@ -174,7 +173,6 @@ def _install_numpy_py313_hook():
                     "getattr(ufunc, '__qualname__', getattr(ufunc, '__name__', 'ufunc'))",
                 )
             elif module.__name__ in ("numpy._core.strings", "numpy.core.strings"):
-                # Chỉ vô hiệu hóa lời gọi cấp module ở đầu dòng, giữ nguyên dòng `def _override___module__():`
                 source = re.sub(r"(?m)^_override___module__\(\)", "pass", source)
             code = compile(source, origin, "exec")
             exec(code, module.__dict__)
@@ -182,8 +180,8 @@ def _install_numpy_py313_hook():
     if not any(type(f).__name__ == "_NumpyPy313Patcher" for f in sys.meta_path):
         sys.meta_path.insert(0, _NumpyPy313Patcher())
 
-_install_numpy_py313_hook()
 
+_install_numpy_py313_hook()
 
 
 def _clean_url_or_str(val: str) -> str:
@@ -461,6 +459,92 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
     return vocals_wav, bgm_wav
 
 
+def extract_vad_intervals_and_timestamps(vocals_wav: str, duration: float) -> tuple[list[list[float]], list[float]]:
+    """Dùng VAD năng lượng thích ứng trên track vocals.wav sạch để tìm khoảng thoại và mốc lấy mẫu OCR tối ưu."""
+    import numpy as np
+    import soundfile as sf
+
+    if not os.path.exists(vocals_wav):
+        fallback_ts = [round(float(t), 2) for t in np.arange(0.25, max(0.3, duration), 0.50)]
+        return [], fallback_ts
+
+    wav, sr = sf.read(vocals_wav)
+    if wav.ndim > 1:
+        wav = wav.mean(axis=-1)
+    total_dur = max(duration, len(wav) / float(sr))
+
+    # Cửa sổ 30ms, bước nhảy 10ms
+    win = max(1, int(0.03 * sr))
+    hop = max(1, int(0.01 * sr))
+    if len(wav) <= win:
+        return [[0.0, round(total_dur, 2)]], [round(total_dur * 0.5, 2)]
+
+    # Tính RMS nhanh bằng cumulative sum
+    sq = np.square(wav.astype(np.float64))
+    csum = np.concatenate(([0.0], np.cumsum(sq)))
+    starts = np.arange(0, len(wav) - win, hop)
+    rms = np.sqrt(np.maximum(0.0, (csum[starts + win] - csum[starts]) / float(win)))
+
+    noise_floor = float(np.percentile(rms, 20)) if len(rms) > 0 else 0.0
+    peak_level = float(np.percentile(rms, 95)) if len(rms) > 0 else 0.01
+    thresh = max(noise_floor * 2.5, peak_level * 0.08, 1e-4)
+
+    active = rms >= thresh
+    raw_intervals: list[list[float]] = []
+    in_seg = False
+    seg_s = 0.0
+
+    for idx, is_speech in enumerate(active):
+        t = (idx * hop) / float(sr)
+        if is_speech and not in_seg:
+            in_seg = True
+            seg_s = t
+        elif not is_speech and in_seg:
+            in_seg = False
+            if t - seg_s >= 0.16:
+                raw_intervals.append([round(seg_s, 2), round(t, 2)])
+    if in_seg and (total_dur - seg_s >= 0.16):
+        raw_intervals.append([round(seg_s, 2), round(total_dur, 2)])
+
+    # Gộp các khoảng ngắt hơi ngắn (< 0.25s) thuộc cùng một câu thoại
+    merged: list[list[float]] = []
+    for s, e in raw_intervals:
+        if merged and (s - merged[-1][1]) < 0.25:
+            merged[-1][1] = e
+        else:
+            merged.append([s, e])
+
+    # Chọn mốc thời gian OCR bên trong từng đoạn VAD
+    sample_ts: list[float] = []
+    for s, e in merged:
+        seg_dur = e - s
+        if seg_dur <= 1.65:
+            # Câu ngắn/trung bình: lấy đúng điểm 45% thời lượng (tránh fade-in/out và không sót câu ngắn)
+            mid_t = round(min(total_dur - 0.05, max(0.05, s + seg_dur * 0.45)), 2)
+            sample_ts.append(mid_t)
+        else:
+            # Câu dài có thể chứa 2-3 dòng phụ đề liên tiếp: lấy mẫu mỗi 0.85s bên trong đoạn
+            cur = s + 0.35
+            while cur <= e - 0.20:
+                sample_ts.append(round(min(total_dur - 0.05, cur), 2))
+                cur += 0.85
+            tail_t = round(min(total_dur - 0.05, e - 0.25), 2)
+            if not sample_ts or (tail_t - sample_ts[-1]) >= 0.45:
+                sample_ts.append(tail_t)
+
+    # Loại bỏ các mốc quá sát nhau (< 0.20s)
+    dedup_ts: list[float] = []
+    for ts in sorted(set(sample_ts)):
+        if not dedup_ts or (ts - dedup_ts[-1]) >= 0.20:
+            dedup_ts.append(ts)
+
+    print(
+        f"[VAD-GUIDED OCR] Tìm thấy {len(merged)} khoảng thoại -> chọn {len(dedup_ts)} mốc khung hình tối ưu.",
+        flush=True,
+    )
+    return merged, dedup_ts
+
+
 def _get_qwen25_vl_config() -> dict:
     return {
         "model_id": (
@@ -472,6 +556,7 @@ def _get_qwen25_vl_config() -> dict:
         "max_pixels": max(65536, int(os.environ.get("QWEN_OCR_MAX_PIXELS", str(384 * 28 * 28)))),
         "max_new_tokens": max(48, int(os.environ.get("QWEN_OCR_MAX_NEW_TOKENS", "160"))),
         "save_bbox_vis": os.environ.get("SAVE_BBOX_VIS", "0").strip() == "1",
+        "use_vad_ocr": os.environ.get("USE_VAD_GUIDED_OCR", "1").strip() == "1",
     }
 
 
@@ -607,22 +692,25 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
             )
 
     try:
-        valid_items = []
-        for entry in sampled_entries:
-            ts = float(entry["time"])
-            cp = entry["crop_path"]
-            bgr = cv2_mod.imread(cp)
-            if bgr is None or bgr.size == 0:
-                raw_ocr_map[ts] = {"boxes": [], "visual_speaker": "unknown"}
-                continue
-            rgb = cv2_mod.cvtColor(bgr, cv2_mod.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(rgb)
-            valid_items.append((ts, pil_img))
-
         target_dev = next(model.parameters()).device
 
-        for b_start in range(0, len(valid_items), batch_size):
-            chunk = valid_items[b_start : b_start + batch_size]
+        # Đọc ảnh theo từng batch để tiết kiệm RAM CPU trên video dài
+        for b_start in range(0, len(sampled_entries), batch_size):
+            raw_chunk = sampled_entries[b_start : b_start + batch_size]
+            chunk = []
+            for entry in raw_chunk:
+                ts = float(entry["time"])
+                cp = entry["crop_path"]
+                bgr = cv2_mod.imread(cp)
+                if bgr is None or bgr.size == 0:
+                    raw_ocr_map[ts] = {"boxes": [], "visual_speaker": "unknown"}
+                    continue
+                rgb = cv2_mod.cvtColor(bgr, cv2_mod.COLOR_BGR2RGB)
+                chunk.append((ts, Image.fromarray(rgb)))
+
+            if not chunk:
+                continue
+
             batch_ts = [x[0] for x in chunk]
             batch_imgs = [x[1] for x in chunk]
             batch_chats = [_build_chat_str(im) for im in batch_imgs]
@@ -693,7 +781,7 @@ def _draw_roi_visualization(full_frame, roi: dict, out_vis_path: str, ts_sec: fl
     cv2.rectangle(vis, (rx1, ry1), (rx2, ry2), (0, 220, 255), 2)
     cv2.putText(
         vis,
-        f"t={ts_sec:.2f}s | Qwen2.5-VL-3B",
+        f"t={ts_sec:.2f}s | Qwen2.5-VL-3B (VAD)",
         (max(8, rx1), max(22, ry1 - 8)),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.55,
@@ -703,13 +791,18 @@ def _draw_roi_visualization(full_frame, roi: dict, out_vis_path: str, ts_sec: fl
     cv2.imwrite(out_vis_path, vis)
 
 
-def run_ocr_with_qwen25_vl(video_path: str, work_dir: str) -> tuple[dict, list[dict], str, float]:
-    """Lấy mẫu khung hình tuần tự theo step_sec và trích xuất phụ đề + gợi ý nhân vật bằng Qwen2.5-VL-3B."""
+def run_ocr_with_qwen25_vl(
+    video_path: str,
+    work_dir: str,
+    vocals_wav: str = "",
+) -> tuple[dict, list[dict], str, float, list[list[float]]]:
+    """Lấy mẫu khung hình theo mốc VAD (hoặc step_sec) và trích xuất phụ đề + gợi ý nhân vật bằng Qwen2.5-VL-3B."""
     roi = {"x1": 0.02, "y1": 0.58, "x2": 0.98, "y2": 0.97}
     vis_dir = os.path.join(work_dir, "bbox_vis")
     crops_dir = os.path.join(work_dir, "ocr_crops")
     zip_path = os.path.join(work_dir, f"{JOB_ID}_bbox_vis.zip")
     duration = 60.0
+    vad_intervals: list[list[float]] = []
 
     try:
         import cv2
@@ -723,31 +816,45 @@ def run_ocr_with_qwen25_vl(video_path: str, work_dir: str) -> tuple[dict, list[d
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        duration = total_frames / fps if fps > 0 else 60.0
-
-        step_sec = cfg["step_sec"]
-        step_frames = max(1, int(round(step_sec * fps)))
+        duration = round(total_frames / float(fps), 2) if fps > 0 else 60.0
 
         sampled_entries = []
-        frame_idx = 0
-        idx_s = 0
-        while True:
-            ok, frm = cap.read()
-            if not ok or frm is None:
-                break
-            if frame_idx % step_frames == 0:
-                cur_t = round(frame_idx / float(fps), 2)
+        if cfg["use_vad_ocr"] and vocals_wav and os.path.exists(vocals_wav):
+            vad_intervals, target_ts = extract_vad_intervals_and_timestamps(vocals_wav, duration)
+            for idx_s, cur_t in enumerate(target_ts):
+                target_f = min(max(0, total_frames - 1), int(round(cur_t * fps))) if total_frames > 0 else int(round(cur_t * fps))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, target_f)
+                ok, frm = cap.read()
+                if not ok or frm is None:
+                    continue
                 fh, fw, _ = frm.shape
                 crp = frm[int(fh * roi["y1"]) : int(fh * roi["y2"]), int(fw * roi["x1"]) : int(fw * roi["x2"])]
                 if crp is not None and crp.size > 0:
                     cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{cur_t:.2f}s.jpg")
                     cv2.imwrite(cp, crp)
                     sampled_entries.append({"time": cur_t, "crop_path": cp})
-                    idx_s += 1
-            frame_idx += 1
+        else:
+            step_sec = cfg["step_sec"]
+            step_frames = max(1, int(round(step_sec * fps)))
+            frame_idx = 0
+            idx_s = 0
+            while True:
+                ok, frm = cap.read()
+                if not ok or frm is None:
+                    break
+                if frame_idx % step_frames == 0:
+                    cur_t = round(frame_idx / float(fps), 2)
+                    fh, fw, _ = frm.shape
+                    crp = frm[int(fh * roi["y1"]) : int(fh * roi["y2"]), int(fw * roi["x1"]) : int(fw * roi["x2"])]
+                    if crp is not None and crp.size > 0:
+                        cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{cur_t:.2f}s.jpg")
+                        cv2.imwrite(cp, crp)
+                        sampled_entries.append({"time": cur_t, "crop_path": cp})
+                        idx_s += 1
+                frame_idx += 1
+            if frame_idx > 0:
+                duration = round(frame_idx / float(fps), 2)
 
-        if frame_idx > 0:
-            duration = round(frame_idx / float(fps), 2)
         cap.release()
 
         raw_ocr_map, active_gpu = _run_qwen25_vl_ocr(sampled_entries, cfg, cv2)
@@ -794,32 +901,55 @@ def run_ocr_with_qwen25_vl(video_path: str, work_dir: str) -> tuple[dict, list[d
 
         shutil.rmtree(crops_dir, ignore_errors=True)
 
+        mode_str = "VAD-Guided" if (cfg["use_vad_ocr"] and vad_intervals) else f"Step={cfg['step_sec']}s"
         print(
-            f"[INFO] [Qwen2.5-VL-3B (GPU={active_gpu}) | Step={step_sec}s] "
+            f"[INFO] [Qwen2.5-VL-3B (GPU={active_gpu}) | {mode_str}] "
             f"tổng frame OCR={len(sampled_entries)} | hits={hits}"
         )
-        return roi, screen_texts, zip_path if (save_vis and vis_files) else "", duration
+        return roi, screen_texts, zip_path if (save_vis and vis_files) else "", duration, vad_intervals
     except Exception as e:
         shutil.rmtree(crops_dir, ignore_errors=True)
         print(f"[WARN] Qwen2.5-VL-3B OCR lỗi: {e}\n{traceback.format_exc()[-1500:]}")
-        return roi, [], "", duration
+        return roi, [], "", duration, vad_intervals
 
 
-def _is_same_subtitle(t1: str, t2: str) -> bool:
+def _is_same_subtitle(t1: str, t2: str, strict: bool = False) -> bool:
     s1 = re.sub(r"[\s\W_]+", "", str(t1 or ""), flags=re.UNICODE).lower()
     s2 = re.sub(r"[\s\W_]+", "", str(t2 or ""), flags=re.UNICODE).lower()
     if not s1 or not s2:
         return False
     if s1 == s2 or s1 in s2 or s2 in s1:
         return True
-    if min(len(s1), len(s2)) <= 3:
-        return SequenceMatcher(None, s1, s2).ratio() >= 0.88
-    return SequenceMatcher(None, s1, s2).ratio() >= 0.90
+    min_len = min(len(s1), len(s2))
+    if min_len <= 3:
+        return SequenceMatcher(None, s1, s2).ratio() >= (0.88 if strict else 0.85)
+    thr = 0.85 if strict else 0.78
+    return SequenceMatcher(None, s1, s2).ratio() >= thr
 
 
-def build_ocr_segments(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 0.50) -> list[dict]:
+def _find_enclosing_vad(ts: float, vad_intervals: list[list[float]]) -> tuple[float, float] | None:
+    """Tìm khoảng VAD chứa (hoặc gần nhất trong 0.35s) mốc thời gian ts."""
+    best = None
+    best_dist = 1e9
+    for s, e in vad_intervals:
+        if (s - 0.10) <= ts <= (e + 0.15):
+            return (float(s), float(e))
+        dist = min(abs(ts - s), abs(ts - e))
+        if dist < best_dist and dist <= 0.35:
+            best_dist = dist
+            best = (float(s), float(e))
+    return best
+
+
+def build_ocr_segments(
+    screen_texts: list[dict],
+    duration: float = 60.0,
+    step_sec: float = 0.50,
+    vad_intervals: list[list[float]] | None = None,
+) -> list[dict]:
     grouped: list[dict] = []
-    max_merge_gap = max(1.20, step_sec * 3.0)
+    max_merge_gap = max(1.35, step_sec * 3.0)
+    vad_list = vad_intervals or []
 
     for item in sorted(screen_texts, key=lambda x: float(x.get("time", 0.0))):
         ts = float(item.get("time", 0.0))
@@ -831,7 +961,7 @@ def build_ocr_segments(screen_texts: list[dict], duration: float = 60.0, step_se
 
         if (
             grouped
-            and _is_same_subtitle(grouped[-1]["ocr_text"], joined)
+            and _is_same_subtitle(grouped[-1]["ocr_text"], joined, strict=False)
             and (ts - grouped[-1]["_last_ts"]) <= max_merge_gap
         ):
             if len(joined) > len(grouped[-1]["ocr_text"]):
@@ -840,11 +970,22 @@ def build_ocr_segments(screen_texts: list[dict], duration: float = 60.0, step_se
             if grouped[-1].get("visual_speaker", "unknown") == "unknown" and v_spk != "unknown":
                 grouped[-1]["visual_speaker"] = v_spk
             grouped[-1]["_last_ts"] = ts
-            grouped[-1]["end"] = round(min(duration, max(grouped[-1]["end"], ts + step_sec * 0.5)), 2)
+            enc = _find_enclosing_vad(ts, vad_list) if vad_list else None
+            ext_end = enc[1] if enc else (ts + step_sec * 0.5)
+            grouped[-1]["end"] = round(min(duration, max(grouped[-1]["end"], ext_end)), 2)
             continue
 
-        start_t = round(max(0.0, ts - step_sec * 0.4), 2)
-        end_t = round(min(duration, max(start_t + 0.35, ts + step_sec * 0.6)), 2)
+        enc = _find_enclosing_vad(ts, vad_list) if vad_list else None
+        if enc:
+            # Nếu trong cùng 1 khoảng VAD dài có nhiều câu phụ đề khác nhau nối tiếp, giới hạn biên theo ts
+            start_t = round(max(0.0, enc[0]), 2)
+            if grouped and grouped[-1]["end"] > start_t:
+                start_t = round(max(grouped[-1]["end"] + 0.03, ts - 0.35), 2)
+            end_t = round(min(duration, max(start_t + 0.30, enc[1])), 2)
+        else:
+            start_t = round(max(0.0, ts - step_sec * 0.4), 2)
+            end_t = round(min(duration, max(start_t + 0.35, ts + step_sec * 0.6)), 2)
+
         grouped.append(
             {
                 "id": len(grouped),
@@ -872,6 +1013,30 @@ def build_ocr_segments(screen_texts: list[dict], duration: float = 60.0, step_se
             grouped[idx]["end"] = round(max(grouped[idx]["start"] + 0.25, grouped[idx + 1]["start"] - 0.03), 2)
 
     return grouped
+
+
+def deduplicate_adjacent_segments(segments: list[dict]) -> list[dict]:
+    """Khử trùng lặp hậu kỳ: gộp các đoạn liền kề có nội dung giống nhau bị tách nhầm do nhiễu biên."""
+    if len(segments) <= 1:
+        return segments
+
+    deduped: list[dict] = [segments[0]]
+    for seg in segments[1:]:
+        prev = deduped[-1]
+        gap = float(seg["start"]) - float(prev["end"])
+        if gap <= 0.45 and _is_same_subtitle(prev.get("best_text", ""), seg.get("best_text", ""), strict=False):
+            prev["end"] = max(float(prev["end"]), float(seg["end"]))
+            if len(str(seg.get("best_text", ""))) > len(str(prev.get("best_text", ""))):
+                prev["best_text"] = seg["best_text"]
+                prev["ocr_text"] = seg["ocr_text"]
+            if prev.get("visual_speaker", "unknown") == "unknown" and seg.get("visual_speaker", "unknown") != "unknown":
+                prev["visual_speaker"] = seg["visual_speaker"]
+        else:
+            deduped.append(seg)
+
+    for idx, g in enumerate(deduped):
+        g["id"] = idx
+    return deduped
 
 
 def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
@@ -948,7 +1113,6 @@ def _extract_acoustic_fingerprint(samples, sr: int):
     mag = np.abs(np.fft.rfft(mat, n=n_fft, axis=-1)) + 1e-7
     log_mag = np.log(mag)
 
-    # Nén 257 bin phổ thành 32 dải phổ đều để so sánh âm sắc (timbre/formant)
     n_bins = log_mag.shape[1]
     edges = np.linspace(0, n_bins, 33, dtype=int)
     bands = np.stack(
@@ -1019,13 +1183,11 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
             print(f"[WARN] pyannote.audio bỏ qua ({e}), dùng Audio-Visual clustering trực tiếp trên từng câu.\n{tb_full}", flush=True)
             free_gpu()
 
-    # Lớp 1 & 2: Trích xuất đặc trưng âm thanh sạch của từng câu + kết hợp gợi ý nhân vật từ Qwen2.5-VL-3B
     seg_feats = []
     for seg in segments:
         s0 = float(seg["start"])
         s1 = float(seg["end"])
         dur = max(0.05, s1 - s0)
-        # Cắt lõi 15%..85% của đoạn để giảm nhiễu biên chuyển lượt nói
         core_s = s0 + dur * 0.15
         core_e = s1 - dur * 0.15
         if core_e <= core_s + 0.12:
@@ -1062,8 +1224,6 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
             "dur": dur,
         })
 
-    # Gom cụm phân cấp có ràng buộc giới tính & gợi ý hình ảnh từ Qwen2.5-VL-3B
-    # Ngưỡng tương đồng âm sắc (cosine similarity): cao hơn để không gộp nhầm 3 speaker thành 2
     sim_threshold = float(os.environ.get("AV_SPEAKER_SIM_THRESHOLD", "0.84"))
     clusters: list[dict] = []
 
@@ -1081,7 +1241,6 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
         for c_i, cl in enumerate(clusters):
             if cl["gender"] != g_s:
                 continue
-            # Nếu cả hai đều có mô tả nhân vật thị giác rõ ràng và khác nhau rõ rệt (không có từ chung), tránh gộp nhầm
             if v_s not in ("", "unknown", "off_screen") and cl["v_speakers"]:
                 v_tokens_s = set(re.findall(r"\w+", v_s))
                 cl_tokens = set()
@@ -1139,12 +1298,10 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
                     "py_labels": {py_s} if py_s else set(),
                 })
             else:
-                # Câu quá ngắn không đủ đặc trưng để lập cụm mới: chọn cụm cùng giới tính gần nhất
                 same_g = [i for i, c in enumerate(clusters) if c["gender"] == g_s]
                 target_i = same_g[0] if same_g else 0
                 clusters[target_i]["members"].append(idx_s)
 
-    # Đặt tên chuẩn SPEAKER_00_M / SPEAKER_01_F / SPEAKER_02_M... theo thứ tự xuất hiện đầu tiên
     ordered_clusters = sorted(clusters, key=lambda c: min(c["members"]))
     male_cnt = 0
     female_cnt = 0
@@ -1161,12 +1318,10 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
             segments[m_idx]["speaker_id"] = label
             segments[m_idx]["gender_hint"] = cl["gender"]
 
-    # Trích xuất file tham chiếu âm thanh sạch (2s-5s) cho từng speaker
     speaker_refs = {}
     for cl in ordered_clusters:
         spk = cl["label"]
         mem_idxs = cl["members"]
-        # Ưu tiên các đoạn dài hơn để làm mẫu tham chiếu giọng nói cho VieNeu-TTS
         ranked_m = sorted(mem_idxs, key=lambda k: float(segments[k]["end"]) - float(segments[k]["start"]), reverse=True)
         chunks = []
         total_samples = 0
@@ -1199,6 +1354,7 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
         f"{list(speaker_refs.keys())}"
     )
     return speaker_refs
+
 
 def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], work_dir: str) -> dict:
     import numpy as np
@@ -1436,7 +1592,7 @@ def run_auto_health_check(work_dir: str) -> dict:
 def main():
     send_ntfy(
         f"[Stage 1] {JOB_ID}",
-        f"Bắt đầu nhận diện OCR bằng Qwen2.5-VL-3B cho job {JOB_ID}.",
+        f"Bắt đầu nhận diện VAD-Guided OCR bằng Qwen2.5-VL-3B cho job {JOB_ID}.",
         tags="film_frames",
     )
     jobs_data, _ = sync.read_json("state/jobs.json")
@@ -1454,10 +1610,13 @@ def main():
     extract_audio_16k(video_path, audio_16k)
 
     vocals_wav, bgm_wav = separate_vocals_and_bgm(audio_16k, work_dir)
-    subtitle_roi, screen_texts, bbox_zip_path, duration = run_ocr_with_qwen25_vl(video_path, work_dir)
+    subtitle_roi, screen_texts, bbox_zip_path, duration, vad_intervals = run_ocr_with_qwen25_vl(
+        video_path, work_dir, vocals_wav=vocals_wav
+    )
     step_sec = _get_qwen25_vl_config()["step_sec"]
-    segments = build_ocr_segments(screen_texts, duration=duration, step_sec=step_sec)
+    segments = build_ocr_segments(screen_texts, duration=duration, step_sec=step_sec, vad_intervals=vad_intervals)
     speaker_refs = align_vad_and_diarize_from_vocals(vocals_wav, segments, work_dir)
+    segments = deduplicate_adjacent_segments(segments)
 
     srt_s1_path = os.path.join(work_dir, f"{JOB_ID}_stage1.srt")
     export_stage1_srt(segments, srt_s1_path)
@@ -1475,6 +1634,7 @@ def main():
         "video_asset": video_asset,
         "asr_enabled": False,
         "ocr_engine": "qwen2_5_vl_3b_instruct",
+        "vad_guided_ocr": True,
         "ocr_step_sec": step_sec,
         "subtitle_roi": subtitle_roi,
         "screen_texts": screen_texts,
@@ -1490,7 +1650,7 @@ def main():
     sync.write_json(
         f"state/{JOB_ID}_stage1.json",
         stage1_payload,
-        f"stage1 done (qwen2.5-vl-3b): {JOB_ID}",
+        f"stage1 done (qwen2.5-vl-3b vad-guided): {JOB_ID}",
     )
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
@@ -1501,7 +1661,7 @@ def main():
     sync.trigger_dispatch("stage1_completed", {"job_id": JOB_ID})
     send_ntfy(
         f"[Stage 1 Done] {JOB_ID}",
-        f"Hoàn tất Qwen2.5-VL-3B + AV Diarization ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
+        f"Hoàn tất Qwen2.5-VL-3B (VAD-Guided) + AV Diarization ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
         tags="white_check_mark",
     )
 
