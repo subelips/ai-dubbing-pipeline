@@ -23,64 +23,65 @@ jobs:
 
       - name: Dump trạng thái kernel/session/quota
         env:
-          KAGGLE_USER: ${{ secrets.PERCEPTION_KAGGLE_USER }}
-          KAGGLE_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
+          P_USER: ${{ secrets.PERCEPTION_KAGGLE_USER }}
+          P_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
+          T_USER: ${{ secrets.TRANSLATION_KAGGLE_USER }}
+          T_KEY: ${{ secrets.TRANSLATION_KAGGLE_KEY }}
+          S_USER: ${{ secrets.SYNTHESIS_KAGGLE_USER }}
+          S_KEY: ${{ secrets.SYNTHESIS_KAGGLE_KEY }}
         run: |
           python3 - << 'PY'
-          import json, os, re, subprocess
+          import json, os
           import requests
 
-          user = (os.environ.get("KAGGLE_USER") or "").strip()
-          key = (os.environ.get("KAGGLE_KEY") or "").strip()
-          if not user or not key:
-              raise SystemExit("missing kaggle creds")
-
-          os.makedirs(os.path.expanduser("~/.kaggle"), exist_ok=True)
-          p = os.path.expanduser("~/.kaggle/kaggle.json")
-          with open(p, "w") as f:
-              json.dump({"username": user, "key": key}, f)
-          os.chmod(p, 0o600)
-
-          s = requests.Session()
-          s.auth = (user, key)
-          s.headers.update({"User-Agent": "kaggle-api/v2.2.5"})
+          accounts = [
+              ("perception", (os.environ.get("P_USER") or "").strip(), (os.environ.get("P_KEY") or "").strip(), "dubbing-perception"),
+              ("translation", (os.environ.get("T_USER") or "").strip(), (os.environ.get("T_KEY") or "").strip(), "dubbing-translation"),
+              ("synthesis", (os.environ.get("S_USER") or "").strip(), (os.environ.get("S_KEY") or "").strip(), "dubbing-synthesis"),
+          ]
           base = "https://www.kaggle.com/api/v1"
 
-          print("=" * 30, "QUOTA")
-          try:
-              r = subprocess.run(["kaggle", "quota"], capture_output=True, text=True, timeout=60)
-              print((r.stdout or "")[:2000])
-              print((r.stderr or "")[:500])
-          except Exception as e:
-              print("quota err", e)
-
-          for slug in ("dubbing-perception", "dubbing-translation", "dubbing-synthesis"):
-              print("=" * 30, "STATUS RAW", slug)
+          for name, user, key, slug in accounts:
+              print("\n" + "=" * 25, name, user, "/", slug)
+              if not user or not key:
+                  print("missing creds")
+                  continue
+              if not key.startswith("KGAT"):
+                  print("key is NOT KGAT-style; legacy key detected (len=%d)" % len(key))
+              s = requests.Session()
+              s.headers.update({
+                  "Authorization": f"Bearer {key}",
+                  "User-Agent": "kaggle-api/v2.2.5",
+                  "Accept": "application/json",
+              })
               try:
                   r = s.get(f"{base}/kernels/status", params={"userName": user, "kernelSlug": slug}, timeout=30)
-                  print("http", r.status_code)
-                  print(r.text[:1500])
+                  print("STATUS http", r.status_code)
+                  print(r.text[:2000])
               except Exception as e:
-                  print("err", e)
+                  print("status err", e)
 
-          print("=" * 30, "LIST RAW")
-          try:
-              r = s.get(f"{base}/kernels/list", params={"group": "profile", "user": user, "pageSize": 20}, timeout=30)
-              print("http", r.status_code)
-              print(r.text[:4000])
-          except Exception as e:
-              print("err", e)
+              try:
+                  r = s.get(f"{base}/kernels/list", params={"group": "profile", "pageSize": 20}, timeout=30)
+                  print("LIST http", r.status_code)
+                  print(r.text[:2500])
+              except Exception as e:
+                  print("list err", e)
 
-          print("=" * 30, "KERNEL PAGE scan")
-          try:
-              r = s.get(f"https://www.kaggle.com/code/{user}/dubbing-perception", timeout=30, allow_redirects=True)
-              print("http", r.status_code, "len", len(r.text), "url", r.url)
-              for m in re.finditer(r"kernelSessionId", r.text):
-                  i = m.start()
-                  print("...", r.text[max(0, i - 300):i + 300].replace("\n", " ")[:700])
-                  break
-              else:
-                  print("no kernelSessionId in page")
-          except Exception as e:
-              print("err", e)
+          print("\n" + "=" * 25, "PROBE session endpoints (perception)")
+          _, user, key, slug = accounts[0]
+          s = requests.Session()
+          s.headers.update({"Authorization": f"Bearer {key}", "Accept": "application/json"})
+          for path in (
+              "/kernels/sessions",
+              "/kernels/sessions/list",
+              "/kernels/active-sessions",
+              "/kernels/session",
+              "/kernels/quota",
+          ):
+              try:
+                  r = s.get(base + path, params={"userName": user, "kernelSlug": slug}, timeout=20)
+                  print(path, "->", r.status_code, r.text[:300].replace("\n", " "))
+              except Exception as e:
+                  print(path, "err", e)
           PY
