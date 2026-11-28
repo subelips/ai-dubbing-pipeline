@@ -18,33 +18,60 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Probe Kaggle internal API (GetKernel raw)
+      - name: Tìm session id của kernel đang queued
         env:
           P_USER: ${{ secrets.PERCEPTION_KAGGLE_USER }}
           P_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
         run: |
           python3 - << 'PY'
-          import json, os
+          import json, os, re
           import requests
 
           user = (os.environ.get("P_USER") or "").strip()
           key = (os.environ.get("P_KEY") or "").strip()
-          s = requests.Session()
-          s.headers.update({
+          h = {
               "Authorization": f"Bearer {key}",
-              "Content-Type": "application/json",
               "Accept": "application/json",
-              "User-Agent": "kaggle-api/v2.2.5",
-          })
-          api = "https://api.kaggle.com/v1/kernels.KernelsApiService"
+              "User-Agent": "Mozilla/5.0 kaggle-api/v2.2.5",
+          }
+          slug = "dubbing-perception"
 
-          def call(method, body):
-              r = s.post(f"{api}/{method}", json=body, timeout=30)
-              print(f"--- {method}: http {r.status_code}")
-              print(r.text[:6000])
-              print()
+          print("=" * 20, "WEB PAGE with Bearer")
+          r = requests.get(f"https://www.kaggle.com/code/{user}/{slug}", headers=h, timeout=30, allow_redirects=True)
+          print("http", r.status_code, "len", len(r.text), "final", r.url)
+          for kw in ("kernelSessionId", "sessionId", "KernelSession", "kernel_session_id"):
+              hits = [m.start() for m in re.finditer(kw, r.text)]
+              print(f"  {kw}: {len(hits)} hits")
+              if hits:
+                  i = hits[0]
+                  print("   ...", r.text[max(0, i - 200):i + 300].replace("\n", " ")[:500])
 
-          call("GetKernel", {"userName": user, "kernelSlug": "dubbing-perception"})
-          call("GetKernelSessionStatus", {"userName": user, "kernelSlug": "dubbing-perception"})
-          call("ListKernelSessionOutput", {"userName": user, "kernelSlug": "dubbing-perception", "pageSize": 5})
+          print("=" * 20, "PROBE GET paths on www.kaggle.com/api/v1")
+          for path in (
+              f"/kernels/view/{user}/{slug}",
+              f"/kernels/get/{user}/{slug}",
+              f"/kernels/{user}/{slug}",
+              f"/kernels/session/{user}/{slug}",
+              f"/kernels/current-session/{user}/{slug}",
+              f"/kernels/sessions/{user}/{slug}",
+          ):
+              try:
+                  rr = requests.get("https://www.kaggle.com/api/v1" + path, headers=h, timeout=20)
+                  body = rr.text[:200].replace("\n", " ")
+                  print(path, "->", rr.status_code, body)
+              except Exception as e:
+                  print(path, "err", e)
+
+          print("=" * 20, "PROBE POST service variants on api.kaggle.com")
+          for svc in ("kernels.KernelsService", "kernels.KernelService"):
+              try:
+                  rr = requests.post(
+                      f"https://api.kaggle.com/v1/{svc}/GetKernelSessionStatus",
+                      headers={**h, "Content-Type": "application/json"},
+                      json={"userName": user, "kernelSlug": slug},
+                      timeout=20,
+                  )
+                  print(svc, "->", rr.status_code, rr.text[:400].replace("\n", " "))
+              except Exception as e:
+                  print(svc, "err", e)
           PY
