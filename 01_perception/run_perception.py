@@ -1,7 +1,7 @@
 import functools
 import os
 
-# Vá lỗi Python 3.13 + numpy.ufunc cho pyannote/scipy ngay trước khi import thư viện ngoài
+# Vá triệt để lỗi Python 3.13 + numpy.ufunc cho pyannote/scipy/speechbrain trước mọi import
 _orig_update_wrapper = functools.update_wrapper
 
 
@@ -17,6 +17,8 @@ def _safe_update_wrapper(
         except AttributeError:
             if attr == "__qualname__":
                 val = getattr(wrapped, "__name__", "ufunc")
+            elif attr == "__module__":
+                val = "numpy"
             else:
                 continue
         try:
@@ -45,6 +47,65 @@ functools.wraps = (
         _safe_update_wrapper, wrapped=wrapped, assigned=assigned, updated=updated
     )
 )
+
+
+def _patch_pyannote_ufunc_compat():
+    """Gắn module/qualname giả lập và vá wrapt/decorator/inspect cho numpy.ufunc trên Python 3.13."""
+    import builtins
+    import inspect
+
+    orig_setattr = builtins.setattr
+
+    def safe_setattr(obj, name, value):
+        if type(obj).__name__ == "ufunc":
+            return None
+        return orig_setattr(obj, name, value)
+
+    try:
+        import numpy as np
+        if not hasattr(np.ufunc, "__qualname__"):
+            try:
+                type.__setattr__(np.ufunc, "__qualname__", "ufunc")
+            except Exception:
+                pass
+        if not hasattr(np.ufunc, "__module__"):
+            try:
+                type.__setattr__(np.ufunc, "__module__", "numpy")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        orig_unwrap = inspect.unwrap
+
+        def safe_unwrap(func, *, stop=None):
+            if type(func).__name__ == "ufunc":
+                return func
+            return orig_unwrap(func, stop=stop)
+
+        inspect.unwrap = safe_unwrap
+    except Exception:
+        pass
+
+    try:
+        import wrapt
+        if hasattr(wrapt, "FunctionWrapper"):
+            _orig_fw_init = wrapt.FunctionWrapper.__init__
+
+            def _safe_fw_init(self, wrapped, wrapper, enabled=None):
+                if type(wrapped).__name__ == "ufunc":
+                    _w = lambda *a, **kw: wrapped(*a, **kw)
+                    _w.__name__ = getattr(wrapped, "__name__", "ufunc")
+                    _w.__qualname__ = getattr(wrapped, "__name__", "ufunc")
+                    _w.__module__ = "numpy"
+                    return _orig_fw_init(self, _w, wrapper, enabled=enabled)
+                return _orig_fw_init(self, wrapped, wrapper, enabled=enabled)
+
+            wrapt.FunctionWrapper.__init__ = _safe_fw_init
+    except Exception:
+        pass
+
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
@@ -426,11 +487,11 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
 def _get_dbnet_config() -> dict:
     return {
         "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.35")),
-        "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.58")),
+        "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.52")),
         "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.50")),
         "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "800")),
-        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.70")),
-        "step_sec": max(0.20, float(os.environ.get("OCR_STEP_SEC", "0.28"))),
+        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.60")),
+        "step_sec": max(0.18, float(os.environ.get("OCR_STEP_SEC", "0.24"))),
         "idle_jump_sec": max(0.45, float(os.environ.get("OCR_IDLE_JUMP_SEC", "0.65"))),
         "active_jump_sec": max(0.25, float(os.environ.get("OCR_ACTIVE_JUMP_SEC", "0.35"))),
         "min_clean_chars": max(2, int(os.environ.get("OCR_MIN_CLEAN_CHARS", "2"))),
@@ -586,7 +647,7 @@ def run_one(engine, crop):
             ys = [p[1] for p in pts]
             bh = max(ys) - min(ys)
             bw = max(xs) - min(xs)
-            if bh < 11 or bw < 18:
+            if bh < 9 or bw < 14:
                 continue
             # Loại box nằm sát mép đáy/đỉnh crop (dễ là viền khung hình hoặc logo góc)
             if min(ys) <= 2 or max(ys) >= crop_h - 2:
@@ -678,7 +739,7 @@ def _draw_bbox_visualization(
 
 
 def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[dict], str, float]:
-    roi = {"x1": 0.02, "y1": 0.55, "x2": 0.98, "y2": 0.97}
+    roi = {"x1": 0.02, "y1": 0.58, "x2": 0.98, "y2": 0.97}
     vis_dir = os.path.join(work_dir, "bbox_vis")
     crops_dir = os.path.join(work_dir, "ocr_crops")
     zip_path = os.path.join(work_dir, f"{JOB_ID}_bbox_vis.zip")
@@ -706,34 +767,42 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
 
         step_sec = db_cfg["step_sec"]
         idle_jump_sec = db_cfg["idle_jump_sec"]
+        step_frames = max(1, int(round(step_sec * fps)))
 
+        # Đọc tuần tự bằng cap.read() (không seek POS_MSEC) để không trượt keyframe với phụ đề chớp nhoáng
         sampled_entries = []
-        cur_t = round(min(duration * 0.005, 0.2), 2)
+        frame_idx = 0
         idx_s = 0
-        prev_crp_gray = None
-        while cur_t < duration:
-            cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, min(duration, cur_t)) * 1000.0)
+        prev_sub_band = None
+        while True:
             ok, frm = cap.read()
-            if ok and frm is not None:
+            if not ok or frm is None:
+                break
+            if frame_idx % step_frames == 0:
+                cur_t = round(frame_idx / float(fps), 2)
                 fh, fw, _ = frm.shape
                 crp = frm[int(fh * roi["y1"]) : int(fh * roi["y2"]), int(fw * roi["x1"]) : int(fw * roi["x2"])]
                 if crp.size > 0:
-                    crp_small = cv2.resize(crp, (160, 48), interpolation=cv2.INTER_AREA)
-                    crp_gray = cv2.cvtColor(crp_small, cv2.COLOR_BGR2GRAY)
-                    # Bỏ qua frame gần như giống hệt frame trước (chênh lệch pixel trung bình < 2.5) để tránh OCR lặp
+                    ch_h = crp.shape[0]
+                    # Chỉ so trùng trên dải chữ phụ đề chính (65% nửa dưới crop) với ngưỡng thấp 0.45
+                    sub_band = crp[int(ch_h * 0.35) :, :]
+                    sub_small = cv2.resize(sub_band, (192, 40), interpolation=cv2.INTER_AREA)
+                    sub_gray = cv2.cvtColor(sub_small, cv2.COLOR_BGR2GRAY)
                     is_near_dup = False
-                    if prev_crp_gray is not None:
-                        diff_mean = float(cv2.absdiff(crp_gray, prev_crp_gray).mean())
-                        if diff_mean < 1.2:
+                    if prev_sub_band is not None:
+                        diff_mean = float(cv2.absdiff(sub_gray, prev_sub_band).mean())
+                        if diff_mean < 0.45:
                             is_near_dup = True
-                    prev_crp_gray = crp_gray
+                    prev_sub_band = sub_gray
                     if not is_near_dup:
                         cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{cur_t:.2f}s.jpg")
                         cv2.imwrite(cp, crp)
                         sampled_entries.append({"time": cur_t, "crop_path": cp})
                         idx_s += 1
-            cur_t = round(cur_t + step_sec, 2)
+            frame_idx += 1
 
+        if frame_idx > 0:
+            duration = round(frame_idx / float(fps), 2)
         cap.release()
 
         req_json = os.path.join(work_dir, "_ocr_req.json")
@@ -971,6 +1040,7 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
                         pass
                 except Exception:
                     pass
+        _patch_pyannote_ufunc_compat()
         import soundfile as sf
         import torch
         from pyannote.audio import Pipeline
