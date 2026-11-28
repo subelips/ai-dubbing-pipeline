@@ -770,8 +770,6 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                         **inputs,
                         max_new_tokens=max_new_tokens,
                         do_sample=False,
-                        repetition_penalty=1.05,
-                        no_repeat_ngram_size=12,
                     )
 
                 in_len = inputs["input_ids"].shape[1]
@@ -821,7 +819,12 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
             except Exception:
                 pass
             for entry in retry_items[:10]:
-                for cand_path in (entry.get("crop_path"), entry.get("alt2_path"), entry.get("alt_path")):
+                for cand_path in (
+                    entry.get("crop_path"),
+                    entry.get("alt2_path"),
+                    entry.get("alt3_path"),
+                    entry.get("alt_path"),
+                ):
                     if not cand_path:
                         continue
                     try:
@@ -856,8 +859,6 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                                 **inp_r,
                                 max_new_tokens=max_new_tokens,
                                 do_sample=False,
-                                repetition_penalty=1.08,
-                                no_repeat_ngram_size=10,
                             )
                         l_r = inp_r["input_ids"].shape[1]
                         dec_r = processor.batch_decode(
@@ -1050,7 +1051,15 @@ def run_ocr_with_qwen25_vl(
                 min(max(ev["start"] + 0.06, ev["start"] + span * 0.80), max(ev["start"] + 0.05, ev["end"] - 0.04)),
                 2,
             )
-            specs.append({"time": mid_t, "alt_time": alt_t, "start_time": round(ev["start"] + 0.10, 2), "event": ev})
+            specs.append(
+                {
+                    "time": mid_t,
+                    "alt_time": alt_t,
+                    "start_time": round(ev["start"] + 0.10, 2),
+                    "mid2_time": round(ev["start"] + span * 0.35, 2),
+                    "event": ev,
+                }
+            )
 
         # Lưới an toàn: mốc VAD không nằm trong sự kiện nào (phụ đề lạ màu/vị trí, detector bỏ sót)
         def _covered(t: float, pad: float = 0.9) -> bool:
@@ -1083,6 +1092,10 @@ def run_ocr_with_qwen25_vl(
                 alt_t is None or abs(float(start_t) - float(alt_t)) >= 0.08
             ):
                 frames.append((round(float(start_t), 2), "_alt2"))
+            mid2_t = sp.get("mid2_time")
+            used_ts = [cur_t] + [float(x[0]) for x in frames[1:]]
+            if mid2_t is not None and all(abs(float(mid2_t) - u) >= 0.08 for u in used_ts):
+                frames.append((round(float(mid2_t), 2), "_alt3"))
             for t_c, suffix in frames:
                 target_f = min(max(0, total_frames - 1), int(round(t_c * fps))) if total_frames > 0 else int(round(t_c * fps))
                 cap.set(cv2.CAP_PROP_POS_FRAMES, target_f)
@@ -1099,6 +1112,8 @@ def run_ocr_with_qwen25_vl(
                     if cur_entry is not None:
                         if suffix == "_alt2":
                             cur_entry["alt2_path"] = cp
+                        elif suffix == "_alt3":
+                            cur_entry["alt3_path"] = cp
                         else:
                             cur_entry["alt_path"] = cp
                             cur_entry["alt_time"] = t_c
