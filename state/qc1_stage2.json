@@ -7,7 +7,7 @@
     "SPEAKER_00_M": {
       "ref_asset": "ref_speaker_SPEAKER_00_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 115.4,
+      "pitch_hz": 115.3,
       "segments_count": 32,
       "pyannote_label": "SPEAKER_01",
       "gender": "male"
@@ -15,7 +15,7 @@
     "SPEAKER_01_M": {
       "ref_asset": "ref_speaker_SPEAKER_01_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 186.3,
+      "pitch_hz": 191.2,
       "segments_count": 23,
       "pyannote_label": "SPEAKER_00",
       "gender": "female"
@@ -147,8 +147,8 @@
     },
     {
       "id": 10,
-      "start": 28.62,
-      "end": 29.54,
+      "start": 28.74,
+      "end": 29.53,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "从不吃外卖",
@@ -160,7 +160,7 @@
     {
       "id": 11,
       "start": 29.71,
-      "end": 30.65,
+      "end": 30.64,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "不碰垃圾食品",
@@ -184,7 +184,7 @@
     {
       "id": 13,
       "start": 32.98,
-      "end": 35.26,
+      "end": 35.28,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "她做最健康卫生的三餐",
@@ -212,7 +212,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "都是早上四点",
-      "text_vi": "It's all bought at 4 in the morning from the market",
+      "text_vi": "It's all bought at 4 in the morning from the market.",
       "segment_ids": [
         15
       ]
@@ -268,7 +268,7 @@
     {
       "id": 20,
       "start": 42.72,
-      "end": 43.56,
+      "end": 43.55,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "沉浸了十五分钟",
@@ -279,7 +279,7 @@
     },
     {
       "id": 21,
-      "start": 43.96,
+      "start": 43.95,
       "end": 44.43,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
@@ -292,7 +292,7 @@
     {
       "id": 22,
       "start": 44.91,
-      "end": 45.47,
+      "end": 45.5,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "你走吧",
@@ -320,7 +320,7 @@
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "跟我这待太久",
-      "text_vi": "Điều này làm cho bạn bị người khác nghi ngờ",
+      "text_vi": "Điều này làm cho người khác lo lắng",
       "segment_ids": [
         24
       ]
@@ -328,7 +328,7 @@
     {
       "id": 25,
       "start": 49.19,
-      "end": 50.49,
+      "end": 50.91,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "会引起别人不必要的揣测",
@@ -447,7 +447,7 @@
     },
     {
       "id": 35,
-      "start": 69.95,
+      "start": 69.94,
       "end": 70.99,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
@@ -460,7 +460,7 @@
     {
       "id": 36,
       "start": 71.44,
-      "end": 73.12,
+      "end": 73.11,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "与我们夏氏商业联姻",
@@ -640,7 +640,7 @@
     {
       "id": 51,
       "start": 96.11,
-      "end": 97.31,
+      "end": 97.29,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "真的很感激你啊",
@@ -664,7 +664,7 @@
     {
       "id": 53,
       "start": 101.24,
-      "end": 102.79,
+      "end": 102.81,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "我车钥匙落在餐厅了",
@@ -779,8 +779,8 @@
     },
     {
       "id": 10,
-      "start": 28.62,
-      "end": 29.54,
+      "start": 28.74,
+      "end": 29.53,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "从不吃外卖",
@@ -789,7 +789,7 @@
     {
       "id": 11,
       "start": 29.71,
-      "end": 30.65,
+      "end": 30.64,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "不碰垃圾食品",
@@ -807,7 +807,7 @@
     {
       "id": 13,
       "start": 32.98,
-      "end": 35.26,
+      "end": 35.28,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "她做最健康卫生的三餐",
@@ -829,7 +829,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "都是早上四点",
-      "text_vi": "It's all bought at 4 in the morning from the market"
+      "text_vi": "It's all bought at 4 in the morning from the market."
     },
     {
       "id": 16,
@@ -870,7 +870,7 @@
     {
       "id": 20,
       "start": 42.72,
-      "end": 43.56,
+      "end": 43.55,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "沉浸了十五分钟",
@@ -878,7 +878,7 @@
     },
     {
       "id": 21,
-      "start": 43.96,
+      "start": 43.95,
       "end": 44.43,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
@@ -888,7 +888,7 @@
     {
       "id": 22,
       "start": 44.91,
-      "end": 45.47,
+      "end": 45.5,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "你走吧",
@@ -910,12 +910,12 @@
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "跟我这待太久",
-      "text_vi": "Điều này làm cho bạn bị người khác nghi ngờ"
+      "text_vi": "Điều này làm cho người khác lo lắng"
     },
     {
       "id": 25,
       "start": 49.19,
-      "end": 50.49,
+      "end": 50.91,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "会引起别人不必要的揣测",
@@ -1004,7 +1004,7 @@
     },
     {
       "id": 35,
-      "start": 69.95,
+      "start": 69.94,
       "end": 70.99,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
@@ -1014,7 +1014,7 @@
     {
       "id": 36,
       "start": 71.44,
-      "end": 73.12,
+      "end": 73.11,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "与我们夏氏商业联姻",
@@ -1149,7 +1149,7 @@
     {
       "id": 51,
       "start": 96.11,
-      "end": 97.31,
+      "end": 97.29,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "真的很感激你啊",
@@ -1167,7 +1167,7 @@
     {
       "id": 53,
       "start": 101.24,
-      "end": 102.79,
+      "end": 102.81,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "我车钥匙落在餐厅了",
