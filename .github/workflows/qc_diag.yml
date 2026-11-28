@@ -1,0 +1,86 @@
+name: QC Kaggle Diag (temp)
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Job ID"
+        required: true
+        default: "qc1"
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cài đặt Kaggle CLI
+        run: pip install -q --upgrade kaggle
+
+      - name: Dump trạng thái kernel/session/quota
+        env:
+          KAGGLE_USER: ${{ secrets.PERCEPTION_KAGGLE_USER }}
+          KAGGLE_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
+        run: |
+          python3 - << 'PY'
+          import json, os, re, subprocess
+          import requests
+
+          user = (os.environ.get("KAGGLE_USER") or "").strip()
+          key = (os.environ.get("KAGGLE_KEY") or "").strip()
+          if not user or not key:
+              raise SystemExit("missing kaggle creds")
+
+          os.makedirs(os.path.expanduser("~/.kaggle"), exist_ok=True)
+          p = os.path.expanduser("~/.kaggle/kaggle.json")
+          with open(p, "w") as f:
+              json.dump({"username": user, "key": key}, f)
+          os.chmod(p, 0o600)
+
+          s = requests.Session()
+          s.auth = (user, key)
+          s.headers.update({"User-Agent": "kaggle-api/v2.2.5"})
+          base = "https://www.kaggle.com/api/v1"
+
+          print("=" * 30, "QUOTA")
+          try:
+              r = subprocess.run(["kaggle", "quota"], capture_output=True, text=True, timeout=60)
+              print((r.stdout or "")[:2000])
+              print((r.stderr or "")[:500])
+          except Exception as e:
+              print("quota err", e)
+
+          for slug in ("dubbing-perception", "dubbing-translation", "dubbing-synthesis"):
+              print("=" * 30, "STATUS RAW", slug)
+              try:
+                  r = s.get(f"{base}/kernels/status", params={"userName": user, "kernelSlug": slug}, timeout=30)
+                  print("http", r.status_code)
+                  print(r.text[:1500])
+              except Exception as e:
+                  print("err", e)
+
+          print("=" * 30, "LIST RAW")
+          try:
+              r = s.get(f"{base}/kernels/list", params={"group": "profile", "user": user, "pageSize": 20}, timeout=30)
+              print("http", r.status_code)
+              print(r.text[:4000])
+          except Exception as e:
+              print("err", e)
+
+          print("=" * 30, "KERNEL PAGE scan")
+          try:
+              r = s.get(f"https://www.kaggle.com/code/{user}/dubbing-perception", timeout=30, allow_redirects=True)
+              print("http", r.status_code, "len", len(r.text), "url", r.url)
+              for m in re.finditer(r"kernelSessionId", r.text):
+                  i = m.start()
+                  print("...", r.text[max(0, i - 300):i + 300].replace("\n", " ")[:700])
+                  break
+              else:
+                  print("no kernelSessionId in page")
+          except Exception as e:
+              print("err", e)
+          PY
