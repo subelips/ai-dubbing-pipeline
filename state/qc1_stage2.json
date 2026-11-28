@@ -7,15 +7,15 @@
     "SPEAKER_00_M": {
       "ref_asset": "ref_speaker_SPEAKER_00_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 115.3,
-      "segments_count": 32,
+      "pitch_hz": 112.8,
+      "segments_count": 33,
       "pyannote_label": "SPEAKER_01",
       "gender": "male"
     },
     "SPEAKER_01_M": {
       "ref_asset": "ref_speaker_SPEAKER_01_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 191.2,
+      "pitch_hz": 186.1,
       "segments_count": 23,
       "pyannote_label": "SPEAKER_00",
       "gender": "female"
@@ -111,7 +111,7 @@
     },
     {
       "id": 7,
-      "start": 24.04,
+      "start": 24.02,
       "end": 24.84,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
@@ -147,7 +147,7 @@
     },
     {
       "id": 10,
-      "start": 28.74,
+      "start": 28.62,
       "end": 29.53,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
@@ -160,7 +160,7 @@
     {
       "id": 11,
       "start": 29.71,
-      "end": 30.64,
+      "end": 30.65,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "不碰垃圾食品",
@@ -172,7 +172,7 @@
     {
       "id": 12,
       "start": 31.06,
-      "end": 32.5,
+      "end": 32.52,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "所以我每天四点起",
@@ -212,7 +212,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "都是早上四点",
-      "text_vi": "It's all bought at 4 in the morning from the market.",
+      "text_vi": "It's all bought at 4 in the morning from the market",
       "segment_ids": [
         15
       ]
@@ -268,7 +268,7 @@
     {
       "id": 20,
       "start": 42.72,
-      "end": 43.55,
+      "end": 43.56,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "沉浸了十五分钟",
@@ -279,7 +279,7 @@
     },
     {
       "id": 21,
-      "start": 43.95,
+      "start": 43.97,
       "end": 44.43,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
@@ -292,7 +292,7 @@
     {
       "id": 22,
       "start": 44.91,
-      "end": 45.5,
+      "end": 45.47,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "你走吧",
@@ -447,7 +447,7 @@
     },
     {
       "id": 35,
-      "start": 69.94,
+      "start": 69.95,
       "end": 70.99,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
@@ -556,11 +556,11 @@
     {
       "id": 44,
       "start": 84.07,
-      "end": 85.82,
+      "end": 85.83,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "一是不想让公司上下知道",
-      "text_vi": "一是不想让公司上下知道",
+      "text_vi": "Đầu tiên là không muốn công ty biết",
       "segment_ids": [
         44
       ]
@@ -572,7 +572,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "夏氏靠陆氏撑腰",
-      "text_vi": "Lục thị giúp đỡ Hạ thị",
+      "text_vi": "Chí Phách phụng Lục Phách",
       "segment_ids": [
         45
       ]
@@ -580,17 +580,29 @@
     {
       "id": 46,
       "start": 87.83,
-      "end": 89.19,
+      "end": 88.74,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "免得人心浮动",
-      "text_vi": "Để tránh tâm trạng",
+      "text_vi": "Để tránh tâm lý dao động",
       "segment_ids": [
         46
       ]
     },
     {
       "id": 47,
+      "start": 88.91,
+      "end": 89.19,
+      "speaker_id": "SPEAKER_00_M",
+      "gender": "male",
+      "src_text": "二",
+      "text_vi": "Để",
+      "segment_ids": [
+        47
+      ]
+    },
+    {
+      "id": 48,
       "start": 89.35,
       "end": 90.77,
       "speaker_id": "SPEAKER_00_M",
@@ -598,91 +610,91 @@
       "src_text": "也是对明瑶的一种考验吧",
       "text_vi": "Đó cũng là một thử thách cho Minh",
       "segment_ids": [
-        47
-      ]
-    },
-    {
-      "id": 48,
-      "start": 91.13,
-      "end": 92.19,
-      "speaker_id": "SPEAKER_01_M",
-      "gender": "female",
-      "src_text": "明瑶她不懂事",
-      "text_vi": "Mingyao không hiểu chuyện gì",
-      "segment_ids": [
         48
       ]
     },
     {
       "id": 49,
-      "start": 92.95,
-      "end": 93.96,
+      "start": 91.13,
+      "end": 92.19,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
-      "src_text": "不知道你的好",
-      "text_vi": "Đúng rồi, bạn tốt quá",
+      "src_text": "明瑶她不懂事",
+      "text_vi": "Ming Yao không hiểu chuyện gì",
       "segment_ids": [
         49
       ]
     },
     {
       "id": 50,
-      "start": 94.36,
-      "end": 95.32,
+      "start": 92.95,
+      "end": 93.96,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
-      "src_text": "我作为当爸的",
-      "text_vi": "Tôi là cha của Mingyao",
+      "src_text": "不知道你的好",
+      "text_vi": "Tôi không biết bạn tốt như thế nào",
       "segment_ids": [
         50
       ]
     },
     {
       "id": 51,
-      "start": 96.11,
-      "end": 97.29,
+      "start": 94.36,
+      "end": 95.32,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
-      "src_text": "真的很感激你啊",
-      "text_vi": "Cảm ơn bạn thật nhiều",
+      "src_text": "我作为当爸的",
+      "text_vi": "Tôi rất cảm ơn bạn",
       "segment_ids": [
         51
       ]
     },
     {
       "id": 52,
-      "start": 97.55,
-      "end": 98.1,
-      "speaker_id": "SPEAKER_00_M",
-      "gender": "male",
-      "src_text": "不用",
-      "text_vi": "Không cần",
+      "start": 96.11,
+      "end": 97.31,
+      "speaker_id": "SPEAKER_01_M",
+      "gender": "female",
+      "src_text": "真的很感激你啊",
+      "text_vi": "Tôi rất cảm ơn bạn.",
       "segment_ids": [
         52
       ]
     },
     {
       "id": 53,
-      "start": 101.24,
-      "end": 102.81,
+      "start": 97.55,
+      "end": 98.1,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
-      "src_text": "我车钥匙落在餐厅了",
-      "text_vi": "Tôi sẽ đi lấy lại",
+      "src_text": "不用",
+      "text_vi": "Không cần đâu",
       "segment_ids": [
         53
       ]
     },
     {
       "id": 54,
+      "start": 101.24,
+      "end": 102.79,
+      "speaker_id": "SPEAKER_00_M",
+      "gender": "male",
+      "src_text": "我车钥匙落在餐厅了",
+      "text_vi": "Xin lỗi, tôi quên chìa khóa ở nhà hàng rồi",
+      "segment_ids": [
+        54
+      ]
+    },
+    {
+      "id": 55,
       "start": 103.18,
       "end": 103.85,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "我回去拿一下",
-      "text_vi": "Tôi sẽ đi lấy",
+      "text_vi": "Tôi sẽ đi lấy chìa khóa",
       "segment_ids": [
-        54
+        55
       ]
     }
   ],
@@ -752,7 +764,7 @@
     },
     {
       "id": 7,
-      "start": 24.04,
+      "start": 24.02,
       "end": 24.84,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
@@ -779,7 +791,7 @@
     },
     {
       "id": 10,
-      "start": 28.74,
+      "start": 28.62,
       "end": 29.53,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
@@ -789,7 +801,7 @@
     {
       "id": 11,
       "start": 29.71,
-      "end": 30.64,
+      "end": 30.65,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "不碰垃圾食品",
@@ -798,7 +810,7 @@
     {
       "id": 12,
       "start": 31.06,
-      "end": 32.5,
+      "end": 32.52,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "所以我每天四点起",
@@ -829,7 +841,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "都是早上四点",
-      "text_vi": "It's all bought at 4 in the morning from the market."
+      "text_vi": "It's all bought at 4 in the morning from the market"
     },
     {
       "id": 16,
@@ -870,7 +882,7 @@
     {
       "id": 20,
       "start": 42.72,
-      "end": 43.55,
+      "end": 43.56,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "沉浸了十五分钟",
@@ -878,7 +890,7 @@
     },
     {
       "id": 21,
-      "start": 43.95,
+      "start": 43.97,
       "end": 44.43,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
@@ -888,7 +900,7 @@
     {
       "id": 22,
       "start": 44.91,
-      "end": 45.5,
+      "end": 45.47,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "你走吧",
@@ -1004,7 +1016,7 @@
     },
     {
       "id": 35,
-      "start": 69.94,
+      "start": 69.95,
       "end": 70.99,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
@@ -1086,11 +1098,11 @@
     {
       "id": 44,
       "start": 84.07,
-      "end": 85.82,
+      "end": 85.83,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "一是不想让公司上下知道",
-      "text_vi": "一是不想让公司上下知道"
+      "text_vi": "Đầu tiên là không muốn công ty biết"
     },
     {
       "id": 45,
@@ -1099,19 +1111,28 @@
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "夏氏靠陆氏撑腰",
-      "text_vi": "Lục thị giúp đỡ Hạ thị"
+      "text_vi": "Chí Phách phụng Lục Phách"
     },
     {
       "id": 46,
       "start": 87.83,
-      "end": 89.19,
+      "end": 88.74,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "免得人心浮动",
-      "text_vi": "Để tránh tâm trạng"
+      "text_vi": "Để tránh tâm lý dao động"
     },
     {
       "id": 47,
+      "start": 88.91,
+      "end": 89.19,
+      "speaker_id": "SPEAKER_00_M",
+      "gender": "male",
+      "src_text": "二",
+      "text_vi": "Để"
+    },
+    {
+      "id": 48,
       "start": 89.35,
       "end": 90.77,
       "speaker_id": "SPEAKER_00_M",
@@ -1120,67 +1141,67 @@
       "text_vi": "Đó cũng là một thử thách cho Minh"
     },
     {
-      "id": 48,
+      "id": 49,
       "start": 91.13,
       "end": 92.19,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "明瑶她不懂事",
-      "text_vi": "Mingyao không hiểu chuyện gì"
+      "text_vi": "Ming Yao không hiểu chuyện gì"
     },
     {
-      "id": 49,
+      "id": 50,
       "start": 92.95,
       "end": 93.96,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "不知道你的好",
-      "text_vi": "Đúng rồi, bạn tốt quá"
+      "text_vi": "Tôi không biết bạn tốt như thế nào"
     },
     {
-      "id": 50,
+      "id": 51,
       "start": 94.36,
       "end": 95.32,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "我作为当爸的",
-      "text_vi": "Tôi là cha của Mingyao"
-    },
-    {
-      "id": 51,
-      "start": 96.11,
-      "end": 97.29,
-      "speaker_id": "SPEAKER_01_M",
-      "gender": "female",
-      "src_text": "真的很感激你啊",
-      "text_vi": "Cảm ơn bạn thật nhiều"
+      "text_vi": "Tôi rất cảm ơn bạn"
     },
     {
       "id": 52,
+      "start": 96.11,
+      "end": 97.31,
+      "speaker_id": "SPEAKER_01_M",
+      "gender": "female",
+      "src_text": "真的很感激你啊",
+      "text_vi": "Tôi rất cảm ơn bạn."
+    },
+    {
+      "id": 53,
       "start": 97.55,
       "end": 98.1,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "不用",
-      "text_vi": "Không cần"
-    },
-    {
-      "id": 53,
-      "start": 101.24,
-      "end": 102.81,
-      "speaker_id": "SPEAKER_00_M",
-      "gender": "male",
-      "src_text": "我车钥匙落在餐厅了",
-      "text_vi": "Tôi sẽ đi lấy lại"
+      "text_vi": "Không cần đâu"
     },
     {
       "id": 54,
+      "start": 101.24,
+      "end": 102.79,
+      "speaker_id": "SPEAKER_00_M",
+      "gender": "male",
+      "src_text": "我车钥匙落在餐厅了",
+      "text_vi": "Xin lỗi, tôi quên chìa khóa ở nhà hàng rồi"
+    },
+    {
+      "id": 55,
       "start": 103.18,
       "end": 103.85,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "我回去拿一下",
-      "text_vi": "Tôi sẽ đi lấy"
+      "text_vi": "Tôi sẽ đi lấy chìa khóa"
     }
   ]
 }
