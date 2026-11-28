@@ -123,7 +123,9 @@ os.environ["USE_TORCH"] = "1"
 os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
+import importlib.util
 import gc
 import json
 import re
@@ -355,15 +357,14 @@ class GitHubSync:
 
 
 def _is_installed(pkg_name: str) -> bool:
-    try:
-        __import__(pkg_name)
-        return True
-    except Exception:
-        return False
+    return importlib.util.find_spec(pkg_name) is not None
 
 
 def ensure_deps():
-    """Cài các gói thiếu cho tách giọng, diarization và Qwen2.5-VL-3B."""
+    """Chỉ cài gói thật sự còn thiếu; cho phép bỏ qua qua SKIP_ENSURE_DEPS=1."""
+    if os.environ.get("SKIP_ENSURE_DEPS", "0").strip() == "1":
+        return
+
     wanted = [
         ("demucs", "demucs"),
         ("sphn", "sphn"),
@@ -381,9 +382,24 @@ def ensure_deps():
     missing = [pip_spec for mod_name, pip_spec in wanted if not _is_installed(mod_name)]
     if missing:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-q", "numpy>=1.26.4,<2.3.0", *missing],
+            [sys.executable, "-m", "pip", "install", "-q", "--no-deps", *missing],
             check=False,
         )
+
+
+def prefetch_qwen_model_async(model_id: str):
+    """Tải trước model Qwen về cache local song song khi Demucs tách nhạc."""
+    try:
+        from huggingface_hub import snapshot_download
+
+        cache_dir = os.environ.get("HUGGINGFACE_HUB_CACHE") or None
+        snapshot_download(
+            repo_id=model_id,
+            cache_dir=cache_dir,
+            local_files_only=False,
+        )
+    except Exception as e:
+        print(f"[PREFETCH][WARN] Không thể tải trước {model_id}: {e}", flush=True)
 
 
 def free_gpu():
@@ -1579,7 +1595,11 @@ def main():
     download_video_source(sync, JOB_ID, video_asset, video_path)
     extract_audio_16k(video_path, audio_16k)
 
-    vocals_wav, bgm_wav = separate_vocals_and_bgm(audio_16k, work_dir)
+    qwen_model_id = _get_qwen25_vl_config()["model_id"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_qwen = pool.submit(prefetch_qwen_model_async, qwen_model_id)
+        vocals_wav, bgm_wav = separate_vocals_and_bgm(audio_16k, work_dir)
+        fut_qwen.result()
     subtitle_roi, screen_texts, bbox_zip_path, duration, vad_intervals = run_ocr_with_qwen25_vl(
         video_path, work_dir, vocals_wav=vocals_wav
     )
