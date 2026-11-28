@@ -19,13 +19,15 @@ class GitHubSync:
         }
 
     def read_json(self, path: str) -> tuple[dict, str | None]:
-        url = f"{self.api_base}/contents/{path}"
+        url = f"{self.api_base}/contents/{str(path).lstrip('/')}"
         r = requests.get(url, headers=self.headers, params={"ref": self.state_branch}, timeout=30)
         if r.status_code == 404:
             return {}, None
         r.raise_for_status()
         data = r.json()
-        content = base64.b64decode(data["content"]).decode("utf-8")
+        content = base64.b64decode(data["content"]).decode("utf-8").strip()
+        if not content:
+            return {}, data.get("sha")
         return json.loads(content), data["sha"]
 
     def write_json(self, path: str, payload: dict, message: str, max_retries: int = 5):
@@ -70,6 +72,9 @@ class GitHubSync:
         return cr.json()
 
     def upload_asset(self, tag: str, file_path: str):
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            print(f"[WARN] upload_asset: thiếu file hoặc file 0 byte '{file_path}'")
+            return None
         release = self.ensure_release(tag)
         upload_url = release["upload_url"].split("{")[0]
         filename = os.path.basename(file_path)

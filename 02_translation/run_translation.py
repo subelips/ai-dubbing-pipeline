@@ -127,6 +127,9 @@ class GitHubSync:
         return cr.json()
 
     def upload_asset(self, tag: str, file_path: str):
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            print(f"[WARN] upload_asset: thiếu file hoặc file 0 byte '{file_path}'")
+            return None
         release = self.ensure_release(tag)
         upload_url = _clean_url_or_str(release["upload_url"].split("{")[0])
         filename = os.path.basename(file_path)

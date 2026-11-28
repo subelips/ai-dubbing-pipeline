@@ -229,8 +229,9 @@
     }
 
     function badgeClass(status = "") {
-      if (status === "COMPLETED") return "badge done";
-      if (status.includes("DONE") || status.includes("QUEUED")) return "badge wait";
+      const s = String(status || "").toUpperCase();
+      if (s === "COMPLETED" || s === "DONE" || s.endsWith("DONE")) return "badge done";
+      if (s === "QUEUED") return "badge wait";
       return "badge run";
     }
 

@@ -563,6 +563,10 @@ def extract_vad_intervals_and_timestamps(vocals_wav: str, duration: float) -> tu
         if not dedup_ts or (ts - dedup_ts[-1]) >= 0.20:
             dedup_ts.append(ts)
 
+    # Video im lặng / VAD không bắt được thoại: fallback lấy mẫu đều để OCR vẫn chạy được
+    if not dedup_ts:
+        dedup_ts = [round(float(t), 2) for t in np.arange(0.25, max(0.3, total_dur), 0.50)]
+
     print(
         f"[VAD-GUIDED OCR] Tìm thấy {len(merged)} khoảng thoại -> chọn {len(dedup_ts)} mốc khung hình tối ưu.",
         flush=True,

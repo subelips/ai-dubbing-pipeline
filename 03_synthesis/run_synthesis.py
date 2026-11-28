@@ -494,6 +494,7 @@ def _apply_gen_params_if_supported(kw: dict, param_names: set[str], tone: str):
         "top_k": 32,
         "top_p": 0.92,
         "repetition_penalty": 1.14,
+        "apply_watermark": False,
     }
     for k, v in gen_defaults.items():
         if k in param_names and k not in kw:
@@ -628,6 +629,11 @@ def _synthesize_single_line_vieneu_v3(
                     enc_params = set(inspect.signature(enc_fn).parameters.keys())
                 except Exception:
                     enc_params = set()
+                # Nếu API không nhận kwarg speaker_emb thì infer() sẽ bỏ qua ref
+                # và dùng voice mặc định, che khuất luôn candidate ref_audio clone
+                # thật -> chỉ thử đường speaker-emb khi signature hỗ trợ.
+                if param_names and "speaker_emb" not in param_names:
+                    continue
 
                 def _call_spk_emb_only(ef=enc_fn, ename=enc_name, eparams=enc_params):
                     cache_key = f"{ename}_no_codes:{ref_audio_path}"
