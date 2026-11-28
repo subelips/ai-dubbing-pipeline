@@ -61,6 +61,14 @@ def _patch_pyannote_ufunc_compat():
             return None
         return orig_setattr(obj, name, value)
 
+    hf_diag = _inspect_hf_cache_and_auth(model_id, hf_tok)
+    if hf_diag.get("hf_api_ok") is False:
+        print(
+            f"[WARN] HF API báo lỗi khi truy cập {model_id} (kiểm tra token hoặc chấp thuận điều khoản gated model trên HF): "
+            f"{hf_diag.get('hf_api_error')}",
+            flush=True,
+        )
+
     try:
         import numpy as np
         if not hasattr(np.ufunc, "__qualname__"):
@@ -486,15 +494,18 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
 
 def _get_dbnet_config() -> dict:
     return {
-        "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.35")),
+        "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.34")),
         "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.52")),
-        "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.50")),
+        "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.55")),
         "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "800")),
-        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.60")),
-        "step_sec": max(0.18, float(os.environ.get("OCR_STEP_SEC", "0.24"))),
-        "idle_jump_sec": max(0.45, float(os.environ.get("OCR_IDLE_JUMP_SEC", "0.65"))),
-        "active_jump_sec": max(0.25, float(os.environ.get("OCR_ACTIVE_JUMP_SEC", "0.35"))),
+        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.58")),
+        "step_sec": max(0.25, float(os.environ.get("OCR_STEP_SEC", "0.50"))),
+        "idle_jump_sec": max(0.60, float(os.environ.get("OCR_IDLE_JUMP_SEC", "1.00"))),
+        "active_jump_sec": max(0.35, float(os.environ.get("OCR_ACTIVE_JUMP_SEC", "0.50"))),
         "min_clean_chars": max(2, int(os.environ.get("OCR_MIN_CLEAN_CHARS", "2"))),
+        "edge_min_density": float(os.environ.get("OCR_EDGE_MIN_DENSITY", "0.028")),
+        "edge_diff_delta": float(os.environ.get("OCR_EDGE_DIFF_DELTA", "0.008")),
+        "use_clahe": os.environ.get("OCR_USE_CLAHE", "1").strip() == "1",
         "save_bbox_vis": os.environ.get("SAVE_BBOX_VIS", "0").strip() == "1",
         "use_cuda": os.environ.get("OCR_USE_CUDA", "1").strip() == "1",
     }
@@ -605,9 +616,23 @@ def is_valid_det(txt: str, pts: list, crop_w: int, crop_h: int) -> bool:
             return False
     return True
 
+def apply_clahe_if_enabled(img, enabled: bool):
+    if not enabled or img is None or img.size == 0:
+        return img
+    try:
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 4))
+        l_eq = clahe.apply(l_ch)
+        merged = cv2.merge((l_eq, a_ch, b_ch))
+        return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+    except Exception:
+        return img
+
 def run_one(engine, crop):
     crop_h, crop_w = crop.shape[:2]
-    padded_crop = pad_to_multiple_of_32(crop)
+    enhanced = apply_clahe_if_enabled(crop, bool(cfg.get("use_clahe", True)))
+    padded_crop = pad_to_multiple_of_32(enhanced)
     res = engine(padded_crop)
     boxes = getattr(res, "boxes", None)
     txts = getattr(res, "txts", None)
@@ -769,11 +794,15 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
         idle_jump_sec = db_cfg["idle_jump_sec"]
         step_frames = max(1, int(round(step_sec * fps)))
 
-        # Đọc tuần tự bằng cap.read() (không seek POS_MSEC) để không trượt keyframe với phụ đề chớp nhoáng
+        # Giữ step_sec (mặc định 0.50s), đọc tuần tự và lọc theo mật độ cạnh chữ (Sobel) + chênh lệch cạnh
         sampled_entries = []
         frame_idx = 0
         idx_s = 0
-        prev_sub_band = None
+        prev_edge_mask = None
+        prev_edge_density = 0.0
+        edge_min_density = float(db_cfg.get("edge_min_density", 0.028))
+        edge_diff_delta = float(db_cfg.get("edge_diff_delta", 0.008))
+
         while True:
             ok, frm = cap.read()
             if not ok or frm is None:
@@ -784,17 +813,33 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                 crp = frm[int(fh * roi["y1"]) : int(fh * roi["y2"]), int(fw * roi["x1"]) : int(fw * roi["x2"])]
                 if crp.size > 0:
                     ch_h = crp.shape[0]
-                    # Chỉ so trùng trên dải chữ phụ đề chính (65% nửa dưới crop) với ngưỡng thấp 0.45
-                    sub_band = crp[int(ch_h * 0.35) :, :]
-                    sub_small = cv2.resize(sub_band, (192, 40), interpolation=cv2.INTER_AREA)
-                    sub_gray = cv2.cvtColor(sub_small, cv2.COLOR_BGR2GRAY)
-                    is_near_dup = False
-                    if prev_sub_band is not None:
-                        diff_mean = float(cv2.absdiff(sub_gray, prev_sub_band).mean())
-                        if diff_mean < 0.45:
-                            is_near_dup = True
-                    prev_sub_band = sub_gray
-                    if not is_near_dup:
+                    sub_band = crp[int(ch_h * 0.25) :, :]
+                    gray_band = cv2.cvtColor(sub_band, cv2.COLOR_BGR2GRAY)
+                    if db_cfg.get("use_clahe", True):
+                        clahe_s = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 4))
+                        gray_band = clahe_s.apply(gray_band)
+
+                    gx = cv2.Sobel(gray_band, cv2.CV_32F, 1, 0, ksize=3)
+                    gy = cv2.Sobel(gray_band, cv2.CV_32F, 0, 1, ksize=3)
+                    grad_mag = cv2.magnitude(gx, gy)
+                    edge_mask = (grad_mag >= 75.0).astype("uint8")
+                    edge_density = float(edge_mask.mean())
+
+                    should_ocr = False
+                    if edge_density >= edge_min_density:
+                        if prev_edge_mask is None:
+                            should_ocr = True
+                        else:
+                            # Tỷ lệ pixel cạnh thay đổi (xuất hiện chữ mới hoặc đổi phụ đề)
+                            changed_ratio = float(cv2.bitwise_xor(edge_mask, prev_edge_mask).mean())
+                            density_jump = abs(edge_density - prev_edge_density)
+                            if changed_ratio >= 0.015 or density_jump >= edge_diff_delta:
+                                should_ocr = True
+
+                    prev_edge_mask = edge_mask
+                    prev_edge_density = edge_density
+
+                    if should_ocr:
                         cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{cur_t:.2f}s.jpg")
                         cv2.imwrite(cp, crp)
                         sampled_entries.append({"time": cur_t, "crop_path": cp})
@@ -1016,6 +1061,61 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
     return pitch_med, cent_med
 
 
+
+def _inspect_hf_cache_and_auth(model_id: str, hf_tok: str) -> dict:
+    """Kiểm tra thư mục cache Hugging Face cục bộ và trạng thái truy cập model pyannote."""
+    hf_home = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
+    hub_dir = os.path.join(hf_home, "hub")
+    repo_folder = "models--" + model_id.replace("/", "--")
+    model_cache_dir = os.path.join(hub_dir, repo_folder)
+
+    cached_files = []
+    total_bytes = 0
+    if os.path.isdir(model_cache_dir):
+        for root, _, files in os.walk(model_cache_dir):
+            for fn in files:
+                fp = os.path.join(root, fn)
+                try:
+                    sz = os.path.getsize(fp)
+                except Exception:
+                    sz = 0
+                total_bytes += sz
+                cached_files.append(f"{os.path.relpath(fp, model_cache_dir)} ({sz}B)")
+
+    info = {
+        "hf_home": hf_home,
+        "model_id": model_id,
+        "token_present": bool(hf_tok),
+        "cache_dir_exists": os.path.isdir(model_cache_dir),
+        "cache_total_bytes": total_bytes,
+        "cached_files_count": len(cached_files),
+        "cached_files_sample": cached_files[:15],
+    }
+
+    # Thử kiểm tra metadata model qua huggingface_hub nếu có
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi(token=hf_tok or None)
+        m_info = api.model_info(model_id, token=hf_tok or None)
+        info["hf_api_ok"] = True
+        info["hf_gated"] = bool(getattr(m_info, "gated", False))
+        info["hf_sha"] = getattr(m_info, "sha", "")
+        info["hf_siblings"] = [s.rfilename for s in (getattr(m_info, "siblings", None) or [])][:15]
+    except Exception as e:
+        info["hf_api_ok"] = False
+        info["hf_api_error"] = f"{type(e).__name__}: {e}"
+
+    print(
+        f"[HF-DIAG] model={model_id} token={info['token_present']} cache_exists={info['cache_dir_exists']} "
+        f"bytes={info['cache_total_bytes']} files={info['cached_files_count']} "
+        f"hf_api_ok={info.get('hf_api_ok')} gated={info.get('hf_gated')} err={info.get('hf_api_error', '')}",
+        flush=True,
+    )
+    if cached_files:
+        print(f"[HF-DIAG] Cache files: {cached_files[:10]}", flush=True)
+    return info
+
+
 def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: int, work_dir: str) -> dict | None:
     hf_tok = _clean_url_or_str(
         os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN
@@ -1168,7 +1268,9 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
         )
         return speaker_refs
     except Exception as e:
-        print(f"[WARN] pyannote.audio lỗi ({e}), chuyển sang VAD/pitch dự phòng.")
+        tb_full = traceback.format_exc()[-2000:]
+        print(f"[WARN] pyannote.audio lỗi ({e}), chuyển sang VAD/pitch dự phòng.
+{tb_full}", flush=True)
         free_gpu()
         return None
 
