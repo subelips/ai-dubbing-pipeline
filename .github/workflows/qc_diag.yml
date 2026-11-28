@@ -18,70 +18,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cài đặt Kaggle CLI
-        run: pip install -q --upgrade kaggle
-
-      - name: Dump trạng thái kernel/session/quota
+      - name: Probe Kaggle internal API (GetKernel raw)
         env:
           P_USER: ${{ secrets.PERCEPTION_KAGGLE_USER }}
           P_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
-          T_USER: ${{ secrets.TRANSLATION_KAGGLE_USER }}
-          T_KEY: ${{ secrets.TRANSLATION_KAGGLE_KEY }}
-          S_USER: ${{ secrets.SYNTHESIS_KAGGLE_USER }}
-          S_KEY: ${{ secrets.SYNTHESIS_KAGGLE_KEY }}
         run: |
           python3 - << 'PY'
           import json, os
           import requests
 
-          accounts = [
-              ("perception", (os.environ.get("P_USER") or "").strip(), (os.environ.get("P_KEY") or "").strip(), "dubbing-perception"),
-              ("translation", (os.environ.get("T_USER") or "").strip(), (os.environ.get("T_KEY") or "").strip(), "dubbing-translation"),
-              ("synthesis", (os.environ.get("S_USER") or "").strip(), (os.environ.get("S_KEY") or "").strip(), "dubbing-synthesis"),
-          ]
-          base = "https://www.kaggle.com/api/v1"
-
-          for name, user, key, slug in accounts:
-              print("\n" + "=" * 25, name, user, "/", slug)
-              if not user or not key:
-                  print("missing creds")
-                  continue
-              if not key.startswith("KGAT"):
-                  print("key is NOT KGAT-style; legacy key detected (len=%d)" % len(key))
-              s = requests.Session()
-              s.headers.update({
-                  "Authorization": f"Bearer {key}",
-                  "User-Agent": "kaggle-api/v2.2.5",
-                  "Accept": "application/json",
-              })
-              try:
-                  r = s.get(f"{base}/kernels/status", params={"userName": user, "kernelSlug": slug}, timeout=30)
-                  print("STATUS http", r.status_code)
-                  print(r.text[:2000])
-              except Exception as e:
-                  print("status err", e)
-
-              try:
-                  r = s.get(f"{base}/kernels/list", params={"group": "profile", "pageSize": 20}, timeout=30)
-                  print("LIST http", r.status_code)
-                  print(r.text[:2500])
-              except Exception as e:
-                  print("list err", e)
-
-          print("\n" + "=" * 25, "PROBE session endpoints (perception)")
-          _, user, key, slug = accounts[0]
+          user = (os.environ.get("P_USER") or "").strip()
+          key = (os.environ.get("P_KEY") or "").strip()
           s = requests.Session()
-          s.headers.update({"Authorization": f"Bearer {key}", "Accept": "application/json"})
-          for path in (
-              "/kernels/sessions",
-              "/kernels/sessions/list",
-              "/kernels/active-sessions",
-              "/kernels/session",
-              "/kernels/quota",
-          ):
-              try:
-                  r = s.get(base + path, params={"userName": user, "kernelSlug": slug}, timeout=20)
-                  print(path, "->", r.status_code, r.text[:300].replace("\n", " "))
-              except Exception as e:
-                  print(path, "err", e)
+          s.headers.update({
+              "Authorization": f"Bearer {key}",
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+              "User-Agent": "kaggle-api/v2.2.5",
+          })
+          api = "https://api.kaggle.com/v1/kernels.KernelsApiService"
+
+          def call(method, body):
+              r = s.post(f"{api}/{method}", json=body, timeout=30)
+              print(f"--- {method}: http {r.status_code}")
+              print(r.text[:6000])
+              print()
+
+          call("GetKernel", {"userName": user, "kernelSlug": "dubbing-perception"})
+          call("GetKernelSessionStatus", {"userName": user, "kernelSlug": "dubbing-perception"})
+          call("ListKernelSessionOutput", {"userName": user, "kernelSlug": "dubbing-perception", "pageSize": 5})
           PY
