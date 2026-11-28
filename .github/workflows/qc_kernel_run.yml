@@ -2,7 +2,8 @@ name: QC Kernel Runner (temp)
 
 # Workflow tạm: đẩy kernel lên Kaggle, nếu kẹt QUEUED thì đẩy lại ngay (không chờ),
 # lặp vài lần; sau khi RUNNING thì theo dõi tới COMPLETE/ERROR.
-# Có thể chọn account Kaggle dùng để chạy (mặc định perception) và slug kernel riêng.
+# Có thể chọn account Kaggle, slug kernel riêng và xoá kernel trước khi đẩy (recreate)
+# để giải phóng session queued.
 
 on:
   workflow_dispatch:
@@ -23,6 +24,10 @@ on:
         description: "Slug kernel (để trống = slug mặc định của stage)"
         required: false
         default: ""
+      recreate:
+        description: "Xoá kernel trước khi đẩy? (true/false)"
+        required: false
+        default: "false"
       max_attempts:
         description: "Số lần đẩy lại tối đa nếu kernel bị QUEUED"
         required: false
@@ -60,6 +65,7 @@ jobs:
           STAGE: ${{ inputs.stage }}
           CRED_ACCOUNT: ${{ inputs.cred_account }}
           KERNEL_SLUG: ${{ inputs.kernel_slug }}
+          RECREATE: ${{ inputs.recreate }}
           MAX_ATTEMPTS: ${{ inputs.max_attempts }}
           RUN_TIMEOUT_MIN: ${{ inputs.run_timeout_min }}
           PERCEPTION_KAGGLE_USER: ${{ secrets.PERCEPTION_KAGGLE_USER }}
@@ -77,6 +83,7 @@ jobs:
           acct = (os.environ.get("CRED_ACCOUNT") or "perception").strip().lower()
           max_attempts = max(1, int(os.environ.get("MAX_ATTEMPTS", "6")))
           run_timeout_min = max(5, int(os.environ.get("RUN_TIMEOUT_MIN", "90")))
+          recreate = (os.environ.get("RECREATE") or "false").strip().lower() in ("1", "true", "yes")
 
           stage_map = {
               "stage1": ("01_perception/run_perception.py", "dubbing-perception"),
@@ -155,10 +162,19 @@ jobs:
           api.authenticate()
 
           slug = f"{k_user}/{slug_suffix}"
-          print(f"[INFO] Kernel: {slug} | job={job_id} | stage={stage} | cred_account={acct}", flush=True)
+          print(f"[INFO] Kernel: {slug} | job={job_id} | stage={stage} | cred_account={acct} | recreate={recreate}", flush=True)
 
           q = subprocess.run(["kaggle", "quota"], env=sub_env, capture_output=True, text=True)
           print((q.stdout or "").strip()[:800], flush=True)
+
+          if recreate:
+              print(f"[INFO] Xoá kernel {slug} để giải phóng session...", flush=True)
+              try:
+                  api.kernels_delete(slug, no_confirm=True)
+                  print("[INFO] Đã xoá kernel.", flush=True)
+              except Exception as e:
+                  print(f"[WARN] Xoá kernel lỗi: {e}", flush=True)
+              time.sleep(5)
 
           status = "UNKNOWN"
           for attempt in range(1, max_attempts + 1):
@@ -172,18 +188,19 @@ jobs:
               if res.stderr.strip():
                   print("[stderr]", res.stderr.strip(), flush=True)
               if res.returncode != 0:
-                  # Lỗi push (kể cả khi bị chặn do session cũ) vẫn đọc status rồi thử lại.
                   print(f"[WARN] push trả code {res.returncode} — vẫn kiểm tra status", flush=True)
 
-              # KHÔNG chờ lâu: QUEUED ở đây không tự chuyển RUNNING.
-              time.sleep(25)
-              try:
-                  status = api.kernels_status(slug).status.name
-              except Exception as e:
-                  print(f"[WARN] Không đọc được status: {e}", flush=True)
-                  status = "UNKNOWN"
-              print(f"[INFO] attempt {attempt}: status={status}", flush=True)
-
+              # KHÔNG chờ lâu: QUEUED thường không tự chuyển RUNNING.
+              for _ in range(3):
+                  time.sleep(20)
+                  try:
+                      status = api.kernels_status(slug).status.name
+                  except Exception as e:
+                      print(f"[WARN] Không đọc được status: {e}", flush=True)
+                      status = "UNKNOWN"
+                  print(f"[INFO] attempt {attempt}: status={status}", flush=True)
+                  if status != "QUEUED":
+                      break
               if status != "QUEUED":
                   break
 
