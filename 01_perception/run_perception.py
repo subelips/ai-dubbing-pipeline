@@ -55,6 +55,14 @@ def _patch_pyannote_ufunc_compat():
 
     try:
         import numpy as np
+        for _mod_attr in ("_core", "core"):
+            _sub = getattr(np, _mod_attr, None)
+            _umath = getattr(_sub, "_multiarray_umath", None) if _sub is not None else None
+            if _umath is not None and not hasattr(_umath, "_blas_supports_fpe"):
+                try:
+                    setattr(_umath, "_blas_supports_fpe", lambda *a, **kw: False)
+                except Exception:
+                    pass
         if not hasattr(np.ufunc, "__qualname__"):
             try:
                 type.__setattr__(np.ufunc, "__qualname__", "ufunc")
@@ -312,7 +320,7 @@ def ensure_deps():
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
     if missing:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-q", *missing],
+            [sys.executable, "-m", "pip", "install", "-q", "numpy>=1.26.4,<2.3.0", *missing],
             check=False,
         )
 
