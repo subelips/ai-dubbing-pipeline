@@ -724,10 +724,10 @@ def _merge_dual_ocr(qwen_text: str, rapid_text: str, rapid_score: float = 0.0) -
     if nq == nr:
         # cùng nội dung: chọn bản ít khoảng trắng/dấu câu thừa hơn
         return (q if len(q.replace(" ", "")) <= len(r.replace(" ", "")) else r, "both")
-    if nq and nr and nq in nr:
-        return (r, "rapid")
-    if nq and nr and nr in nq:
-        return (q, "qwen")
+    if nq and nr and (nq in nr or nr in nq):
+        # chỉ coi là "sót ký tự" khi độ dài tương đương; lệch quá nhiều là bịa thêm chữ
+        if min(len(nq), len(nr)) / float(max(len(nq), len(nr))) >= 0.6:
+            return (r, "rapid") if nq in nr else (q, "qwen")
     sim = SequenceMatcher(None, nq, nr).ratio()
     if sim >= 0.80 and len(nq) != len(nr):
         # lệch độ dài nhưng vẫn gần nhau: bản dài thường không bị sót ký tự
@@ -754,6 +754,8 @@ def _run_rapidocr_all(sampled_entries: list[dict], cv2_mod) -> dict:
             img = cv2_mod.imread(entry["crop_path"])
             if img is None or img.size == 0:
                 continue
+            if img.shape[1] > 720:
+                img = cv2_mod.resize(img, (720, max(1, int(img.shape[0] * 720 / img.shape[1]))))
             res, _ = fb(img)
             texts = [_fix_ocr_confusions(str(r[1]).strip()) for r in (res or []) if str(r[1]).strip()]
             score = float(sum(float(r[2]) for r in (res or [])) / len(res)) if res else 0.0
@@ -867,18 +869,6 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
     try:
         target_dev = next(model.parameters()).device
 
-        # RapidOCR (ONNX, CPU) chạy song song với Qwen (GPU) trên toàn bộ khung
-        rapid_map: dict = {}
-
-        def _rapid_worker():
-            try:
-                rapid_map.update(_run_rapidocr_all(sampled_entries, cv2_mod))
-            except Exception as e_r:
-                print(f"[RAPIDOCR][WARN] {e_r}", flush=True)
-
-        th_rapid = threading.Thread(target=_rapid_worker, daemon=True)
-        th_rapid.start()
-
         # Đọc ảnh theo từng batch để tiết kiệm RAM CPU trên video dài
         for b_start in range(0, len(sampled_entries), batch_size):
             raw_chunk = sampled_entries[b_start : b_start + batch_size]
@@ -946,11 +936,14 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                     except Exception:
                         raw_ocr_map[ts_c] = {"boxes": [], "visual_speaker": "unknown"}
 
-        # Chờ RapidOCR xong rồi hợp nhất 2 engine + chặn hallucination
+        # Chạy RapidOCR (ONNX, CPU) trên toàn bộ khung rồi hợp nhất 2 engine
+        rapid_map: dict = {}
         try:
-            th_rapid.join(timeout=900)
-        except Exception:
-            pass
+            t_r0 = time.time()
+            rapid_map.update(_run_rapidocr_all(sampled_entries, cv2_mod))
+            print(f"[RAPIDOCR] {len(rapid_map)} khung trong {time.time() - t_r0:.1f}s", flush=True)
+        except Exception as e_r:
+            print(f"[RAPIDOCR][WARN] {e_r}", flush=True)
 
         fixed = 0
         dropped = 0
@@ -1399,11 +1392,11 @@ def _find_enclosing_vad(ts: float, vad_intervals: list[list[float]]) -> tuple[fl
 
 
 def _find_subtitle_event(ts: float, events: list[dict]) -> dict | None:
-    """Tìm sự kiện phụ đề chứa mốc ts (hoặc gần nhất trong 0.45s)."""
+    """Tìm sự kiện phụ đề chứa mốc ts; nếu không có thì lấy sự kiện gần nhất trong 0.45s."""
     best = None
     best_dist = 1e9
     for ev in events or []:
-        if (ev["start"] - 0.25) <= ts <= (ev["end"] + 0.25):
+        if ev["start"] <= ts <= ev["end"]:
             return ev
         dist = min(abs(ts - ev["start"]), abs(ts - ev["end"]))
         if dist < best_dist and dist <= 0.45:
