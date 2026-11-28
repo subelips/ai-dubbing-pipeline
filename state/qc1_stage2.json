@@ -7,7 +7,7 @@
     "SPEAKER_00_M": {
       "ref_asset": "ref_speaker_SPEAKER_00_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 113.1,
+      "pitch_hz": 115.4,
       "segments_count": 32,
       "pyannote_label": "SPEAKER_01",
       "gender": "male"
@@ -15,7 +15,7 @@
     "SPEAKER_01_M": {
       "ref_asset": "ref_speaker_SPEAKER_01_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 188.7,
+      "pitch_hz": 186.3,
       "segments_count": 23,
       "pyannote_label": "SPEAKER_00",
       "gender": "female"
@@ -172,7 +172,7 @@
     {
       "id": 12,
       "start": 31.06,
-      "end": 32.52,
+      "end": 32.5,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "所以我每天四点起",
@@ -184,7 +184,7 @@
     {
       "id": 13,
       "start": 32.98,
-      "end": 35.28,
+      "end": 35.26,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "她做最健康卫生的三餐",
@@ -268,7 +268,7 @@
     {
       "id": 20,
       "start": 42.72,
-      "end": 43.55,
+      "end": 43.56,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "沉浸了十五分钟",
@@ -447,7 +447,7 @@
     },
     {
       "id": 35,
-      "start": 69.94,
+      "start": 69.95,
       "end": 70.99,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
@@ -472,7 +472,7 @@
     {
       "id": 37,
       "start": 73.39,
-      "end": 74.39,
+      "end": 74.4,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "我们夏氏集团",
@@ -798,7 +798,7 @@
     {
       "id": 12,
       "start": 31.06,
-      "end": 32.52,
+      "end": 32.5,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "所以我每天四点起",
@@ -807,7 +807,7 @@
     {
       "id": 13,
       "start": 32.98,
-      "end": 35.28,
+      "end": 35.26,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "她做最健康卫生的三餐",
@@ -870,7 +870,7 @@
     {
       "id": 20,
       "start": 42.72,
-      "end": 43.55,
+      "end": 43.56,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "沉浸了十五分钟",
@@ -1004,7 +1004,7 @@
     },
     {
       "id": 35,
-      "start": 69.94,
+      "start": 69.95,
       "end": 70.99,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
@@ -1023,7 +1023,7 @@
     {
       "id": 37,
       "start": 73.39,
-      "end": 74.39,
+      "end": 74.4,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "我们夏氏集团",
