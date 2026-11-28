@@ -35,6 +35,10 @@ def _safe_update_wrapper(
     return wrapper
 
 
+try:
+    _orig_update_wrapper.__code__ = _safe_update_wrapper.__code__
+except Exception:
+    pass
 functools.update_wrapper = _safe_update_wrapper
 functools.wraps = (
     lambda wrapped, assigned=functools.WRAPPER_ASSIGNMENTS, updated=functools.WRAPPER_UPDATES: functools.partial(
@@ -421,14 +425,14 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
 
 def _get_dbnet_config() -> dict:
     return {
-        "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.34")),
-        "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.55")),
-        "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.55")),
-        "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "768")),
-        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.62")),
-        "step_sec": max(0.35, float(os.environ.get("OCR_STEP_SEC", "0.50"))),
-        "idle_jump_sec": max(1.0, float(os.environ.get("OCR_IDLE_JUMP_SEC", "1.40"))),
-        "active_jump_sec": max(0.45, float(os.environ.get("OCR_ACTIVE_JUMP_SEC", "0.70"))),
+        "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.35")),
+        "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.58")),
+        "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.50")),
+        "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "800")),
+        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.70")),
+        "step_sec": max(0.20, float(os.environ.get("OCR_STEP_SEC", "0.28"))),
+        "idle_jump_sec": max(0.45, float(os.environ.get("OCR_IDLE_JUMP_SEC", "0.65"))),
+        "active_jump_sec": max(0.25, float(os.environ.get("OCR_ACTIVE_JUMP_SEC", "0.35"))),
         "min_clean_chars": max(2, int(os.environ.get("OCR_MIN_CLEAN_CHARS", "2"))),
         "save_bbox_vis": os.environ.get("SAVE_BBOX_VIS", "0").strip() == "1",
         "use_cuda": os.environ.get("OCR_USE_CUDA", "1").strip() == "1",
@@ -577,14 +581,19 @@ def run_one(engine, crop):
                         pts.append([px, py])
             except Exception:
                 pts = []
-        # Lọc box quá nhỏ hoặc không nằm ở vùng phụ đề ngang (chiều cao box quá bé < 10px dễ là nhiễu hạt)
         if len(pts) >= 4:
             xs = [p[0] for p in pts]
             ys = [p[1] for p in pts]
             bh = max(ys) - min(ys)
             bw = max(xs) - min(xs)
-            if bh < 10 or bw < 16:
+            if bh < 11 or bw < 18:
                 continue
+            # Loại box nằm sát mép đáy/đỉnh crop (dễ là viền khung hình hoặc logo góc)
+            if min(ys) <= 2 or max(ys) >= crop_h - 2:
+                continue
+        # Loại chuỗi chỉ gồm 2 ký tự ASCII ngẫu nhiên khi score chưa đủ cao (< 0.80)
+        if clean_chars.isascii() and len(clean_chars) <= 2 and sc < 0.80:
+            continue
         if is_valid_det(txt, pts, crop_w, crop_h):
             dets.append({"poly": pts, "text": txt, "score": round(sc, 3)})
     return dets
@@ -715,7 +724,7 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                     is_near_dup = False
                     if prev_crp_gray is not None:
                         diff_mean = float(cv2.absdiff(crp_gray, prev_crp_gray).mean())
-                        if diff_mean < 2.5:
+                        if diff_mean < 1.2:
                             is_near_dup = True
                     prev_crp_gray = crp_gray
                     if not is_near_dup:
@@ -821,9 +830,9 @@ def _is_same_subtitle(t1: str, t2: str) -> bool:
     return SequenceMatcher(None, s1, s2).ratio() >= 0.90
 
 
-def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 0.35) -> list[dict]:
+def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 0.28) -> list[dict]:
     grouped: list[dict] = []
-    max_merge_gap = max(0.85, step_sec * 1.9)
+    max_merge_gap = max(1.20, step_sec * 4.5)
 
     for item in sorted(screen_texts, key=lambda x: float(x.get("time", 0.0))):
         ts = float(item.get("time", 0.0))
@@ -833,20 +842,26 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
         if not joined or len(clean_joined) < 2:
             continue
 
-        if (
-            grouped
-            and _is_same_subtitle(grouped[-1]["ocr_text"], joined)
-            and (ts - grouped[-1]["_last_ts"]) <= max_merge_gap
-        ):
-            if len(joined) > len(grouped[-1]["ocr_text"]):
-                grouped[-1]["ocr_text"] = joined
-                grouped[-1]["best_text"] = joined
-            grouped[-1]["_last_ts"] = ts
-            grouped[-1]["end"] = round(min(duration, ts + step_sec * 0.5), 2)
+        # Tìm trong vài segment gần nhất nếu cùng phụ đề hoặc một vế mở rộng của câu trước
+        merged_into_idx = -1
+        for back_i in range(len(grouped) - 1, max(-1, len(grouped) - 3), -1):
+            prev_g = grouped[back_i]
+            if (ts - prev_g["_last_ts"]) <= max_merge_gap and _is_same_subtitle(prev_g["ocr_text"], joined):
+                merged_into_idx = back_i
+                break
+
+        if merged_into_idx >= 0:
+            target_g = grouped[merged_into_idx]
+            if len(clean_joined) > len(re.sub(r"[\s\W_]+", "", target_g["ocr_text"], flags=re.UNICODE)):
+                target_g["ocr_text"] = joined
+                target_g["best_text"] = joined
+            target_g["_last_ts"] = max(target_g["_last_ts"], ts)
+            target_g["end"] = round(min(duration, max(target_g["end"], ts + step_sec * 0.65)), 2)
             continue
 
-        start_t = round(max(0.0, ts - step_sec * 0.45), 2)
-        end_t = round(min(duration, max(start_t + 0.30, ts + step_sec * 0.5)), 2)
+        # Phụ đề ngắn chớp nhoáng vẫn giữ tối thiểu 0.35s để không bị mất ở các bước sau
+        start_t = round(max(0.0, ts - step_sec * 0.5), 2)
+        end_t = round(min(duration, max(start_t + 0.35, ts + step_sec * 0.65)), 2)
         grouped.append(
             {
                 "id": len(grouped),
@@ -866,13 +881,27 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
             }
         )
 
-    for idx, g in enumerate(grouped):
-        g["id"] = idx
+    # Khử lặp lần 2: nếu đoạn ngắn (< 0.7s) nằm sát đoạn liền kề (< 1.2s) có nội dung tương đồng/bao hàm thì gộp/bỏ lặp
+    deduped: list[dict] = []
+    for g in grouped:
         g.pop("_last_ts", None)
-        if idx + 1 < len(grouped) and grouped[idx]["end"] > grouped[idx + 1]["start"] - 0.03:
-            grouped[idx]["end"] = round(max(grouped[idx]["start"] + 0.20, grouped[idx + 1]["start"] - 0.03), 2)
+        if deduped:
+            prev = deduped[-1]
+            gap = float(g["start"]) - float(prev["end"])
+            if gap <= 1.25 and _is_same_subtitle(prev["best_text"], g["best_text"]):
+                if len(g["best_text"]) > len(prev["best_text"]):
+                    prev["ocr_text"] = g["ocr_text"]
+                    prev["best_text"] = g["best_text"]
+                prev["end"] = round(min(duration, max(prev["end"], g["end"])), 2)
+                continue
+        deduped.append(g)
 
-    return grouped
+    for idx, g in enumerate(deduped):
+        g["id"] = idx
+        if idx + 1 < len(deduped) and deduped[idx]["end"] > deduped[idx + 1]["start"] - 0.03:
+            deduped[idx]["end"] = round(max(deduped[idx]["start"] + 0.25, deduped[idx + 1]["start"] - 0.03), 2)
+
+    return deduped
 
 
 def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
