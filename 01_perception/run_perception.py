@@ -61,7 +61,6 @@ def _patch_pyannote_ufunc_compat():
             return None
         return orig_setattr(obj, name, value)
 
-    hf_diag = _inspect_hf_cache_and_auth(model_id, hf_tok)
     if hf_diag.get("hf_api_ok") is False:
         print(
             f"[WARN] HF API báo lỗi khi truy cập {model_id} (kiểm tra token hoặc chấp thuận điều khoản gated model trên HF): "
@@ -1269,8 +1268,7 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
         return speaker_refs
     except Exception as e:
         tb_full = traceback.format_exc()[-2000:]
-        print(f"[WARN] pyannote.audio lỗi ({e}), chuyển sang VAD/pitch dự phòng.
-{tb_full}", flush=True)
+        print(f"[WARN] pyannote.audio lỗi ({e}), chuyển sang VAD/pitch dự phòng.\n{tb_full}", flush=True)
         free_gpu()
         return None
 
