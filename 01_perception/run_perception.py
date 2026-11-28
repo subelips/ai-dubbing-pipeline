@@ -808,18 +808,18 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
             ts_r = float(entry["time"])
             res_r = raw_ocr_map.get(ts_r) or {}
             txt_r = " ".join(str(b.get("text") or "") for b in (res_r.get("boxes") or []))
-            if entry.get("alt_path") and _is_garbage_text(txt_r):
+            if entry.get("event") and entry.get("alt_path") and _is_garbage_text(txt_r):
                 retry_items.append(entry)
 
         if retry_items:
-            print(f"[QWEN2.5-VL-3B] Retry {len(retry_items)} khung OCR rác ở độ phân giải cao hơn...", flush=True)
+            print(f"[QWEN2.5-VL-3B] Retry {len(retry_items)} khung OCR rác (prompt chữ-only)...", flush=True)
             try:
                 if img_proc is not None and hasattr(img_proc, "max_pixels"):
-                    img_proc.max_pixels = 512 * 28 * 28
+                    img_proc.max_pixels = 384 * 28 * 28
             except Exception:
                 pass
-            for entry in retry_items[:12]:
-                for cand_path in (entry.get("crop_path"), entry.get("alt_path")):
+            for entry in retry_items[:10]:
+                for cand_path in (entry.get("crop_path"), entry.get("alt2_path"), entry.get("alt_path")):
                     if not cand_path:
                         continue
                     try:
@@ -828,7 +828,41 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                             continue
                         rgb_r = cv2_mod.cvtColor(bgr_r, cv2_mod.COLOR_BGR2RGB)
                         im_r = Image.fromarray(rgb_r)
-                        chat_r = _build_chat_str(im_r)
+                        try:
+                            chat_r = processor.apply_chat_template(
+                                [
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "image", "image": im_r},
+                                            {
+                                                "type": "text",
+                                                "text": "Đọc chính xác dòng chữ phụ đề trong ảnh. Chỉ trả về đúng nội dung chữ, không giải thích, không thêm nhãn.",
+                                            },
+                                        ],
+                                    }
+                                ],
+                                tokenize=False,
+                                add_generation_prompt=True,
+                                enable_thinking=False,
+                            )
+                        except TypeError:
+                            chat_r = processor.apply_chat_template(
+                                [
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "image", "image": im_r},
+                                            {
+                                                "type": "text",
+                                                "text": "Đọc chính xác dòng chữ phụ đề trong ảnh. Chỉ trả về đúng nội dung chữ, không giải thích, không thêm nhãn.",
+                                            },
+                                        ],
+                                    }
+                                ],
+                                tokenize=False,
+                                add_generation_prompt=True,
+                            )
                         inp_r = processor(text=[chat_r], images=[im_r], padding=True, return_tensors="pt")
                         inp_r = {k: (v.to(target_dev) if hasattr(v, "to") else v) for k, v in inp_r.items()}
                         with torch.inference_mode():
@@ -837,11 +871,12 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                         dec_r = processor.batch_decode(
                             [g_r[0][l_r:]], skip_special_tokens=True, clean_up_tokenization_spaces=False
                         )
-                        lines_r, v_spk_r = _parse_qwen_ocr_and_speaker(dec_r[0] if dec_r else "")
-                        if lines_r and not _is_garbage_text(" ".join(lines_r)):
+                        raw_r = (dec_r[0] if dec_r else "").strip()
+                        raw_r = re.sub(r"^(?:TEXT|SUBTITLE|OCR)\s*[:=]\s*", "", raw_r, flags=re.IGNORECASE).strip().strip('"').strip("'")
+                        if raw_r and "\n" not in raw_r and not _is_garbage_text(raw_r):
                             raw_ocr_map[float(entry["time"])] = {
-                                "boxes": [{"poly": [], "text": x, "score": 1.0} for x in lines_r],
-                                "visual_speaker": v_spk_r,
+                                "boxes": [{"poly": [], "text": raw_r, "score": 1.0}],
+                                "visual_speaker": "unknown",
                             }
                             break
                     except Exception as e_r:
@@ -907,22 +942,29 @@ def detect_subtitle_events(video_path: str, roi: dict, sample_fps: float = 10.0)
 
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok or frame is None:
+            # grab() rẻ hơn read() vì bỏ qua decode các khung không lấy mẫu
+            if not cap.grab():
                 break
             if idx % step == 0:
+                ok, frame = cap.retrieve()
+                if not ok or frame is None:
+                    idx += 1
+                    continue
                 h, w, _ = frame.shape
                 band = frame[int(h * roi["y1"]) : int(h * roi["y2"]), int(w * roi["x1"]) : int(w * roi["x2"])]
                 if band.size == 0:
                     idx += 1
                     continue
+                # Thu nhỏ để threshold nhanh hơn ~4 lần, không ảnh hưởng độ chính xác mask
+                if band.shape[1] > 720:
+                    band = cv2.resize(band, (720, max(1, int(band.shape[0] * 720 / band.shape[1]))))
                 hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
                 v = hsv[:, :, 2]
                 s = hsv[:, :, 1]
                 white = (v > 195) & (s < 70)
                 dark = cv2.dilate((v < 80).astype(np.uint8), kernel)
                 mask = cv2.morphologyEx((white & (dark > 0)).astype(np.uint8), cv2.MORPH_CLOSE, close_k)
-                present = int(mask.sum()) >= 350 and int((mask.sum(axis=0) > 3).sum()) >= 40
+                present = int(mask.sum()) >= 170 and int((mask.sum(axis=0) > 2).sum()) >= 28
                 t = round(idx / fps, 2)
 
                 if present:
@@ -1016,7 +1058,7 @@ def run_ocr_with_qwen25_vl(
                 min(max(ev["start"] + 0.06, ev["start"] + span * 0.80), max(ev["start"] + 0.05, ev["end"] - 0.04)),
                 2,
             )
-            specs.append({"time": mid_t, "alt_time": alt_t, "event": ev})
+            specs.append({"time": mid_t, "alt_time": alt_t, "start_time": round(ev["start"] + 0.10, 2), "event": ev})
 
         # Lưới an toàn: mốc VAD không nằm trong sự kiện nào (phụ đề lạ màu/vị trí, detector bỏ sót)
         def _covered(t: float, pad: float = 0.9) -> bool:
@@ -1044,6 +1086,11 @@ def run_ocr_with_qwen25_vl(
             alt_t = sp.get("alt_time")
             if alt_t is not None and abs(float(alt_t) - cur_t) >= 0.08:
                 frames.append((round(float(alt_t), 2), "_alt"))
+            start_t = sp.get("start_time")
+            if start_t is not None and abs(float(start_t) - cur_t) >= 0.08 and (
+                alt_t is None or abs(float(start_t) - float(alt_t)) >= 0.08
+            ):
+                frames.append((round(float(start_t), 2), "_alt2"))
             for t_c, suffix in frames:
                 target_f = min(max(0, total_frames - 1), int(round(t_c * fps))) if total_frames > 0 else int(round(t_c * fps))
                 cap.set(cv2.CAP_PROP_POS_FRAMES, target_f)
@@ -1058,8 +1105,11 @@ def run_ocr_with_qwen25_vl(
                 cv2.imwrite(cp, crp)
                 if suffix:
                     if cur_entry is not None:
-                        cur_entry["alt_path"] = cp
-                        cur_entry["alt_time"] = t_c
+                        if suffix == "_alt2":
+                            cur_entry["alt2_path"] = cp
+                        else:
+                            cur_entry["alt_path"] = cp
+                            cur_entry["alt_time"] = t_c
                 else:
                     cur_entry = {"time": t_c, "crop_path": cp, "event": sp.get("event")}
                     sampled_entries.append(cur_entry)
@@ -1825,17 +1875,15 @@ def main():
 
     qwen_model_id = _get_qwen25_vl_config()["model_id"]
     t_demucs = time.time()
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=2) as pool:
         fut_qwen = pool.submit(prefetch_qwen_model_async, qwen_model_id)
-        fut_events = pool.submit(detect_subtitle_events, video_path, dict(SUBTITLE_ROI))
         vocals_wav, bgm_wav = separate_vocals_and_bgm(audio_16k, work_dir)
         fut_qwen.result()
-        sub_events_pre = fut_events.result()
-    print(f"[TIMING] Tách vocals/BGM + dò phụ đề (song song): {time.time() - t_demucs:.2f}s", flush=True)
+    print(f"[TIMING] Tách vocals/BGM (demucs, song song prefetch Qwen): {time.time() - t_demucs:.2f}s", flush=True)
 
     t_ocr = time.time()
     subtitle_roi, screen_texts, bbox_zip_path, duration, vad_intervals, subtitle_events = run_ocr_with_qwen25_vl(
-        video_path, work_dir, vocals_wav=vocals_wav, subtitle_events_in=sub_events_pre
+        video_path, work_dir, vocals_wav=vocals_wav
     )
     print(f"[TIMING] Dò phụ đề + OCR Qwen: {time.time() - t_ocr:.2f}s", flush=True)
 
