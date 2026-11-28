@@ -1,7 +1,7 @@
 import functools
 import os
 
-# Vá triệt để lỗi Python 3.13 + numpy.ufunc cho pyannote/scipy/speechbrain trước mọi import
+# Vá triệt để lỗi Python 3.13 + numpy.ufunc cho pyannote/scipy trước mọi import
 _orig_update_wrapper = functools.update_wrapper
 
 
@@ -50,7 +50,7 @@ functools.wraps = (
 
 
 def _patch_pyannote_ufunc_compat():
-    """Gắn module/qualname giả lập và vá wrapt/decorator/inspect cho numpy.ufunc trên Python 3.13."""
+    """Gắn module/qualname giả lập và vá wrapt/inspect cho numpy.ufunc trên Python 3.13."""
     import inspect
 
     try:
@@ -116,14 +116,12 @@ os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 import base64
 from difflib import SequenceMatcher
 import gc
-import glob
 import json
 import re
 import shutil
 import statistics
 import subprocess
 import sys
-import sysconfig
 import time
 import traceback
 import zipfile
@@ -306,7 +304,7 @@ def _is_installed(pkg_name: str) -> bool:
 
 
 def ensure_deps():
-    """Cài các gói thiếu (gồm phụ thuộc demucs và pyannote.audio) với overhead thấp."""
+    """Cài các gói thiếu cho tách giọng, diarization và Qwen2.5-VL-3B."""
     wanted = [
         ("demucs", "demucs"),
         ("sphn", "sphn"),
@@ -316,79 +314,17 @@ def ensure_deps():
         ("cv2", "opencv-python"),
         ("gdown", "gdown"),
         ("pyannote.audio", "pyannote.audio"),
+        ("transformers", "transformers>=4.49.0"),
+        ("accelerate", "accelerate"),
+        ("qwen_vl_utils", "qwen-vl-utils"),
+        ("PIL", "pillow"),
     ]
-    missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
+    missing = [pip_spec for mod_name, pip_spec in wanted if not _is_installed(mod_name)]
     if missing:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-q", "numpy>=1.26.4,<2.3.0", *missing],
             check=False,
         )
-
-
-def _build_cuda_ld_library_path(venv_dir: str = "/tmp/ocr_venv") -> str:
-    """Thu thập nhanh đường dẫn lib CUDA/cuDNN từ hệ thống & venv."""
-    lib_dirs: list[str] = []
-    search_roots = [
-        os.path.join(venv_dir, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages", "nvidia"),
-        os.path.join(sysconfig.get_paths().get("purelib", ""), "nvidia"),
-        "/usr/local/lib/python3.13/dist-packages/nvidia",
-        "/usr/local/lib/python3.12/dist-packages/nvidia",
-    ]
-    for root in search_roots:
-        if os.path.isdir(root):
-            for p in sorted(glob.glob(os.path.join(root, "*", "lib"))):
-                if os.path.isdir(p) and p not in lib_dirs:
-                    lib_dirs.append(p)
-
-    for std_dir in [
-        "/usr/local/cuda/lib64",
-        "/usr/local/cuda-12/lib64",
-        "/usr/lib/x86_64-linux-gnu",
-    ]:
-        if os.path.isdir(std_dir) and std_dir not in lib_dirs:
-            lib_dirs.append(std_dir)
-
-    existing = os.environ.get("LD_LIBRARY_PATH", "")
-    if existing:
-        for p in existing.split(":"):
-            if p and p not in lib_dirs:
-                lib_dirs.append(p)
-    return ":".join(lib_dirs)
-
-
-def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
-    """Khởi tạo venv cô lập nhanh qua --target, chỉ cài gói tối thiểu cần thiết cho RapidOCR GPU."""
-    venv_py = os.path.join(venv_dir, "bin", "python")
-    marker = os.path.join(venv_dir, ".rapidocr_gpu_v15_binsearch_ready")
-    if os.path.exists(venv_py) and os.path.exists(marker):
-        return venv_py
-
-    if os.path.exists(venv_dir) and not os.path.exists(marker):
-        shutil.rmtree(venv_dir, ignore_errors=True)
-
-    subprocess.run([sys.executable, "-S", "-m", "venv", "--without-pip", venv_dir], check=True)
-
-    site_pkgs = os.path.join(
-        venv_dir, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages"
-    )
-    os.makedirs(site_pkgs, exist_ok=True)
-
-    pkgs = [
-        "wrapt",
-        "numpy>=1.26.4,<2.3.0",
-        "onnxruntime-gpu==1.20.2",
-        "rapidocr",
-        "opencv-python-headless",
-    ]
-
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--target", site_pkgs, *pkgs],
-        check=True,
-    )
-
-    with open(marker, "w", encoding="utf-8") as f:
-        f.write("ok\n")
-    return venv_py
 
 
 def free_gpu():
@@ -467,233 +403,147 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
     return vocals_wav, bgm_wav
 
 
-def _get_dbnet_config() -> dict:
+def _get_qwen25_vl_config() -> dict:
     return {
-        "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.34")),
-        "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.52")),
-        "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.55")),
-        "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "768")),
-        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.60")),
+        "model_id": (
+            os.environ.get("QWEN25_VL_MODEL", "Qwen/Qwen2.5-VL-3B-Instruct").strip()
+            or "Qwen/Qwen2.5-VL-3B-Instruct"
+        ),
         "step_sec": max(0.25, float(os.environ.get("OCR_STEP_SEC", "0.50"))),
-        "coarse_step_sec": max(0.50, float(os.environ.get("OCR_COARSE_STEP_SEC", "1.00"))),
-        "bin_tol_sec": max(0.12, float(os.environ.get("OCR_BIN_TOL_SEC", "0.20"))),
-        "min_clean_chars": max(2, int(os.environ.get("OCR_MIN_CLEAN_CHARS", "2"))),
-        "edge_min_density": float(os.environ.get("OCR_EDGE_MIN_DENSITY", "0.025")),
-        "use_clahe": os.environ.get("OCR_USE_CLAHE", "1").strip() == "1",
+        "max_new_tokens": max(32, int(os.environ.get("QWEN_OCR_MAX_NEW_TOKENS", "128"))),
         "save_bbox_vis": os.environ.get("SAVE_BBOX_VIS", "0").strip() == "1",
-        "use_cuda": os.environ.get("OCR_USE_CUDA", "1").strip() == "1",
     }
 
 
-_OCR_VENV_WORKER_CODE = r"""
-import json
-import os
-import re
-import sys
-import time
-import cv2
-from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR
-
-req_path = sys.argv[1]
-out_path = sys.argv[2]
-
-with open(req_path, "r", encoding="utf-8") as f:
-    req = json.load(f)
-
-cfg = req["cfg"]
-samples = req["samples"]
-min_score = float(cfg.get("min_score", 0.60))
-want_cuda = bool(cfg.get("use_cuda", True))
-
-has_cuda = False
-providers = []
-if want_cuda:
-    try:
-        import onnxruntime as ort
-        try:
-            if hasattr(ort, "preload_dlls"):
-                ort.preload_dlls()
-        except Exception as _dll_err:
-            print(f"[VENV-OCR][WARN] preload_dlls cảnh báo: {_dll_err}", flush=True)
-        raw_provs = list(ort.get_available_providers() or [])
-        providers = [p for p in raw_provs if p != "TensorrtExecutionProvider"] or raw_provs
-        has_cuda = "CUDAExecutionProvider" in providers
-    except Exception as _ort_err:
-        print(f"[VENV-OCR][WARN] Không kiểm tra được onnxruntime providers: {_ort_err}", flush=True)
-        has_cuda = False
-
-def build_ocr(use_gpu: bool):
-    params = {
-        "Global.use_cls": False,
-        "Global.text_score": min_score,
-        "Det.engine_type": EngineType.ONNXRUNTIME,
-        "Det.lang_type": LangDet.CH,
-        "Det.model_type": ModelType.MOBILE,
-        "Det.ocr_version": OCRVersion.PPOCRV5,
-        "Det.thresh": float(cfg.get("dbnet_thresh", 0.34)),
-        "Det.box_thresh": float(cfg.get("dbnet_box_thresh", 0.52)),
-        "Det.unclip_ratio": float(cfg.get("dbnet_unclip_ratio", 1.55)),
-        "Det.limit_side_len": int(cfg.get("dbnet_limit_side_len", 768)),
-        "Rec.engine_type": EngineType.ONNXRUNTIME,
-        "Rec.lang_type": LangRec.CH,
-        "Rec.model_type": ModelType.MOBILE,
-        "Rec.ocr_version": OCRVersion.PPOCRV5,
-        "EngineConfig.onnxruntime.use_cuda": use_gpu,
-        "EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_algo_search": "DEFAULT",
-        "EngineConfig.onnxruntime.providers": ["CUDAExecutionProvider", "CPUExecutionProvider"] if use_gpu else ["CPUExecutionProvider"],
-    }
-    return RapidOCR(params=params), use_gpu
-
-t0_init = time.time()
-try:
-    ocr, active_gpu = build_ocr(has_cuda)
-except Exception as _gpu_init_err:
-    print(f"[VENV-OCR][WARN] Khởi tạo GPU thất bại ({_gpu_init_err}), thử CPU.", flush=True)
-    ocr, active_gpu = build_ocr(False)
-
-actual_det_providers = []
-for _attr_chain in (
-    lambda o: o.text_det.session.session.get_providers(),
-    lambda o: o.text_det.infer.session.get_providers(),
-    lambda o: o.text_det.session.get_providers(),
-):
-    try:
-        actual_det_providers = list(_attr_chain(ocr) or [])
-        if actual_det_providers:
-            break
-    except Exception:
-        continue
-
-print(
-    f"[VENV-OCR] RapidOCR PP-OCRv5 Mobile + DBNet sẵn sàng (use_cuda={active_gpu}, "
-    f"det_providers={actual_det_providers or providers}).",
-    flush=True,
-)
-
-def pad_to_multiple_of_32(img):
-    h, w = img.shape[:2]
-    pad_h = (32 - h % 32) % 32
-    pad_w = (32 - w % 32) % 32
-    if pad_h == 0 and pad_w == 0:
-        return img
-    return cv2.copyMakeBorder(img, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=(0, 0, 0))
-
-def is_valid_det(txt: str, pts: list, crop_w: int, crop_h: int) -> bool:
-    if not txt:
-        return False
-    if len(pts) >= 4 and crop_w > 0 and crop_h > 0:
-        xs = [p[0] for p in pts]
-        ys = [p[1] for p in pts]
-        bw = max(xs) - min(xs)
-        bh = max(ys) - min(ys)
-        if bh > bw * 1.45 and min(xs) > crop_w * 0.75:
-            return False
-    return True
-
-def apply_clahe_if_enabled(img, enabled: bool):
-    if not enabled or img is None or img.size == 0:
-        return img
-    try:
-        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-        l_ch, a_ch, b_ch = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 4))
-        l_eq = clahe.apply(l_ch)
-        merged = cv2.merge((l_eq, a_ch, b_ch))
-        return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
-    except Exception:
-        return img
-
-def run_one(engine, crop):
-    crop_h, crop_w = crop.shape[:2]
-    enhanced = apply_clahe_if_enabled(crop, bool(cfg.get("use_clahe", True)))
-    padded_crop = pad_to_multiple_of_32(enhanced)
-    res = engine(padded_crop)
-    boxes = getattr(res, "boxes", None)
-    txts = getattr(res, "txts", None)
-    scores = getattr(res, "scores", None)
-    if boxes is None and isinstance(res, tuple) and len(res) >= 1 and res[0]:
-        boxes = [x[0] for x in res[0]]
-        txts = [x[1] for x in res[0]]
-        scores = [x[2] for x in res[0]]
-    if not txts:
+def _parse_qwen_ocr_response(raw_text: str) -> list[str]:
+    # Loại bỏ mọi khối <think>...</think> nếu có và đọc trực tiếp văn bản phụ đề
+    txt = re.sub(r"<think>.*?</think>", "", str(raw_text or ""), flags=re.DOTALL | re.IGNORECASE).strip()
+    if not txt or txt.upper() in ("NONE", "NO_TEXT", "EMPTY", "N/A"):
         return []
-    dets = []
-    for i, txt_raw in enumerate(txts):
-        txt = str(txt_raw or "").strip()
-        sc = float(scores[i]) if (scores is not None and i < len(scores) and scores[i] is not None) else 1.0
-        clean_chars = re.sub(r"[\s\W_]+", "", txt, flags=re.UNICODE)
-        min_clean_chars = int(cfg.get("min_clean_chars", 2))
-        if not clean_chars or sc < min_score:
+    lines = []
+    for ln in re.split(r"[\r\n]+", txt):
+        cleaned = re.sub(r"^\s*[-*•\d.)]+\s*", "", ln).strip().strip('"').strip("'")
+        if not cleaned or cleaned.upper() in ("NONE", "NO_TEXT", "EMPTY", "N/A"):
             continue
-        if len(clean_chars) < min_clean_chars:
-            continue
-        if len(set(clean_chars)) == 1 and len(clean_chars) >= 2:
-            continue
-        pts = []
-        if boxes is not None and i < len(boxes) and boxes[i] is not None:
-            try:
-                arr = boxes[i].tolist() if hasattr(boxes[i], "tolist") else list(boxes[i])
-                for p in arr:
-                    if len(p) >= 2:
-                        px = min(crop_w, max(0, int(round(float(p[0])))))
-                        py = min(crop_h, max(0, int(round(float(p[1])))))
-                        pts.append([px, py])
-            except Exception:
-                pts = []
-        if len(pts) >= 4:
-            xs = [p[0] for p in pts]
-            ys = [p[1] for p in pts]
-            bh = max(ys) - min(ys)
-            bw = max(xs) - min(xs)
-            if bh < 9 or bw < 14:
-                continue
-            if min(ys) <= 2 or max(ys) >= crop_h - 2:
-                continue
-        if clean_chars.isascii() and len(clean_chars) <= 2 and sc < 0.80:
-            continue
-        if is_valid_det(txt, pts, crop_w, crop_h):
-            dets.append({"poly": pts, "text": txt, "score": round(sc, 3)})
-    return dets
+        lines.append(cleaned)
+    return lines
 
-gpu_fallback_done = False
-results = []
-for item in samples:
-    ts = float(item["time"])
-    cp = item["crop_path"]
-    crop = cv2.imread(cp)
-    if crop is None or crop.size == 0:
-        results.append({"time": ts, "boxes": []})
-        continue
+
+def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple[dict[float, list[dict]], bool]:
+    """Chạy Qwen/Qwen2.5-VL-3B-Instruct trực tiếp trên ảnh RGB gốc, vô hiệu hóa hoàn toàn reasoning."""
+    if not sampled_entries:
+        return {}, False
+
+    import torch
+    from PIL import Image
+    from transformers import AutoProcessor
+
     try:
-        dets = run_one(ocr, crop)
-    except Exception as e:
-        if active_gpu and not gpu_fallback_done:
-            print(f"[VENV-OCR] GPU lỗi ({e}), chuyển sang CPU 1 lần trong venv.", flush=True)
-            gpu_fallback_done = True
-            ocr, active_gpu = build_ocr(False)
+        from transformers import Qwen2_5_VLForConditionalGeneration as VLModelClass
+    except Exception:
+        from transformers import AutoModelForVision2Seq as VLModelClass
+
+    model_id = cfg["model_id"]
+    max_new_tokens = int(cfg.get("max_new_tokens", 128))
+    has_cuda = bool(torch.cuda.is_available())
+    dtype = torch.float16 if has_cuda else torch.float32
+
+    t0 = time.time()
+    processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+    model_kwargs = {
+        "torch_dtype": dtype,
+        "trust_remote_code": True,
+    }
+    if has_cuda:
+        model_kwargs["device_map"] = "auto"
+
+    model = VLModelClass.from_pretrained(model_id, **model_kwargs)
+    if not has_cuda:
+        model.to("cpu")
+    model.eval()
+    print(f"[QWEN2.5-VL-3B] Đã tải {model_id} (dtype={dtype}, cuda={has_cuda}, reasoning=OFF) trong {time.time() - t0:.2f}s", flush=True)
+
+    prompt_text = (
+        "Trích xuất chính xác toàn bộ chữ phụ đề xuất hiện trong ảnh. "
+        "Chỉ xuất trực tiếp văn bản gốc, không suy luận, không giải thích. "
+        "Nếu không có chữ phụ đề, trả lời duy nhất: NONE"
+    )
+
+    raw_ocr_map: dict[float, list[dict]] = {}
+    t_inf = time.time()
+
+    try:
+        for entry in sampled_entries:
+            ts = float(entry["time"])
+            cp = entry["crop_path"]
+            bgr = cv2_mod.imread(cp)
+            if bgr is None or bgr.size == 0:
+                raw_ocr_map[ts] = []
+                continue
+
+            rgb = cv2_mod.cvtColor(bgr, cv2_mod.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(rgb)
+
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": pil_img},
+                        {"type": "text", "text": prompt_text},
+                    ],
+                }
+            ]
+
             try:
-                dets = run_one(ocr, crop)
-            except Exception:
-                dets = []
-        else:
-            dets = []
-    results.append({"time": ts, "boxes": dets})
+                # Vô hiệu hóa reasoning / thinking mode ở mức chat template
+                try:
+                    chat_text = processor.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        enable_thinking=False,
+                    )
+                except TypeError:
+                    chat_text = processor.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
 
-print(f"[VENV-OCR] Hoàn tất OCR {len(samples)} ảnh trong {time.time() - t0_init:.2f}s.", flush=True)
-with open(out_path, "w", encoding="utf-8") as f:
-    json.dump({"active_gpu": active_gpu, "results": results}, f, ensure_ascii=False)
-"""
+                inputs = processor(
+                    text=[chat_text],
+                    images=[pil_img],
+                    padding=True,
+                    return_tensors="pt",
+                )
+                target_dev = next(model.parameters()).device
+                inputs = {k: (v.to(target_dev) if hasattr(v, "to") else v) for k, v in inputs.items()}
+
+                with torch.inference_mode():
+                    gen_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                    )
+                in_len = inputs["input_ids"].shape[1]
+                trimmed = [out_ids[in_len:] for out_ids in gen_ids]
+                decoded = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                out_str = decoded[0] if decoded else ""
+                lines = _parse_qwen_ocr_response(out_str)
+                raw_ocr_map[ts] = [{"poly": [], "text": ln, "score": 1.0} for ln in lines]
+            except Exception as e_item:
+                print(f"[QWEN2.5-VL-3B][WARN] Lỗi OCR tại t={ts:.2f}s: {e_item}", flush=True)
+                raw_ocr_map[ts] = []
+    finally:
+        del model, processor
+        free_gpu()
+
+    print(f"[QWEN2.5-VL-3B] Hoàn tất OCR {len(sampled_entries)} ảnh trong {time.time() - t_inf:.2f}s.", flush=True)
+    return raw_ocr_map, has_cuda
 
 
-def _draw_bbox_visualization(
-    full_frame,
-    roi: dict,
-    detections_in_crop: list[dict],
-    out_vis_path: str,
-    ts_sec: float,
-):
+def _draw_roi_visualization(full_frame, roi: dict, out_vis_path: str, ts_sec: float):
     import cv2
-    import numpy as np
 
     vis = full_frame.copy()
     h, w, _ = vis.shape
@@ -705,57 +555,18 @@ def _draw_bbox_visualization(
     cv2.rectangle(vis, (rx1, ry1), (rx2, ry2), (0, 220, 255), 2)
     cv2.putText(
         vis,
-        f"t={ts_sec:.2f}s | ROI ({roi['x1']},{roi['y1']})-({roi['x2']},{roi['y2']})",
+        f"t={ts_sec:.2f}s | Qwen2.5-VL-3B",
         (max(8, rx1), max(22, ry1 - 8)),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.55,
         (0, 220, 255),
         2,
     )
-
-    for idx, det in enumerate(detections_in_crop):
-        pts = det.get("poly") or []
-        sc = det.get("score", 0.0)
-        if len(pts) >= 3:
-            shifted = np.array([[p[0] + rx1, p[1] + ry1] for p in pts], dtype=np.int32).reshape((-1, 1, 2))
-            cv2.polylines(vis, [shifted], isClosed=True, color=(0, 255, 0), thickness=2)
-            top_x = int(np.min(shifted[:, 0, 0]))
-            top_y = int(np.min(shifted[:, 0, 1]))
-            cv2.putText(
-                vis,
-                f"#{idx + 1} ({sc:.2f})",
-                (max(4, top_x), max(18, top_y - 6)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.50,
-                (0, 255, 0),
-                1,
-            )
-
     cv2.imwrite(out_vis_path, vis)
 
 
-def _has_subtitle_edge_signal(gray_band, cv2_mod, edge_thresh: float = 75.0, edge_min_density: float = 0.025) -> tuple[bool, float]:
-    gx = cv2_mod.Sobel(gray_band, cv2_mod.CV_32F, 1, 0, ksize=3)
-    gy = cv2_mod.Sobel(gray_band, cv2_mod.CV_32F, 0, 1, ksize=3)
-    grad_mag = cv2_mod.magnitude(gx, gy)
-    density = float((grad_mag >= edge_thresh).mean())
-    return (density >= edge_min_density), density
-
-
-def _extract_roi_crop_at_time(cap, fps: float, duration: float, t_sec: float, roi: dict, cv2_mod):
-    t_clamped = max(0.0, min(max(0.0, duration - 0.04), float(t_sec)))
-    frame_no = int(round(t_clamped * fps))
-    cap.set(cv2_mod.CAP_PROP_POS_FRAMES, frame_no)
-    ok, frm = cap.read()
-    if not ok or frm is None:
-        return None
-    fh, fw, _ = frm.shape
-    crp = frm[int(fh * roi["y1"]) : int(fh * roi["y2"]), int(fw * roi["x1"]) : int(fw * roi["x2"])]
-    return crp if (crp is not None and crp.size > 0) else None
-
-
-def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[dict], str, float]:
-    """Định vị biên phụ đề bằng tìm kiếm nhị phân (Binary Search) trên trục thời gian."""
+def run_ocr_with_qwen25_vl(video_path: str, work_dir: str) -> tuple[dict, list[dict], str, float]:
+    """Lấy mẫu khung hình tuần tự theo step_sec và trích xuất phụ đề trực tiếp bằng Qwen2.5-VL-3B."""
     roi = {"x1": 0.02, "y1": 0.58, "x2": 0.98, "y2": 0.97}
     vis_dir = os.path.join(work_dir, "bbox_vis")
     crops_dir = os.path.join(work_dir, "ocr_crops")
@@ -765,171 +576,43 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
     try:
         import cv2
 
-        db_cfg = _get_dbnet_config()
-        save_vis = db_cfg["save_bbox_vis"]
+        cfg = _get_qwen25_vl_config()
+        save_vis = cfg["save_bbox_vis"]
         if save_vis:
             os.makedirs(vis_dir, exist_ok=True)
         os.makedirs(crops_dir, exist_ok=True)
-
-        venv_dir = "/tmp/ocr_venv"
-        venv_py = ensure_ocr_venv(venv_dir)
-        worker_py = os.path.join(work_dir, "_rapidocr_venv_worker.py")
-        with open(worker_py, "w", encoding="utf-8") as f:
-            f.write(_OCR_VENV_WORKER_CODE.lstrip())
 
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         duration = total_frames / fps if fps > 0 else 60.0
 
-        step_sec = db_cfg["step_sec"]
-        bin_tol_sec = float(db_cfg.get("bin_tol_sec", 0.20))
-        edge_min_density = float(db_cfg.get("edge_min_density", 0.025))
-        use_clahe = bool(db_cfg.get("use_clahe", True))
-        clahe_obj = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 4)) if use_clahe else None
+        step_sec = cfg["step_sec"]
+        step_frames = max(1, int(round(step_sec * fps)))
 
-        edge_cache: dict[float, tuple[bool, float]] = {}
-        crop_path_cache: dict[float, str] = {}
+        sampled_entries = []
+        frame_idx = 0
         idx_s = 0
+        while True:
+            ok, frm = cap.read()
+            if not ok or frm is None:
+                break
+            if frame_idx % step_frames == 0:
+                cur_t = round(frame_idx / float(fps), 2)
+                fh, fw, _ = frm.shape
+                crp = frm[int(fh * roi["y1"]) : int(fh * roi["y2"]), int(fw * roi["x1"]) : int(fw * roi["x2"])]
+                if crp is not None and crp.size > 0:
+                    cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{cur_t:.2f}s.jpg")
+                    cv2.imwrite(cp, crp)
+                    sampled_entries.append({"time": cur_t, "crop_path": cp})
+                    idx_s += 1
+            frame_idx += 1
 
-        def eval_time(t_val: float) -> tuple[bool, float, str]:
-            nonlocal idx_s
-            t_r = round(max(0.0, min(duration, float(t_val))), 2)
-            if t_r in edge_cache:
-                has_sig, dens = edge_cache[t_r]
-                return has_sig, dens, crop_path_cache.get(t_r, "")
-            crp = _extract_roi_crop_at_time(cap, fps, duration, t_r, roi, cv2)
-            if crp is None:
-                edge_cache[t_r] = (False, 0.0)
-                return False, 0.0, ""
-            ch_h = crp.shape[0]
-            sub_band = crp[int(ch_h * 0.25) :, :]
-            gray = cv2.cvtColor(sub_band, cv2.COLOR_BGR2GRAY)
-            if clahe_obj is not None:
-                gray = clahe_obj.apply(gray)
-            has_sig, dens = _has_subtitle_edge_signal(gray, cv2, edge_min_density=edge_min_density)
-            edge_cache[t_r] = (has_sig, dens)
-            if has_sig:
-                cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{t_r:.2f}s.jpg")
-                cv2.imwrite(cp, crp)
-                crop_path_cache[t_r] = cp
-                idx_s += 1
-                return True, dens, cp
-            return False, dens, ""
-
-        def binary_search_onset(t_off: float, t_on: float) -> float:
-            lo, hi = t_off, t_on
-            for _ in range(8):
-                if (hi - lo) <= bin_tol_sec:
-                    break
-                mid = round((lo + hi) * 0.5, 2)
-                sig_mid, _, _ = eval_time(mid)
-                if sig_mid:
-                    hi = mid
-                else:
-                    lo = mid
-            return hi
-
-        def binary_search_offset(t_on: float, t_off: float) -> float:
-            lo, hi = t_on, t_off
-            for _ in range(8):
-                if (hi - lo) <= bin_tol_sec:
-                    break
-                mid = round((lo + hi) * 0.5, 2)
-                sig_mid, _, _ = eval_time(mid)
-                if sig_mid:
-                    lo = mid
-                else:
-                    hi = mid
-            return lo
-
-        # Tìm kiếm nhị phân có giới hạn (Bounded Bisection) chỉ tại vùng đổi cạnh, giới hạn max_ocr_frames (~120 ảnh)
-        max_ocr_frames = max(40, int(os.environ.get("OCR_MAX_FRAMES", "120")))
-        probe_step = max(0.75, float(os.environ.get("OCR_PROBE_STEP_SEC", "1.25")))
-        candidate_times: list[float] = []
-
-        def _add_candidate(t_pt: float):
-            if len(candidate_times) >= max_ocr_frames:
-                return
-            pt_r = round(max(0.0, min(duration, float(t_pt))), 2)
-            sig_p, _, _ = eval_time(pt_r)
-            if sig_p and pt_r not in candidate_times:
-                candidate_times.append(pt_r)
-
-        def _bisect_transition(t_a: float, t_b: float, want_on_at_b: bool, depth: int = 0):
-            if len(candidate_times) >= max_ocr_frames:
-                return
-            if abs(t_b - t_a) <= max(0.25, bin_tol_sec) or depth >= 4:
-                _add_candidate(t_b if want_on_at_b else t_a)
-                return
-            mid = round((t_a + t_b) * 0.5, 2)
-            sig_m, _, _ = eval_time(mid)
-            if want_on_at_b:
-                if sig_m:
-                    _bisect_transition(t_a, mid, True, depth + 1)
-                else:
-                    _bisect_transition(mid, t_b, True, depth + 1)
-            else:
-                if sig_m:
-                    _bisect_transition(mid, t_b, False, depth + 1)
-                else:
-                    _bisect_transition(t_a, mid, False, depth + 1)
-
-        t_cursor = 0.0
-        prev_t = 0.0
-        prev_sig, _, _ = eval_time(0.0)
-        if prev_sig:
-            _add_candidate(0.0)
-
-        while t_cursor + probe_step <= duration and len(candidate_times) < max_ocr_frames:
-            nxt_t = round(min(duration, t_cursor + probe_step), 2)
-            nxt_sig, _, _ = eval_time(nxt_t)
-
-            if not prev_sig and nxt_sig:
-                _bisect_transition(prev_t, nxt_t, want_on_at_b=True, depth=0)
-                _add_candidate(nxt_t)
-            elif prev_sig and not nxt_sig:
-                _bisect_transition(prev_t, nxt_t, want_on_at_b=False, depth=0)
-                _add_candidate(prev_t)
-            elif prev_sig and nxt_sig:
-                # Chỉ lấy điểm giữa nếu khoảng có ngắt tín hiệu tạm thời, tránh nhân bản dày đặc
-                mid_t = round((prev_t + nxt_t) * 0.5, 2)
-                mid_sig, _, _ = eval_time(mid_t)
-                if not mid_sig:
-                    _bisect_transition(prev_t, mid_t, want_on_at_b=False, depth=1)
-                    _bisect_transition(mid_t, nxt_t, want_on_at_b=True, depth=1)
-                _add_candidate(nxt_t)
-
-            prev_t = nxt_t
-            prev_sig = nxt_sig
-            t_cursor = round(t_cursor + probe_step, 2)
-
+        if frame_idx > 0:
+            duration = round(frame_idx / float(fps), 2)
         cap.release()
 
-        sampled_entries = [
-            {"time": t_k, "crop_path": crop_path_cache[t_k]}
-            for t_k in sorted(candidate_times)
-            if t_k in crop_path_cache and os.path.exists(crop_path_cache[t_k])
-        ]
-
-        req_json = os.path.join(work_dir, "_ocr_req.json")
-        res_json = os.path.join(work_dir, "_ocr_res.json")
-        with open(req_json, "w", encoding="utf-8") as f:
-            json.dump({"cfg": db_cfg, "samples": sampled_entries}, f, ensure_ascii=False)
-
-        worker_env = os.environ.copy()
-        worker_env["LD_LIBRARY_PATH"] = _build_cuda_ld_library_path(venv_dir)
-
-        proc = subprocess.run([venv_py, worker_py, req_json, res_json], env=worker_env, capture_output=True, text=True)
-        if proc.stdout:
-            print(proc.stdout.strip())
-        if proc.returncode != 0:
-            raise RuntimeError(f"Worker RapidOCR trong venv lỗi (code {proc.returncode}): {proc.stderr[-500:]}")
-
-        with open(res_json, "r", encoding="utf-8") as f:
-            res_payload = json.load(f)
-            active_gpu = bool(res_payload.get("active_gpu", False))
-            raw_ocr_map = {float(x["time"]): (x.get("boxes") or []) for x in res_payload.get("results", [])}
+        raw_ocr_map, active_gpu = _run_qwen25_vl_ocr(sampled_entries, cfg, cv2)
 
         screen_texts: list[dict] = []
         vis_files: list[str] = []
@@ -940,7 +623,7 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
             ts = float(entry["time"])
             dets = raw_ocr_map.get(ts, [])
             texts_found = [d["text"] for d in dets if str(d.get("text") or "").strip()]
-            if dets or texts_found:
+            if texts_found:
                 hits += 1
                 vis_name = f"frame_{hits - 1:03d}_{ts:.2f}s.jpg"
                 if save_vis and cap_vis is not None:
@@ -948,7 +631,7 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                     ok_v, frm_v = cap_vis.read()
                     if ok_v and frm_v is not None:
                         vp = os.path.join(vis_dir, vis_name)
-                        _draw_bbox_visualization(frm_v, roi, dets, vp, ts)
+                        _draw_roi_visualization(frm_v, roi, vp, ts)
                         if os.path.exists(vp):
                             vis_files.append(vp)
                 screen_texts.append(
@@ -971,13 +654,13 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
         shutil.rmtree(crops_dir, ignore_errors=True)
 
         print(
-            f"[INFO] [RapidOCR venv (GPU={active_gpu}) | BinarySearch(tol={bin_tol_sec}s)] "
-            f"ứng viên OCR={len(sampled_entries)} | hits={hits}"
+            f"[INFO] [Qwen2.5-VL-3B (GPU={active_gpu}) | Step={step_sec}s] "
+            f"tổng frame OCR={len(sampled_entries)} | hits={hits}"
         )
         return roi, screen_texts, zip_path if (save_vis and vis_files) else "", duration
     except Exception as e:
         shutil.rmtree(crops_dir, ignore_errors=True)
-        print(f"[WARN] RapidOCR venv bỏ qua: {e}")
+        print(f"[WARN] Qwen2.5-VL-3B OCR lỗi: {e}")
         return roi, [], "", duration
 
 
@@ -993,7 +676,7 @@ def _is_same_subtitle(t1: str, t2: str) -> bool:
     return SequenceMatcher(None, s1, s2).ratio() >= 0.90
 
 
-def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 0.50) -> list[dict]:
+def build_ocr_segments(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 0.50) -> list[dict]:
     grouped: list[dict] = []
     max_merge_gap = max(1.20, step_sec * 3.0)
 
@@ -1001,24 +684,19 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
         ts = float(item.get("time", 0.0))
         texts = [str(t).strip() for t in (item.get("texts") or []) if str(t).strip()]
         joined = " ".join(texts).strip()
-        clean_joined = re.sub(r"[\s\W_]+", "", joined, flags=re.UNICODE)
-        if not joined or len(clean_joined) < 2:
+        if not joined:
             continue
 
-        merged_into_idx = -1
-        for back_i in range(len(grouped) - 1, max(-1, len(grouped) - 3), -1):
-            prev_g = grouped[back_i]
-            if (ts - prev_g["_last_ts"]) <= max_merge_gap and _is_same_subtitle(prev_g["ocr_text"], joined):
-                merged_into_idx = back_i
-                break
-
-        if merged_into_idx >= 0:
-            target_g = grouped[merged_into_idx]
-            if len(clean_joined) > len(re.sub(r"[\s\W_]+", "", target_g["ocr_text"], flags=re.UNICODE)):
-                target_g["ocr_text"] = joined
-                target_g["best_text"] = joined
-            target_g["_last_ts"] = max(target_g["_last_ts"], ts)
-            target_g["end"] = round(min(duration, max(target_g["end"], ts + step_sec * 0.5)), 2)
+        if (
+            grouped
+            and _is_same_subtitle(grouped[-1]["ocr_text"], joined)
+            and (ts - grouped[-1]["_last_ts"]) <= max_merge_gap
+        ):
+            if len(joined) > len(grouped[-1]["ocr_text"]):
+                grouped[-1]["ocr_text"] = joined
+                grouped[-1]["best_text"] = joined
+            grouped[-1]["_last_ts"] = ts
+            grouped[-1]["end"] = round(min(duration, max(grouped[-1]["end"], ts + step_sec * 0.5)), 2)
             continue
 
         start_t = round(max(0.0, ts - step_sec * 0.4), 2)
@@ -1036,32 +714,19 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
                 "asr_text": "",
                 "ocr_text": joined,
                 "best_text": joined,
-                "subtitle_source": "rapidocr_mobile_dbnet_binsearch",
+                "subtitle_source": "qwen2_5_vl_3b_instruct",
                 "boxes": item.get("boxes") or [],
                 "vis_image": item.get("vis_image") or "",
             }
         )
 
-    deduped: list[dict] = []
-    for g in grouped:
-        g.pop("_last_ts", None)
-        if deduped:
-            prev = deduped[-1]
-            gap = float(g["start"]) - float(prev["end"])
-            if gap <= 1.25 and _is_same_subtitle(prev["best_text"], g["best_text"]):
-                if len(g["best_text"]) > len(prev["best_text"]):
-                    prev["ocr_text"] = g["ocr_text"]
-                    prev["best_text"] = g["best_text"]
-                prev["end"] = round(min(duration, max(prev["end"], g["end"])), 2)
-                continue
-        deduped.append(g)
-
-    for idx, g in enumerate(deduped):
+    for idx, g in enumerate(grouped):
         g["id"] = idx
-        if idx + 1 < len(deduped) and deduped[idx]["end"] > deduped[idx + 1]["start"] - 0.03:
-            deduped[idx]["end"] = round(max(deduped[idx]["start"] + 0.25, deduped[idx + 1]["start"] - 0.03), 2)
+        g.pop("_last_ts", None)
+        if idx + 1 < len(grouped) and grouped[idx]["end"] > grouped[idx + 1]["start"] - 0.03:
+            grouped[idx]["end"] = round(max(grouped[idx]["start"] + 0.25, grouped[idx + 1]["start"] - 0.03), 2)
 
-    return deduped
+    return grouped
 
 
 def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
@@ -1434,7 +1099,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
         start_t = float(seg.get("start", 0.0))
         end_t = max(start_t + 0.25, float(seg.get("end", start_t + 0.65)))
         spk = seg.get("speaker_id", "SPEAKER_00")
-        src_tag = seg.get("subtitle_source", "rapidocr_mobile_dbnet_binsearch")
+        src_tag = seg.get("subtitle_source", "qwen2_5_vl_3b_instruct")
         blocks.append(
             f"{idx_out}\n"
             f"{_format_srt_time(start_t)} --> {_format_srt_time(end_t)}\n"
@@ -1444,15 +1109,15 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
         blocks.append("1\n00:00:00,000 --> 00:00:01,000\n[NO_OCR_TEXT_DETECTED]\n")
     with open(out_srt_path, "w", encoding="utf-8") as f:
         f.write("\n".join(blocks).strip() + "\n")
-    print(f"[INFO] Đã xuất file SRT Stage 1 (RapidOCR venv GPU + BinarySearch): {out_srt_path} ({idx_out} dòng)")
+    print(f"[INFO] Đã xuất file SRT Stage 1 (Qwen2.5-VL-3B): {out_srt_path} ({idx_out} dòng)")
     return out_srt_path
 
 
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
-def run_auto_health_check(work_dir: str, venv_dir: str = "/tmp/ocr_venv") -> dict:
-    """Kiểm tra nhanh môi trường CUDA, ONNXRuntime GPU provider và RapidOCR venv."""
+def run_auto_health_check(work_dir: str) -> dict:
+    """Kiểm tra nhanh môi trường CUDA, token HF và ffmpeg."""
     import numpy as np
 
     report = {
@@ -1460,10 +1125,6 @@ def run_auto_health_check(work_dir: str, venv_dir: str = "/tmp/ocr_venv") -> dic
         "numpy": getattr(np, "__version__", "unknown"),
         "torch_cuda": False,
         "gpu_name": "none",
-        "venv_python_exists": os.path.exists(os.path.join(venv_dir, "bin", "python")),
-        "venv_ort_providers": [],
-        "venv_cuda_provider": False,
-        "venv_rapidocr_ok": False,
         "hf_token_present": bool(
             _clean_url_or_str(os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN)
         ),
@@ -1479,35 +1140,6 @@ def run_auto_health_check(work_dir: str, venv_dir: str = "/tmp/ocr_venv") -> dic
     except Exception as e:
         report["torch_error"] = str(e)
 
-    ld_path = _build_cuda_ld_library_path(venv_dir)
-    venv_py = os.path.join(venv_dir, "bin", "python")
-    if os.path.exists(venv_py):
-        probe_code = (
-            "import json\n"
-            "out = {'providers': [], 'has_cuda': False, 'rapidocr_ok': False}\n"
-            "try:\n"
-            "    import onnxruntime as ort\n"
-            "    provs = list(ort.get_available_providers() or [])\n"
-            "    out['providers'] = provs\n"
-            "    out['has_cuda'] = 'CUDAExecutionProvider' in provs\n"
-            "    from rapidocr import RapidOCR\n"
-            "    out['rapidocr_ok'] = True\n"
-            "except Exception:\n"
-            "    pass\n"
-            "print(json.dumps(out))\n"
-        )
-        probe_env = os.environ.copy()
-        probe_env["LD_LIBRARY_PATH"] = ld_path
-        try:
-            res = subprocess.run([venv_py, "-c", probe_code], env=probe_env, capture_output=True, text=True, timeout=20)
-            if res.returncode == 0 and res.stdout.strip():
-                parsed = json.loads(res.stdout.strip().splitlines()[-1])
-                report["venv_ort_providers"] = parsed.get("providers") or []
-                report["venv_cuda_provider"] = bool(parsed.get("has_cuda", False))
-                report["venv_rapidocr_ok"] = bool(parsed.get("rapidocr_ok", False))
-        except Exception:
-            pass
-
     check_path = os.path.join(work_dir, f"{JOB_ID}_stage1_healthcheck.json")
     os.makedirs(work_dir, exist_ok=True)
     with open(check_path, "w", encoding="utf-8") as f:
@@ -1516,7 +1148,6 @@ def run_auto_health_check(work_dir: str, venv_dir: str = "/tmp/ocr_venv") -> dic
     print(
         f"[AUTO-CHECK] py={report['python']} numpy={report['numpy']} "
         f"torch_cuda={report['torch_cuda']}({report['gpu_name']}) | "
-        f"venv_cuda={report['venv_cuda_provider']} rapidocr={report['venv_rapidocr_ok']} "
         f"hf_token={report['hf_token_present']} ffmpeg={report['ffmpeg_ok']}",
         flush=True,
     )
@@ -1526,7 +1157,7 @@ def run_auto_health_check(work_dir: str, venv_dir: str = "/tmp/ocr_venv") -> dic
 def main():
     send_ntfy(
         f"[Stage 1] {JOB_ID}",
-        f"Bắt đầu nhận diện RapidOCR venv GPU (Binary Search) cho job {JOB_ID}.",
+        f"Bắt đầu nhận diện OCR bằng Qwen2.5-VL-3B cho job {JOB_ID}.",
         tags="film_frames",
     )
     jobs_data, _ = sync.read_json("state/jobs.json")
@@ -1539,15 +1170,14 @@ def main():
     audio_16k = os.path.join(work_dir, "audio_16k.wav")
 
     ensure_deps()
-    ensure_ocr_venv("/tmp/ocr_venv")
-    health_report = run_auto_health_check(work_dir, "/tmp/ocr_venv")
+    health_report = run_auto_health_check(work_dir)
     download_video_source(sync, JOB_ID, video_asset, video_path)
     extract_audio_16k(video_path, audio_16k)
 
     vocals_wav, bgm_wav = separate_vocals_and_bgm(audio_16k, work_dir)
-    subtitle_roi, screen_texts, bbox_zip_path, duration = run_ocr_with_jump_step(video_path, work_dir)
-    step_sec = _get_dbnet_config()["step_sec"]
-    segments = build_ocr_segments_from_jumps(screen_texts, duration=duration, step_sec=step_sec)
+    subtitle_roi, screen_texts, bbox_zip_path, duration = run_ocr_with_qwen25_vl(video_path, work_dir)
+    step_sec = _get_qwen25_vl_config()["step_sec"]
+    segments = build_ocr_segments(screen_texts, duration=duration, step_sec=step_sec)
     speaker_refs = align_vad_and_diarize_from_vocals(vocals_wav, segments, work_dir)
 
     srt_s1_path = os.path.join(work_dir, f"{JOB_ID}_stage1.srt")
@@ -1565,7 +1195,7 @@ def main():
         "job_id": JOB_ID,
         "video_asset": video_asset,
         "asr_enabled": False,
-        "ocr_engine": "rapidocr_mobile_dbnet_binsearch",
+        "ocr_engine": "qwen2_5_vl_3b_instruct",
         "ocr_step_sec": step_sec,
         "subtitle_roi": subtitle_roi,
         "screen_texts": screen_texts,
@@ -1581,7 +1211,7 @@ def main():
     sync.write_json(
         f"state/{JOB_ID}_stage1.json",
         stage1_payload,
-        f"stage1 done (rapidocr venv gpu+binsearch): {JOB_ID}",
+        f"stage1 done (qwen2.5-vl-3b): {JOB_ID}",
     )
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
@@ -1592,7 +1222,7 @@ def main():
     sync.trigger_dispatch("stage1_completed", {"job_id": JOB_ID})
     send_ntfy(
         f"[Stage 1 Done] {JOB_ID}",
-        f"Hoàn tất RapidOCR venv GPU (Binary Search) ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
+        f"Hoàn tất Qwen2.5-VL-3B ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
         tags="white_check_mark",
     )
 
