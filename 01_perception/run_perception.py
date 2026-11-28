@@ -298,9 +298,12 @@ def _is_installed(pkg_name: str) -> bool:
 
 
 def ensure_deps():
-    """Chỉ cài các gói còn thiếu một cách nhẹ nhàng để giảm tối đa thời gian khởi tạo."""
+    """Cài gói thiếu (kèm phụ thuộc tối thiểu cho demucs như sphn, julius, lameenc) mà không reinstall nặng."""
     wanted = [
         ("demucs", "demucs"),
+        ("sphn", "sphn"),
+        ("julius", "julius"),
+        ("lameenc", "lameenc"),
         ("soundfile", "soundfile"),
         ("cv2", "opencv-python"),
         ("gdown", "gdown"),
