@@ -1,0 +1,2305 @@
+{
+  "job_id": "qc1",
+  "video_asset": "https://drive.google.com/file/d/1Y-I3ye5Z0sNfdZvGzqgwpt4f4yPdQjyU/view?usp=drive_link",
+  "asr_enabled": false,
+  "ocr_engine": "qwen2_5_vl_3b_instruct",
+  "vad_guided_ocr": true,
+  "ocr_step_sec": 0.5,
+  "subtitle_roi": {
+    "x1": 0.02,
+    "y1": 0.58,
+    "x2": 0.98,
+    "y2": 0.97
+  },
+  "screen_texts": [
+    {
+      "time": 1.91,
+      "texts": [
+        "老婆"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "老婆",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 3.15,
+      "texts": [
+        "你的饭给狗吃了"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你的饭给狗吃了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 4.0,
+      "texts": [
+        "你的饭给狗吃了"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你的饭给狗吃了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 4.85,
+      "texts": [
+        "你就该吃狗的"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你就该吃狗的",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 6.11,
+      "texts": [
+        "狗吃完了"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "狗吃完了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 6.96,
+      "texts": [
+        "该你吃了"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "该你吃了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 8.85,
+      "texts": [
+        "吃"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "吃",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 22.32,
+      "texts": [
+        "这是今天的午餐"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "这是今天的午餐",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 24.44,
+      "texts": [
+        "结婚三年"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "结婚三年",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 25.78,
+      "texts": [
+        "我的妻子对餐饮要求"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "我的妻子对餐饮要求",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 26.63,
+      "texts": [
+        "我的妻子对餐饮要求"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "我的妻子对餐饮要求",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 27.48,
+      "texts": [
+        "苛刻到极致"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "苛刻到极致",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 28.03,
+      "texts": [
+        "苛刻到极致"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "苛刻到极致",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 29.07,
+      "texts": [
+        "从不吃外卖"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "从不吃外卖",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 29.92,
+      "texts": [
+        "不碰垃圾食品"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "不碰垃圾食品",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 30.46,
+      "texts": [
+        "不碰垃圾食品"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "不碰垃圾食品",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 31.71,
+      "texts": [
+        "所以我每天四点起"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "所以我每天四点起",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 33.32,
+      "texts": [
+        "她做最健康卫生的三餐"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "她做最健康卫生的三餐",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 34.17,
+      "texts": [
+        "给她做最健康卫生的三餐"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "给她做最健康卫生的三餐",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 35.02,
+      "texts": [
+        "给她做最健康卫生的三餐"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "给她做最健康卫生的三餐",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 36.14,
+      "texts": [
+        "今天食材新鲜吗"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "今天食材新鲜吗",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 37.48,
+      "texts": [
+        "都是早上四点"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "都是早上四点",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 38.33,
+      "texts": [
+        "从菜市场买最新鲜的食材"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "从菜市场买最新鲜的食材",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 39.18,
+      "texts": [
+        "从菜市场买最新鲜的食材"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "从菜市场买最新鲜的食材",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 40.21,
+      "texts": [
+        "菜擦洗了几遍"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "菜擦洗了几遍",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 41.11,
+      "texts": [
+        "三遍"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "三遍",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 42.0,
+      "texts": [
+        "还用果蔬清洁剂"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "还用果蔬清洁剂",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 42.85,
+      "texts": [
+        "沉浸了十五分钟"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "沉浸了十五分钟",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 43.32,
+      "texts": [
+        "沉浸了十五分钟"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "沉浸了十五分钟",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 44.18,
+      "texts": [
+        "行了"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "行了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 45.25,
+      "texts": [
+        "你走吧"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你走吧",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 46.1,
+      "texts": [
+        "你一个行政部的小职员"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你一个行政部的小职员",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 46.75,
+      "texts": [
+        "你一个行政部的小职员"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你一个行政部的小职员",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 47.85,
+      "texts": [
+        "跟我这待太久"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "跟我这待太久",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 49.67,
+      "texts": [
+        "会引起别人不必要的揣测"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "会引起别人不必要的揣测",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 55.12,
+      "texts": [
+        "好"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "好",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 56.59,
+      "texts": [
+        "那你趁热吃"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "那你趁热吃",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 58.18,
+      "texts": [
+        "涼了对胃不好"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "涼了对胃不好",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 63.18,
+      "texts": [
+        "亲炎辰"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "亲炎辰",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 64.03,
+      "texts": [
+        "你又去给瑶瑶送饭了"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你又去给瑶瑶送饭了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 64.5,
+      "texts": [
+        "你又去给瑶瑶送饭了"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你又去给瑶瑶送饭了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 65.37,
+      "texts": [
+        "真是辛苦你了"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "真是辛苦你了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 66.22,
+      "texts": [
+        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 68.04,
+      "texts": [
+        "只是我作为丈夫的责任"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "只是我作为丈夫的责任",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 70.41,
+      "texts": [
+        "当年要不是你"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "当年要不是你",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 71.78,
+      "texts": [
+        "与我们夏氏商业联姻"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "与我们夏氏商业联姻",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 72.63,
+      "texts": [
+        "与我们夏氏商业联姻"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "与我们夏氏商业联姻",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 73.73,
+      "texts": [
+        "我们夏氏集团"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "我们夏氏集团",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 74.58,
+      "texts": [
+        "早在三年前就破产了"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "早在三年前就破产了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 75.43,
+      "texts": [
+        "早在三年前就破产了"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "早在三年前就破产了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 76.6,
+      "texts": [
+        "你堂堂陆氏集团继承人"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你堂堂陆氏集团继承人",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 77.45,
+      "texts": [
+        "你堂堂陆氏集团继承人"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你堂堂陆氏集团继承人",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 78.3,
+      "texts": [
+        "甘愿隐姓埋名"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "甘愿隐姓埋名",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 79.15,
+      "texts": [
+        "来我们公司做一个小职员"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "来我们公司做一个小职员",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 80.0,
+      "texts": [
+        "来我们公司做一个小职员"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "来我们公司做一个小职员",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 81.45,
+      "texts": [
+        "一次次帮公司填窟窿"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "一次次帮公司填窟窿",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 82.3,
+      "texts": [
+        "一次次帮公司填窟窿"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "一次次帮公司填窟窿",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 83.15,
+      "texts": [
+        "我隐瞒身份"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "我隐瞒身份",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 84.0,
+      "texts": [
+        "一是不想让公司上下知道"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "一是不想让公司上下知道",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 84.85,
+      "texts": [
+        "一是不想让公司上下知道"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "一是不想让公司上下知道",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 85.7,
+      "texts": [
+        "一是不想让公司上下知道"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "一是不想让公司上下知道",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 86.55,
+      "texts": [
+        "夏氏靠陆氏撑腰"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "夏氏靠陆氏撑腰",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 87.2,
+      "texts": [
+        "夏氏靠陆氏撑腰"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "夏氏靠陆氏撑腰",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 88.17,
+      "texts": [
+        "免得人心浮动"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "免得人心浮动",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 89.02,
+      "texts": [
+        "="
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "=",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 89.87,
+      "texts": [
+        "也是对明瑶的一种考验吧"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "也是对明瑶的一种考验吧",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 90.51,
+      "texts": [
+        "也是对明瑶的一种考验吧"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "也是对明瑶的一种考验吧",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 91.6,
+      "texts": [
+        "明瑶她不懂事"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "明瑶她不懂事",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 93.45,
+      "texts": [
+        "不知道你的好"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "不知道你的好",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 94.87,
+      "texts": [
+        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 96.83,
+      "texts": [
+        "真的很感激你啊"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "真的很感激你啊",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 101.75,
+      "texts": [
+        "我车钥匙落在餐厅了"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "我车钥匙落在餐厅了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "time": 103.48,
+      "texts": [
+        "我回去拿一下"
+      ],
+      "visual_speaker": "unknown",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "我回去拿一下",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    }
+  ],
+  "bbox_zip_asset": "",
+  "scene_context": "",
+  "health_check": {
+    "python": "3.13.16",
+    "numpy": "2.5.5",
+    "torch_cuda": true,
+    "gpu_name": "Tesla T4",
+    "hf_token_present": true,
+    "ffmpeg_ok": true
+  },
+  "speaker_refs": {
+    "SPEAKER_00_M": {
+      "ref_asset": "ref_speaker_SPEAKER_00_M.wav",
+      "gender_hint": "male",
+      "pitch_hz": 146.9,
+      "segments_count": 32,
+      "pyannote_label": "SPEAKER_01"
+    },
+    "SPEAKER_01_M": {
+      "ref_asset": "ref_speaker_SPEAKER_01_M.wav",
+      "gender_hint": "male",
+      "pitch_hz": 186.0,
+      "segments_count": 22,
+      "pyannote_label": "SPEAKER_00"
+    }
+  },
+  "segments": [
+    {
+      "id": 0,
+      "start": 1.62,
+      "end": 2.07,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 96.9,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "老婆",
+      "best_text": "老婆",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "老婆",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 1,
+      "start": 2.81,
+      "end": 5.24,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 118.5,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "你的饭给狗吃了",
+      "best_text": "你的饭给狗吃了",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你的饭给狗吃了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 2,
+      "start": 5.27,
+      "end": 5.73,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 151.6,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "你就该吃狗的",
+      "best_text": "你就该吃狗的",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你就该吃狗的",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 3,
+      "start": 5.77,
+      "end": 7.55,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 127.5,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "狗吃完了",
+      "best_text": "狗吃完了",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "狗吃完了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 4,
+      "start": 7.58,
+      "end": 9.23,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 149.0,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "该你吃了",
+      "best_text": "该你吃了",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "该你吃了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 5,
+      "start": 21.88,
+      "end": 22.89,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 103.6,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "这是今天的午餐",
+      "best_text": "这是今天的午餐",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "这是今天的午餐",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 6,
+      "start": 24.04,
+      "end": 24.84,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 102.0,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "结婚三年",
+      "best_text": "结婚三年",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "结婚三年",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 7,
+      "start": 25.44,
+      "end": 28.25,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 101.8,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "我的妻子对餐饮要求",
+      "best_text": "我的妻子对餐饮要求",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "我的妻子对餐饮要求",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 8,
+      "start": 28.28,
+      "end": 28.69,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 144.7,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "苛刻到极致",
+      "best_text": "苛刻到极致",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "苛刻到极致",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 9,
+      "start": 28.74,
+      "end": 30.65,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 94.0,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "从不吃外卖",
+      "best_text": "从不吃外卖",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "从不吃外卖",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 10,
+      "start": 30.68,
+      "end": 31.01,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 450.0,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "不碰垃圾食品",
+      "best_text": "不碰垃圾食品",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "不碰垃圾食品",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 11,
+      "start": 31.06,
+      "end": 32.5,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 114.8,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "所以我每天四点起",
+      "best_text": "所以我每天四点起",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "所以我每天四点起",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 12,
+      "start": 32.98,
+      "end": 35.27,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 81.9,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "给她做最健康卫生的三餐",
+      "best_text": "给她做最健康卫生的三餐",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "她做最健康卫生的三餐",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 13,
+      "start": 35.62,
+      "end": 36.75,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 343.2,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "今天食材新鲜吗",
+      "best_text": "今天食材新鲜吗",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "今天食材新鲜吗",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 14,
+      "start": 37.14,
+      "end": 39.59,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 99.4,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "都是早上四点",
+      "best_text": "都是早上四点",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "都是早上四点",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 15,
+      "start": 39.62,
+      "end": 39.93,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 445.5,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "从菜市场买最新鲜的食材",
+      "best_text": "从菜市场买最新鲜的食材",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "从菜市场买最新鲜的食材",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 16,
+      "start": 39.98,
+      "end": 40.75,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 296.0,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "菜擦洗了几遍",
+      "best_text": "菜擦洗了几遍",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "菜擦洗了几遍",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 17,
+      "start": 40.99,
+      "end": 41.3,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 133.7,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "三遍",
+      "best_text": "三遍",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "三遍",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 18,
+      "start": 41.67,
+      "end": 43.56,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 114.8,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "还用果蔬清洁剂",
+      "best_text": "还用果蔬清洁剂",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "还用果蔬清洁剂",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 19,
+      "start": 43.6,
+      "end": 43.9,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 441.0,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "沉浸了十五分钟",
+      "best_text": "沉浸了十五分钟",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "沉浸了十五分钟",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 20,
+      "start": 43.95,
+      "end": 44.43,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 277.4,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "行了",
+      "best_text": "行了",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "行了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 21,
+      "start": 44.91,
+      "end": 47.0,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 376.9,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "你走吧",
+      "best_text": "你走吧",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你走吧",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 22,
+      "start": 47.03,
+      "end": 47.29,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 321.2,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "你一个行政部的小职员",
+      "best_text": "你一个行政部的小职员",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你一个行政部的小职员",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 23,
+      "start": 47.41,
+      "end": 48.49,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 343.2,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "跟我这待太久",
+      "best_text": "跟我这待太久",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "跟我这待太久",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 24,
+      "start": 49.19,
+      "end": 50.49,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 300.0,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "会引起别人不必要的揣测",
+      "best_text": "会引起别人不必要的揣测",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "会引起别人不必要的揣测",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 25,
+      "start": 54.71,
+      "end": 55.48,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 92.3,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "好",
+      "best_text": "好",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "好",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 26,
+      "start": 56.29,
+      "end": 56.97,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 96.9,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "那你趁热吃",
+      "best_text": "那你趁热吃",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "那你趁热吃",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 27,
+      "start": 57.73,
+      "end": 58.73,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 92.5,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "涼了对胃不好",
+      "best_text": "涼了对胃不好",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "涼了对胃不好",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 28,
+      "start": 62.84,
+      "end": 64.75,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 130.5,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "亲炎辰",
+      "best_text": "亲炎辰",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "亲炎辰",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 29,
+      "start": 64.78,
+      "end": 65.08,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": null,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "你又去给瑶瑶送饭了",
+      "best_text": "你又去给瑶瑶送饭了",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你又去给瑶瑶送饭了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 30,
+      "start": 65.11,
+      "end": 66.89,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 122.2,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "真是辛苦你了",
+      "best_text": "真是辛苦你了",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "真是辛苦你了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 31,
+      "start": 66.92,
+      "end": 67.22,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 103.5,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+      "best_text": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 32,
+      "start": 67.43,
+      "end": 68.77,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 94.8,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "只是我作为丈夫的责任",
+      "best_text": "只是我作为丈夫的责任",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "只是我作为丈夫的责任",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 33,
+      "start": 69.95,
+      "end": 70.99,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 115.7,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "当年要不是你",
+      "best_text": "当年要不是你",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "当年要不是你",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 34,
+      "start": 71.44,
+      "end": 73.12,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 119.7,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "与我们夏氏商业联姻",
+      "best_text": "与我们夏氏商业联姻",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "与我们夏氏商业联姻",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 35,
+      "start": 73.39,
+      "end": 75.99,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 121.7,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "我们夏氏集团",
+      "best_text": "我们夏氏集团",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "我们夏氏集团",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 36,
+      "start": 76.1,
+      "end": 76.32,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 104.5,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "早在三年前就破产了",
+      "best_text": "早在三年前就破产了",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "早在三年前就破产了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 37,
+      "start": 76.35,
+      "end": 80.6,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 113.8,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "你堂堂陆氏集团继承人",
+      "best_text": "你堂堂陆氏集团继承人",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "你堂堂陆氏集团继承人",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 38,
+      "start": 80.63,
+      "end": 80.93,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 102.3,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "甘愿隐姓埋名",
+      "best_text": "甘愿隐姓埋名",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "甘愿隐姓埋名",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 39,
+      "start": 81.05,
+      "end": 81.26,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 121.2,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "来我们公司做一个小职员",
+      "best_text": "来我们公司做一个小职员",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "来我们公司做一个小职员",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 40,
+      "start": 81.29,
+      "end": 87.44,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 108.4,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "一次次帮公司填窟窿",
+      "best_text": "一次次帮公司填窟窿",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "一次次帮公司填窟窿",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 41,
+      "start": 87.47,
+      "end": 87.78,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 93.6,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "我隐瞒身份",
+      "best_text": "我隐瞒身份",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "我隐瞒身份",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 42,
+      "start": 87.83,
+      "end": 88.11,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 85.8,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "一是不想让公司上下知道",
+      "best_text": "一是不想让公司上下知道",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "一是不想让公司上下知道",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 43,
+      "start": 88.14,
+      "end": 88.4,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 95.8,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "夏氏靠陆氏撑腰",
+      "best_text": "夏氏靠陆氏撑腰",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "夏氏靠陆氏撑腰",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 44,
+      "start": 88.53,
+      "end": 90.76,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 89.5,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "免得人心浮动",
+      "best_text": "免得人心浮动",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "免得人心浮动",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 45,
+      "start": 90.79,
+      "end": 91.09,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 93.4,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "=",
+      "best_text": "=",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "=",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 46,
+      "start": 91.13,
+      "end": 91.42,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 107.3,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "也是对明瑶的一种考验吧",
+      "best_text": "也是对明瑶的一种考验吧",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "也是对明瑶的一种考验吧",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 47,
+      "start": 91.45,
+      "end": 92.19,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 135.3,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "明瑶她不懂事",
+      "best_text": "明瑶她不懂事",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "明瑶她不懂事",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 48,
+      "start": 92.95,
+      "end": 93.96,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 111.2,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "不知道你的好",
+      "best_text": "不知道你的好",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "不知道你的好",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 49,
+      "start": 94.36,
+      "end": 95.32,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 119.5,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+      "best_text": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 50,
+      "start": 96.11,
+      "end": 97.71,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 123.9,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "真的很感激你啊",
+      "best_text": "真的很感激你啊",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "真的很感激你啊",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 51,
+      "start": 101.24,
+      "end": 102.26,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 84.6,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "我车钥匙落在餐厅了",
+      "best_text": "我车钥匙落在餐厅了",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "我车钥匙落在餐厅了",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 52,
+      "start": 103.18,
+      "end": 103.85,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 97.4,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "我回去拿一下",
+      "best_text": "我回去拿一下",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "我回去拿一下",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    }
+  ]
+}
