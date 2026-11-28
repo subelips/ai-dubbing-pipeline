@@ -112,6 +112,10 @@ os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
+os.environ["USE_TF"] = "0"
+os.environ["USE_FLAX"] = "0"
+os.environ["USE_TORCH"] = "1"
+os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
 
 import base64
 from difflib import SequenceMatcher
@@ -436,12 +440,15 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
 
     import torch
     from PIL import Image
-    from transformers import AutoProcessor
 
     try:
-        from transformers import Qwen2_5_VLForConditionalGeneration as VLModelClass
-    except Exception:
-        from transformers import AutoModelForVision2Seq as VLModelClass
+        from transformers.models.qwen2_5_vl.processing_qwen2_5_vl import Qwen2_5_VLProcessor as VLProcessorClass
+        from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration as VLModelClass
+        processor = VLProcessorClass.from_pretrained(model_id, trust_remote_code=True)
+    except Exception as _sub_err:
+        print(f"[QWEN2.5-VL-3B][INFO] Submodule import fallback ({_sub_err}), dùng AutoProcessor...", flush=True)
+        from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration as VLModelClass
+        processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
 
     model_id = cfg["model_id"]
     max_new_tokens = int(cfg.get("max_new_tokens", 128))
@@ -449,7 +456,6 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
     dtype = torch.float16 if has_cuda else torch.float32
 
     t0 = time.time()
-    processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
     model_kwargs = {
         "torch_dtype": dtype,
         "trust_remote_code": True,
@@ -660,7 +666,7 @@ def run_ocr_with_qwen25_vl(video_path: str, work_dir: str) -> tuple[dict, list[d
         return roi, screen_texts, zip_path if (save_vis and vis_files) else "", duration
     except Exception as e:
         shutil.rmtree(crops_dir, ignore_errors=True)
-        print(f"[WARN] Qwen2.5-VL-3B OCR lỗi: {e}")
+        print(f"[WARN] Qwen2.5-VL-3B OCR lỗi: {e}\n{traceback.format_exc()[-1500:]}")
         return roi, [], "", duration
 
 
