@@ -833,7 +833,41 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                 retry_items.append(entry)
 
         if retry_items:
-            print(f"[QWEN2.5-VL-3B] {len(retry_items)} khung OCR rác -> fallback RapidOCR...", flush=True)
+            print(f"[QWEN2.5-VL-3B] {len(retry_items)} khung OCR rác -> retry zoom + RapidOCR...", flush=True)
+            still_bad = []
+            for entry in retry_items[:12]:
+                zp = entry.get("zoom_path")
+                if not zp:
+                    still_bad.append(entry)
+                    continue
+                try:
+                    bgr_z = cv2_mod.imread(zp)
+                    if bgr_z is None or bgr_z.size == 0:
+                        still_bad.append(entry)
+                        continue
+                    im_z = Image.fromarray(cv2_mod.cvtColor(bgr_z, cv2_mod.COLOR_BGR2RGB))
+                    chat_z = _build_chat_str(im_z)
+                    inp_z = processor(text=[chat_z], images=[im_z], padding=True, return_tensors="pt")
+                    inp_z = {k: (v.to(target_dev) if hasattr(v, "to") else v) for k, v in inp_z.items()}
+                    with torch.inference_mode():
+                        g_z = model.generate(**inp_z, max_new_tokens=max_new_tokens, do_sample=False)
+                    l_z = inp_z["input_ids"].shape[1]
+                    dec_z = processor.batch_decode(
+                        [g_z[0][l_z:]], skip_special_tokens=True, clean_up_tokenization_spaces=False
+                    )
+                    lines_z, spk_z = _parse_qwen_ocr_and_speaker(dec_z[0] if dec_z else "")
+                    if lines_z and not _is_garbage_text(" ".join(lines_z)):
+                        raw_ocr_map[float(entry["time"])] = {
+                            "boxes": [{"poly": [], "text": x, "score": 1.0} for x in lines_z],
+                            "visual_speaker": spk_z,
+                        }
+                    else:
+                        still_bad.append(entry)
+                except Exception as e_z:
+                    print(f"[ZOOM][WARN] {e_z}", flush=True)
+                    still_bad.append(entry)
+            retry_items = still_bad
+
             try:
                 fb_ocr = _get_rapidocr()
                 for entry in retry_items[:12]:
@@ -927,13 +961,19 @@ def detect_subtitle_events(video_path: str, roi: dict, sample_fps: float = 10.0)
                     idx += 1
                     continue
                 h, w, _ = frame.shape
-                band = frame[int(h * roi["y1"]) : int(h * roi["y2"]), int(w * roi["x1"]) : int(w * roi["x2"])]
+                bx0, by0 = int(w * roi["x1"]), int(h * roi["y1"])
+                band = frame[by0 : int(h * roi["y2"]), bx0 : int(w * roi["x2"])]
                 if band.size == 0:
                     idx += 1
                     continue
                 # Thu nhỏ để threshold nhanh hơn ~4 lần, không ảnh hưởng độ chính xác mask
-                if band.shape[1] > 720:
-                    band = cv2.resize(band, (720, max(1, int(band.shape[0] * 720 / band.shape[1]))))
+                bh, bw = band.shape[:2]
+                if bw > 720:
+                    nw, nh = 720, max(1, int(bh * 720 / bw))
+                    band = cv2.resize(band, (nw, nh))
+                else:
+                    nw, nh = bw, bh
+                scale_x, scale_y = bw / float(nw), bh / float(nh)
                 hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
                 v = hsv[:, :, 2]
                 s = hsv[:, :, 1]
@@ -943,27 +983,44 @@ def detect_subtitle_events(video_path: str, roi: dict, sample_fps: float = 10.0)
                 present = int(mask.sum()) >= 170 and int((mask.sum(axis=0) > 2).sum()) >= 28
                 t = round(idx / fps, 2)
 
+                # Bounding box của chữ trong khung hình (dùng để crop zoom khi ký tự quá ngắn)
+                bbox = None
+                if present:
+                    ys, xs = np.where(mask > 0)
+                    if len(xs):
+                        bbox = (
+                            int(bx0 + xs.min() * scale_x),
+                            int(by0 + ys.min() * scale_y),
+                            int(bx0 + xs.max() * scale_x),
+                            int(by0 + ys.max() * scale_y),
+                        )
+
                 if present:
                     if cur is None:
-                        cur = {"start": t, "end": t, "mask": mask}
+                        cur = {"start": t, "end": t, "mask": mask, "bbox": bbox, "bbox_area": 0}
                     else:
                         inter = float((mask & cur["mask"]).sum())
                         union = float((mask | cur["mask"]).sum()) or 1.0
                         if inter / union < 0.45:
-                            events.append({"start": cur["start"], "end": cur["end"]})
-                            cur = {"start": t, "end": t, "mask": mask}
+                            events.append({"start": cur["start"], "end": cur["end"], "bbox": cur.get("bbox")})
+                            cur = {"start": t, "end": t, "mask": mask, "bbox": bbox, "bbox_area": 0}
                         else:
                             cur["end"] = t
                             cur["mask"] = mask
+                    if bbox:
+                        area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                        if area > cur.get("bbox_area", 0):
+                            cur["bbox"] = bbox
+                            cur["bbox_area"] = area
                 elif cur is not None:
-                    events.append({"start": cur["start"], "end": cur["end"]})
+                    events.append({"start": cur["start"], "end": cur["end"], "bbox": cur.get("bbox")})
                     cur = None
             idx += 1
     finally:
         cap.release()
 
     if cur is not None:
-        events.append({"start": cur["start"], "end": cur["end"]})
+        events.append({"start": cur["start"], "end": cur["end"], "bbox": cur.get("bbox")})
 
     cleaned = []
     for ev in events:
@@ -973,6 +1030,7 @@ def detect_subtitle_events(video_path: str, roi: dict, sample_fps: float = 10.0)
             {
                 "start": round(max(0.0, ev["start"] - 0.05), 2),
                 "end": round(ev["end"] + 0.10, 2),
+                "bbox": ev.get("bbox"),
             }
         )
     print(f"[SUBTITLE-DETECT] Tìm thấy {len(cleaned)} sự kiện phụ đề.", flush=True)
@@ -1103,6 +1161,17 @@ def run_ocr_with_qwen25_vl(
                 else:
                     cur_entry = {"time": t_c, "crop_path": cp, "event": sp.get("event")}
                     sampled_entries.append(cur_entry)
+                    # Crop zoom vùng giữa cho dòng ngắn (1-2 ký tự như "二") mà model đọc trượt
+                    ev_z = sp.get("event") or {}
+                    span_z = float(ev_z.get("end", 0)) - float(ev_z.get("start", 0))
+                    if 0 < span_z <= 0.8:
+                        hz, wz = frm.shape[:2]
+                        zc = frm[int(hz * 0.58) : int(hz * 0.73), int(wz * 0.28) : int(wz * 0.72)]
+                        if zc is not None and zc.size > 0:
+                            zc = cv2.resize(zc, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+                            zp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{t_c:.2f}s_zoom.jpg")
+                            cv2.imwrite(zp, zc)
+                            cur_entry["zoom_path"] = zp
 
         cap.release()
         print(
