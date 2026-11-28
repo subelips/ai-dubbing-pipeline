@@ -116,6 +116,7 @@ os.environ.setdefault("TORCH_HOME", "/root/.cache/torch")
 
 # ROI phụ đề (dùng chung cho dò sự kiện và cắt ảnh OCR)
 SUBTITLE_ROI = {"x1": 0.02, "y1": 0.55, "x2": 0.98, "y2": 0.72}
+_RAPID_OCR_INSTANCE = None
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
@@ -394,6 +395,26 @@ def ensure_deps():
             pip_cmd.append("--no-deps")
         pip_cmd.extend(missing)
         subprocess.run(pip_cmd, check=False)
+
+
+def _get_rapidocr():
+    """Khởi tạo RapidOCR (ONNX, CPU) theo kiểu lazy; cài --no-deps để không phá opencv sẵn có."""
+    global _RAPID_OCR_INSTANCE
+    if _RAPID_OCR_INSTANCE is not None:
+        return _RAPID_OCR_INSTANCE
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "--no-deps", "rapidocr-onnxruntime"],
+            check=False,
+        )
+        if not _is_installed("onnxruntime"):
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "onnxruntime"], check=False)
+        from rapidocr_onnxruntime import RapidOCR
+
+    _RAPID_OCR_INSTANCE = RapidOCR()
+    return _RAPID_OCR_INSTANCE
 
 
 def prefetch_qwen_model_async(model_id: str):
@@ -802,83 +823,45 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                     except Exception:
                         raw_ocr_map[ts_c] = {"boxes": [], "visual_speaker": "unknown"}
 
-        # Retry các khung OCR ra rác (chỉ dấu câu) bằng khung dự phòng trong cùng sự kiện phụ đề
+        # Fallback các khung OCR ra rác (chỉ dấu câu) bằng RapidOCR (ONNX, CPU) — ổn định hơn Qwen
         retry_items = []
         for entry in sampled_entries:
             ts_r = float(entry["time"])
             res_r = raw_ocr_map.get(ts_r) or {}
             txt_r = " ".join(str(b.get("text") or "") for b in (res_r.get("boxes") or []))
-            if entry.get("event") and entry.get("alt_path") and _is_garbage_text(txt_r):
+            if entry.get("event") and _is_garbage_text(txt_r):
                 retry_items.append(entry)
 
         if retry_items:
-            print(f"[QWEN2.5-VL-3B] Retry {len(retry_items)} khung OCR rác (prompt chữ-only)...", flush=True)
+            print(f"[QWEN2.5-VL-3B] {len(retry_items)} khung OCR rác -> fallback RapidOCR...", flush=True)
             try:
-                if img_proc is not None and hasattr(img_proc, "max_pixels"):
-                    img_proc.max_pixels = 384 * 28 * 28
-            except Exception:
-                pass
-            for entry in retry_items[:10]:
-                for cand_path in (
-                    entry.get("crop_path"),
-                    entry.get("alt2_path"),
-                    entry.get("alt3_path"),
-                    entry.get("alt_path"),
-                ):
-                    if not cand_path:
-                        continue
-                    try:
-                        bgr_r = cv2_mod.imread(cand_path)
-                        if bgr_r is None or bgr_r.size == 0:
+                fb_ocr = _get_rapidocr()
+                for entry in retry_items[:12]:
+                    for cand_path in (
+                        entry.get("crop_path"),
+                        entry.get("alt2_path"),
+                        entry.get("alt3_path"),
+                        entry.get("alt_path"),
+                    ):
+                        if not cand_path:
                             continue
-                        rgb_r = cv2_mod.cvtColor(bgr_r, cv2_mod.COLOR_BGR2RGB)
-                        im_r = Image.fromarray(rgb_r)
                         try:
-                            chat_r = _build_chat_str(im_r)
-                        except Exception:
-                            chat_r = processor.apply_chat_template(
-                                [
-                                    {
-                                        "role": "user",
-                                        "content": [
-                                            {"type": "image", "image": im_r},
-                                            {
-                                                "type": "text",
-                                                "text": "Đọc chính xác dòng chữ phụ đề trong ảnh. Chỉ trả về đúng nội dung chữ, không giải thích, không thêm nhãn.",
-                                            },
-                                        ],
-                                    }
-                                ],
-                                tokenize=False,
-                                add_generation_prompt=True,
-                            )
-                        inp_r = processor(text=[chat_r], images=[im_r], padding=True, return_tensors="pt")
-                        inp_r = {k: (v.to(target_dev) if hasattr(v, "to") else v) for k, v in inp_r.items()}
-                        with torch.inference_mode():
-                            g_r = model.generate(
-                                **inp_r,
-                                max_new_tokens=max_new_tokens,
-                                do_sample=False,
-                            )
-                        l_r = inp_r["input_ids"].shape[1]
-                        dec_r = processor.batch_decode(
-                            [g_r[0][l_r:]], skip_special_tokens=True, clean_up_tokenization_spaces=False
-                        )
-                        raw_r = (dec_r[0] if dec_r else "").strip()
-                        raw_r = re.sub(r"^(?:TEXT|SUBTITLE|OCR)\s*[:=]\s*", "", raw_r, flags=re.IGNORECASE).strip().strip('"').strip("'")
-                        if raw_r and "\n" not in raw_r and not _is_garbage_text(raw_r):
-                            raw_ocr_map[float(entry["time"])] = {
-                                "boxes": [{"poly": [], "text": raw_r, "score": 1.0}],
-                                "visual_speaker": "unknown",
-                            }
-                            break
-                    except Exception as e_r:
-                        print(f"[QWEN2.5-VL-3B][WARN] retry lỗi: {e_r}", flush=True)
-            try:
-                if img_proc is not None and hasattr(img_proc, "max_pixels"):
-                    img_proc.max_pixels = max_pixels
-            except Exception:
-                pass
+                            bgr_r = cv2_mod.imread(cand_path)
+                            if bgr_r is None or bgr_r.size == 0:
+                                continue
+                            fb_res, _ = fb_ocr(bgr_r)
+                            texts_fb = [str(r[1]).strip() for r in (fb_res or []) if str(r[1]).strip()]
+                            joined_fb = " ".join(texts_fb).strip()
+                            if joined_fb and not _is_garbage_text(joined_fb):
+                                raw_ocr_map[float(entry["time"])] = {
+                                    "boxes": [{"poly": [], "text": t, "score": 1.0} for t in texts_fb],
+                                    "visual_speaker": "unknown",
+                                }
+                                break
+                        except Exception as e_fb:
+                            print(f"[RAPIDOCR][WARN] {e_fb}", flush=True)
+            except Exception as e_fb0:
+                print(f"[RAPIDOCR][WARN] Không khởi tạo được fallback: {e_fb0}", flush=True)
     finally:
         del model, processor
         free_gpu()
