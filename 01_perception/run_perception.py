@@ -50,7 +50,8 @@ functools.wraps = (
 
 
 def _patch_pyannote_ufunc_compat():
-    """Gắn module/qualname giả lập và vá wrapt/inspect cho numpy.ufunc trên Python 3.13."""
+    """Vá tương thích numpy.ma / scipy / pyannote trên Python 3.13 mà không làm hỏng C-type ufunc."""
+    import builtins
     import inspect
 
     try:
@@ -63,16 +64,19 @@ def _patch_pyannote_ufunc_compat():
                     setattr(_umath, "_blas_supports_fpe", lambda *a, **kw: False)
                 except Exception:
                     pass
-        if not hasattr(np.ufunc, "__qualname__"):
-            try:
-                type.__setattr__(np.ufunc, "__qualname__", "ufunc")
-            except Exception:
-                pass
-        if not hasattr(np.ufunc, "__module__"):
-            try:
-                type.__setattr__(np.ufunc, "__module__", "numpy")
-            except Exception:
-                pass
+
+        # Trên Python 3.13, numpy.ma.core truy cập trực tiếp `ufunc.__qualname__` (C slot không có sẵn).
+        # Thay vì đụng vào C-type slot, chỉ chặn nếu có code đọc qua getattr hoặc vá numpy.ma.core trước khi import.
+        _orig_getattr = builtins.getattr
+        if not getattr(_orig_getattr, "_ufunc_patched", False):
+            def _safe_getattr(obj, name, *default):
+                if name == "__qualname__" and isinstance(obj, np.ufunc):
+                    return _orig_getattr(obj, "__name__", "ufunc")
+                if name == "__module__" and isinstance(obj, np.ufunc):
+                    return "numpy"
+                return _orig_getattr(obj, name, *default)
+            _safe_getattr._ufunc_patched = True
+            builtins.getattr = _safe_getattr
     except Exception:
         pass
 
@@ -130,6 +134,48 @@ import time
 import traceback
 import zipfile
 import requests
+
+def _install_numpy_ma_py313_hook():
+    """Tự động vá `ufunc.__qualname__` trong `numpy.ma.core` trên Python 3.13 trước khi module này được nạp."""
+    import importlib.abc
+    import importlib.machinery
+    import importlib.util
+
+    if "numpy.ma.core" in sys.modules:
+        return
+
+    class _NumpyMaCorePatcher(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        def find_spec(self, fullname, path, target=None):
+            if fullname != "numpy.ma.core":
+                return None
+            # Tìm spec gốc bỏ qua finder này
+            for finder in sys.meta_path:
+                if finder is self:
+                    continue
+                if hasattr(finder, "find_spec"):
+                    spec = finder.find_spec(fullname, path, target)
+                    if spec is not None and spec.origin and spec.origin.endswith(".py"):
+                        self._orig_origin = spec.origin
+                        return importlib.util.spec_from_loader(fullname, self, origin=spec.origin)
+            return None
+
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            with open(self._orig_origin, "r", encoding="utf-8") as fh:
+                source = fh.read()
+            source = source.replace(
+                "ufunc.__qualname__",
+                "getattr(ufunc, '__qualname__', getattr(ufunc, '__name__', 'ufunc'))",
+            )
+            code = compile(source, self._orig_origin, "exec")
+            exec(code, module.__dict__)
+
+    sys.meta_path.insert(0, _NumpyMaCorePatcher())
+
+_install_numpy_ma_py313_hook()
+
 
 
 def _clean_url_or_str(val: str) -> str:
@@ -438,8 +484,13 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
     if not sampled_entries:
         return {}, False
 
+    _install_numpy_ma_py313_hook()
+    _patch_pyannote_ufunc_compat()
     import torch
     from PIL import Image
+
+    model_id = cfg["model_id"]
+    max_new_tokens = int(cfg.get("max_new_tokens", 128))
 
     try:
         from transformers.models.qwen2_5_vl.processing_qwen2_5_vl import Qwen2_5_VLProcessor as VLProcessorClass
@@ -449,9 +500,6 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
         print(f"[QWEN2.5-VL-3B][INFO] Submodule import fallback ({_sub_err}), dùng AutoProcessor...", flush=True)
         from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration as VLModelClass
         processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
-
-    model_id = cfg["model_id"]
-    max_new_tokens = int(cfg.get("max_new_tokens", 128))
     has_cuda = bool(torch.cuda.is_available())
     dtype = torch.float16 if has_cuda else torch.float32
 
