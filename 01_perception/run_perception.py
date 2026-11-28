@@ -986,14 +986,20 @@ def detect_subtitle_events(video_path: str, roi: dict, sample_fps: float = 10.0)
                 # Bounding box của chữ trong khung hình (dùng để crop zoom khi ký tự quá ngắn)
                 bbox = None
                 if present:
-                    ys, xs = np.where(mask > 0)
-                    if len(xs):
-                        bbox = (
-                            int(bx0 + xs.min() * scale_x),
-                            int(by0 + ys.min() * scale_y),
-                            int(bx0 + xs.max() * scale_x),
-                            int(by0 + ys.max() * scale_y),
-                        )
+                    # Bbox lấy trong dải dòng phụ đề (0.60-0.71) để tránh vật sáng ở nền
+                    sub_y1, sub_y2 = int(h * 0.60), int(h * 0.71)
+                    sub = frame[sub_y1:sub_y2, bx0 : int(w * roi["x2"])]
+                    if sub.size:
+                        hsv_s = cv2.cvtColor(sub, cv2.COLOR_BGR2HSV)
+                        wmask = (hsv_s[:, :, 2] > 195) & (hsv_s[:, :, 1] < 70)
+                        ys, xs = np.where(wmask)
+                        if len(xs):
+                            bbox = (
+                                int(bx0 + xs.min()),
+                                int(sub_y1 + ys.min()),
+                                int(bx0 + xs.max()),
+                                int(sub_y1 + ys.max()),
+                            )
 
                 if present:
                     if cur is None:
@@ -1161,14 +1167,19 @@ def run_ocr_with_qwen25_vl(
                 else:
                     cur_entry = {"time": t_c, "crop_path": cp, "event": sp.get("event")}
                     sampled_entries.append(cur_entry)
-                    # Crop zoom vùng giữa cho dòng ngắn (1-2 ký tự như "二") mà model đọc trượt
-                    ev_z = sp.get("event") or {}
-                    span_z = float(ev_z.get("end", 0)) - float(ev_z.get("start", 0))
-                    if 0 < span_z <= 0.8:
-                        hz, wz = frm.shape[:2]
-                        zc = frm[int(hz * 0.58) : int(hz * 0.73), int(wz * 0.28) : int(wz * 0.72)]
+                    # Crop zoom quanh bbox chữ (dòng ngắn 1-2 ký tự) để model đọc được
+                    bb = (sp.get("event") or {}).get("bbox")
+                    if bb:
+                        zx1, zy1, zx2, zy2 = bb
+                        bh0 = max(1, zy2 - zy1)
+                        pad_x = max(14, int((zx2 - zx1) * 0.45))
+                        pad_y = max(12, int((zy2 - zy1) * 0.55))
+                        zx1, zy1 = max(0, zx1 - pad_x), max(0, zy1 - pad_y)
+                        zx2, zy2 = min(frm.shape[1], zx2 + pad_x), min(frm.shape[0], zy2 + pad_y)
+                        zc = frm[zy1:zy2, zx1:zx2]
                         if zc is not None and zc.size > 0:
-                            zc = cv2.resize(zc, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+                            sc = max(2.0, min(8.0, 200.0 / bh0))
+                            zc = cv2.resize(zc, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
                             zp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{t_c:.2f}s_zoom.jpg")
                             cv2.imwrite(zp, zc)
                             cur_entry["zoom_path"] = zp
