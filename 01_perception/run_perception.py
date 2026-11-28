@@ -721,21 +721,22 @@ def _merge_dual_ocr(qwen_text: str, rapid_text: str, rapid_score: float = 0.0) -
         return (q, "qwen")
     nq = re.sub(r"[\s\W_]+", "", q)
     nr = re.sub(r"[\s\W_]+", "", r)
+    if not nq or not nr:
+        return (q, "qwen") if nq else (r, "rapid")
     if nq == nr:
         # cùng nội dung: chọn bản ít khoảng trắng/dấu câu thừa hơn
         return (q if len(q.replace(" ", "")) <= len(r.replace(" ", "")) else r, "both")
-    if nq and nr and (nq in nr or nr in nq):
-        # chỉ coi là "sót ký tự" khi độ dài tương đương; lệch quá nhiều là bịa thêm chữ
-        if min(len(nq), len(nr)) / float(max(len(nq), len(nr))) >= 0.6:
-            return (r, "rapid") if nq in nr else (q, "qwen")
+    if (nq in nr or nr in nq) and min(len(nq), len(nr)) / float(max(len(nq), len(nr))) >= 0.6:
+        # lệch đúng một cụm ngắn: bản dài là bản không bị sót ký tự
+        return (r, "rapid") if nq in nr else (q, "qwen")
     sim = SequenceMatcher(None, nq, nr).ratio()
     if sim >= 0.80 and len(nq) != len(nr):
-        # lệch độ dài nhưng vẫn gần nhau: bản dài thường không bị sót ký tự
         return (q, "qwen") if len(nq) > len(nr) else (r, "rapid")
-    bad_q = _zh_unknown_tokens(q)
-    bad_r = _zh_unknown_tokens(r)
-    if bad_q != bad_r:
-        return (q, "qwen") if bad_q < bad_r else (r, "rapid")
+    if sim >= 0.50:
+        bad_q = _zh_unknown_tokens(q)
+        bad_r = _zh_unknown_tokens(r)
+        if bad_q != bad_r:
+            return (q, "qwen") if bad_q < bad_r else (r, "rapid")
     if rapid_score >= 0.60:
         return (r, "rapid")
     return (q, "qwen")
