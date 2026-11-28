@@ -1,0 +1,239 @@
+name: QC Kernel Runner (temp)
+
+# Workflow tạm: đẩy kernel lên Kaggle, nếu kẹt QUEUED thì đẩy lại ngay (không chờ),
+# lặp vài lần; sau khi RUNNING thì theo dõi tới COMPLETE/ERROR.
+# Có thể chọn account Kaggle, slug kernel riêng và xoá kernel trước khi đẩy (recreate)
+# để giải phóng session queued.
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Job ID cần chạy"
+        required: true
+        default: "qc1"
+      stage:
+        description: "Giai đoạn chạy (stage1 | stage2 | stage3)"
+        required: true
+        default: "stage1"
+      cred_account:
+        description: "Account Kaggle dùng để chạy (perception | translation | synthesis)"
+        required: true
+        default: "perception"
+      kernel_slug:
+        description: "Slug kernel (để trống = slug mặc định của stage)"
+        required: false
+        default: ""
+      recreate:
+        description: "Xoá kernel trước khi đẩy? (true/false)"
+        required: false
+        default: "false"
+      max_attempts:
+        description: "Số lần đẩy lại tối đa nếu kernel bị QUEUED"
+        required: false
+        default: "6"
+      run_timeout_min:
+        description: "Số phút tối đa chờ kernel chạy xong"
+        required: false
+        default: "90"
+
+permissions:
+  contents: read
+
+env:
+  GH_REPO: ${{ github.repository }}
+  GH_PAT_TOKEN: ${{ secrets.GH_PAT_TOKEN || github.token }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+  NTFY_SERVER: ${{ secrets.NTFY_SERVER || 'https://ntfy.sh' }}
+  NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+
+jobs:
+  run-kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cài đặt Kaggle CLI
+        run: pip install -q --upgrade kaggle
+
+      - name: Push kernel + chống kẹt QUEUED + theo dõi
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          STAGE: ${{ inputs.stage }}
+          CRED_ACCOUNT: ${{ inputs.cred_account }}
+          KERNEL_SLUG: ${{ inputs.kernel_slug }}
+          RECREATE: ${{ inputs.recreate }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          RUN_TIMEOUT_MIN: ${{ inputs.run_timeout_min }}
+          PERCEPTION_KAGGLE_USER: ${{ secrets.PERCEPTION_KAGGLE_USER }}
+          PERCEPTION_KAGGLE_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
+          TRANSLATION_KAGGLE_USER: ${{ secrets.TRANSLATION_KAGGLE_USER }}
+          TRANSLATION_KAGGLE_KEY: ${{ secrets.TRANSLATION_KAGGLE_KEY }}
+          SYNTHESIS_KAGGLE_USER: ${{ secrets.SYNTHESIS_KAGGLE_USER }}
+          SYNTHESIS_KAGGLE_KEY: ${{ secrets.SYNTHESIS_KAGGLE_KEY }}
+        run: |
+          python3 - << 'PY'
+          import json, os, shutil, subprocess, sys, time
+
+          stage = os.environ["STAGE"].strip().lower()
+          job_id = os.environ["JOB_ID"].strip()
+          acct = (os.environ.get("CRED_ACCOUNT") or "perception").strip().lower()
+          max_attempts = max(1, int(os.environ.get("MAX_ATTEMPTS", "6")))
+          run_timeout_min = max(5, int(os.environ.get("RUN_TIMEOUT_MIN", "90")))
+          recreate = (os.environ.get("RECREATE") or "false").strip().lower() in ("1", "true", "yes")
+
+          stage_map = {
+              "stage1": ("01_perception/run_perception.py", "dubbing-perception"),
+              "stage2": ("02_translation/run_translation.py", "dubbing-translation"),
+              "stage3": ("03_synthesis/run_synthesis.py", "dubbing-synthesis"),
+          }
+          acct_map = {
+              "perception": ("PERCEPTION_KAGGLE_USER", "PERCEPTION_KAGGLE_KEY"),
+              "translation": ("TRANSLATION_KAGGLE_USER", "TRANSLATION_KAGGLE_KEY"),
+              "synthesis": ("SYNTHESIS_KAGGLE_USER", "SYNTHESIS_KAGGLE_KEY"),
+          }
+          src_file, default_slug = stage_map[stage]
+          u_key, k_key = acct_map[acct]
+          slug_suffix = (os.environ.get("KERNEL_SLUG") or "").strip() or default_slug
+          k_user = os.environ.get(u_key, "").strip()
+          k_val = os.environ.get(k_key, "").strip()
+          if not k_user or not k_val:
+              sys.exit(f"[FATAL] Thiếu secret {u_key}/{k_key}")
+
+          kaggle_dir = os.path.expanduser("~/.kaggle")
+          os.makedirs(kaggle_dir, exist_ok=True)
+          sub_env = os.environ.copy()
+          if k_val.startswith("KGAT"):
+              sub_env["KAGGLE_API_TOKEN"] = k_val
+              cred_path = os.path.join(kaggle_dir, "access_token")
+              with open(cred_path, "w", encoding="utf-8") as f:
+                  f.write(k_val)
+          else:
+              sub_env["KAGGLE_USERNAME"] = k_user
+              sub_env["KAGGLE_KEY"] = k_val
+              cred_path = os.path.join(kaggle_dir, "kaggle.json")
+              with open(cred_path, "w", encoding="utf-8") as f:
+                  json.dump({"username": k_user, "key": k_val}, f)
+          os.chmod(cred_path, 0o600)
+
+          code = open(src_file, "r", encoding="utf-8").read()
+          replacements = {
+              "__INJECT_JOB_ID__": job_id,
+              "__INJECT_GH_REPO__": os.environ.get("GH_REPO", ""),
+              "__INJECT_GH_PAT_TOKEN__": os.environ.get("GH_PAT_TOKEN", ""),
+              "__INJECT_NTFY_TOPIC__": os.environ.get("NTFY_TOPIC", ""),
+              "__INJECT_NTFY_SERVER__": os.environ.get("NTFY_SERVER", "https://ntfy.sh"),
+              "__INJECT_NTFY_TOKEN__": os.environ.get("NTFY_TOKEN", ""),
+          }
+          for k, v in replacements.items():
+              code = code.replace(k, v)
+          hf_tok = os.environ.get("HF_TOKEN", "").strip()
+          if hf_tok:
+              code = f'import os\nos.environ["HF_TOKEN"] = {json.dumps(hf_tok)}\n' + code
+
+          build_dir = f"/tmp/kaggle_{stage}"
+          if os.path.exists(build_dir):
+              shutil.rmtree(build_dir)
+          os.makedirs(build_dir, exist_ok=True)
+          with open(os.path.join(build_dir, "script.py"), "w", encoding="utf-8") as f:
+              f.write(code)
+
+          meta = {
+              "id": f"{k_user}/{slug_suffix}",
+              "title": slug_suffix,
+              "code_file": "script.py",
+              "language": "python",
+              "kernel_type": "script",
+              "is_private": True,
+              "enable_gpu": True,
+              "enable_internet": True,
+              "dataset_sources": [],
+              "competition_sources": [],
+              "kernel_sources": [],
+          }
+          with open(os.path.join(build_dir, "kernel-metadata.json"), "w", encoding="utf-8") as f:
+              json.dump(meta, f, indent=2)
+
+          from kaggle.api.kaggle_api_extended import KaggleApi
+          api = KaggleApi()
+          api.authenticate()
+
+          slug = f"{k_user}/{slug_suffix}"
+          print(f"[INFO] Kernel: {slug} | job={job_id} | stage={stage} | cred_account={acct} | recreate={recreate}", flush=True)
+
+          q = subprocess.run(["kaggle", "quota"], env=sub_env, capture_output=True, text=True)
+          print((q.stdout or "").strip()[:800], flush=True)
+
+          if recreate:
+              print(f"[INFO] Xoá kernel {slug} để giải phóng session...", flush=True)
+              try:
+                  api.kernels_delete(slug, no_confirm=True)
+                  print("[INFO] Đã xoá kernel.", flush=True)
+              except Exception as e:
+                  print(f"[WARN] Xoá kernel lỗi: {e}", flush=True)
+              time.sleep(5)
+
+          status = "UNKNOWN"
+          for attempt in range(1, max_attempts + 1):
+              print(f"===== PUSH attempt {attempt}/{max_attempts} =====", flush=True)
+              res = subprocess.run(
+                  ["kaggle", "kernels", "push", "-p", build_dir],
+                  env=sub_env, capture_output=True, text=True,
+              )
+              if res.stdout.strip():
+                  print(res.stdout.strip(), flush=True)
+              if res.stderr.strip():
+                  print("[stderr]", res.stderr.strip(), flush=True)
+              if res.returncode != 0:
+                  print(f"[WARN] push trả code {res.returncode} — vẫn kiểm tra status", flush=True)
+
+              # KHÔNG chờ lâu: QUEUED thường không tự chuyển RUNNING.
+              for _ in range(3):
+                  time.sleep(20)
+                  try:
+                      status = api.kernels_status(slug).status.name
+                  except Exception as e:
+                      print(f"[WARN] Không đọc được status: {e}", flush=True)
+                      status = "UNKNOWN"
+                  print(f"[INFO] attempt {attempt}: status={status}", flush=True)
+                  if status != "QUEUED":
+                      break
+              if status != "QUEUED":
+                  break
+
+          if status == "QUEUED":
+              sys.exit(f"[FAIL] Kernel vẫn QUEUED sau {max_attempts} lần đẩy lại.")
+
+          if status == "RUNNING":
+              print("[INFO] Kernel đã RUNNING — bắt đầu theo dõi tới khi xong.", flush=True)
+              deadline = time.time() + run_timeout_min * 60
+              while time.time() < deadline:
+                  time.sleep(45)
+                  try:
+                      st = api.kernels_status(slug)
+                      status = st.status.name
+                      fail_msg = st.failure_message
+                  except Exception as e:
+                      print(f"[WARN] poll lỗi: {e}", flush=True)
+                      continue
+                  print(f"[POLL] {time.strftime('%H:%M:%S')} status={status}", flush=True)
+                  if status in ("COMPLETE", "ERROR"):
+                      if status == "ERROR":
+                          print(f"[ERROR] failure_message: {fail_msg}", flush=True)
+                          lr = subprocess.run(
+                              ["kaggle", "kernels", "logs", slug],
+                              env=sub_env, capture_output=True, text=True,
+                          )
+                          tail = ((lr.stdout or "") + "\n" + (lr.stderr or ""))[-6000:]
+                          print("[KERNEL LOG TAIL]\n" + tail, flush=True)
+                      break
+              else:
+                  sys.exit(f"[TIMEOUT] Kernel chưa xong sau {run_timeout_min} phút (status={status}).")
+
+          print(f"[FINAL] kernel status={status}", flush=True)
+          if status == "ERROR":
+              sys.exit("[FAIL] Kernel chạy lỗi.")
+          PY

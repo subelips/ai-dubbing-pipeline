@@ -581,12 +581,20 @@ def _get_qwen25_vl_config() -> dict:
             or "Qwen/Qwen2.5-VL-3B-Instruct"
         ),
         "step_sec": max(0.25, float(os.environ.get("OCR_STEP_SEC", "0.50"))),
-        "batch_size": max(1, min(16, int(os.environ.get("QWEN_OCR_BATCH_SIZE", "8")))),
-        "max_pixels": max(65536, int(os.environ.get("QWEN_OCR_MAX_PIXELS", str(384 * 28 * 28)))),
-        "max_new_tokens": max(48, int(os.environ.get("QWEN_OCR_MAX_NEW_TOKENS", "160"))),
+        "batch_size": max(1, min(16, int(os.environ.get("QWEN_OCR_BATCH_SIZE", "10")))),
+        "max_pixels": max(65536, int(os.environ.get("QWEN_OCR_MAX_PIXELS", str(256 * 28 * 28)))),
+        "max_new_tokens": max(48, int(os.environ.get("QWEN_OCR_MAX_NEW_TOKENS", "96"))),
         "save_bbox_vis": os.environ.get("SAVE_BBOX_VIS", "0").strip() == "1",
         "use_vad_ocr": os.environ.get("USE_VAD_GUIDED_OCR", "1").strip() == "1",
     }
+
+
+def _is_garbage_text(txt: str) -> bool:
+    """True nếu chuỗi không có chữ/số thực sự (chỉ dấu câu, khoảng trắng...)."""
+    s = str(txt or "").strip()
+    if not s:
+        return True
+    return not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", s)
 
 
 def _parse_qwen_ocr_and_speaker(raw_text: str) -> tuple[list[str], str]:
@@ -789,6 +797,42 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                         }
                     except Exception:
                         raw_ocr_map[ts_c] = {"boxes": [], "visual_speaker": "unknown"}
+
+        # Retry các khung OCR ra rác (chỉ dấu câu) bằng khung dự phòng trong cùng sự kiện phụ đề
+        retry_items = []
+        for entry in sampled_entries:
+            ts_r = float(entry["time"])
+            res_r = raw_ocr_map.get(ts_r) or {}
+            txt_r = " ".join(str(b.get("text") or "") for b in (res_r.get("boxes") or []))
+            if entry.get("alt_path") and _is_garbage_text(txt_r):
+                retry_items.append(entry)
+
+        if retry_items:
+            print(f"[QWEN2.5-VL-3B] Retry {len(retry_items)} khung OCR rác bằng khung dự phòng...", flush=True)
+            for entry in retry_items[:12]:
+                try:
+                    bgr_r = cv2_mod.imread(entry["alt_path"])
+                    if bgr_r is None or bgr_r.size == 0:
+                        continue
+                    rgb_r = cv2_mod.cvtColor(bgr_r, cv2_mod.COLOR_BGR2RGB)
+                    im_r = Image.fromarray(rgb_r)
+                    chat_r = _build_chat_str(im_r)
+                    inp_r = processor(text=[chat_r], images=[im_r], padding=True, return_tensors="pt")
+                    inp_r = {k: (v.to(target_dev) if hasattr(v, "to") else v) for k, v in inp_r.items()}
+                    with torch.inference_mode():
+                        g_r = model.generate(**inp_r, max_new_tokens=max_new_tokens, do_sample=False)
+                    l_r = inp_r["input_ids"].shape[1]
+                    dec_r = processor.batch_decode(
+                        [g_r[0][l_r:]], skip_special_tokens=True, clean_up_tokenization_spaces=False
+                    )
+                    lines_r, v_spk_r = _parse_qwen_ocr_and_speaker(dec_r[0] if dec_r else "")
+                    if lines_r and not _is_garbage_text(" ".join(lines_r)):
+                        raw_ocr_map[float(entry["time"])] = {
+                            "boxes": [{"poly": [], "text": x, "score": 1.0} for x in lines_r],
+                            "visual_speaker": v_spk_r,
+                        }
+                except Exception as e_r:
+                    print(f"[QWEN2.5-VL-3B][WARN] retry lỗi: {e_r}", flush=True)
     finally:
         del model, processor
         free_gpu()
@@ -820,18 +864,98 @@ def _draw_roi_visualization(full_frame, roi: dict, out_vis_path: str, ts_sec: fl
     cv2.imwrite(out_vis_path, vis)
 
 
+def detect_subtitle_events(video_path: str, roi: dict, sample_fps: float = 10.0) -> list[dict]:
+    """Dò nhanh các 'sự kiện' phụ đề (xuất hiện / đổi nội dung) bằng CV, không cần model OCR.
+
+    Ý tưởng: phụ đề là chữ trắng có viền tối. Lấy mask = pixel sáng nằm cạnh pixel tối,
+    chạy quét ROI ở ~10 fps; mask đổi mạnh (IoU thấp) => phụ đề mới. Cách này bắt được cả
+    phụ đề xuất hiện lúc không có thoại (VAD bỏ qua) và rẻ hơn nhiều so với OCR mọi khung.
+    """
+    import cv2
+    import numpy as np
+
+    events: list[dict] = []
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    if fps <= 0:
+        cap.release()
+        return events
+
+    step = max(1, int(round(fps / max(2.0, sample_fps))))
+    kernel = np.ones((5, 5), np.uint8)
+    close_k = np.ones((3, 3), np.uint8)
+    cur = None
+    idx = 0
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            if idx % step == 0:
+                h, w, _ = frame.shape
+                band = frame[int(h * roi["y1"]) : int(h * roi["y2"]), int(w * roi["x1"]) : int(w * roi["x2"])]
+                if band.size == 0:
+                    idx += 1
+                    continue
+                hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+                v = hsv[:, :, 2]
+                s = hsv[:, :, 1]
+                white = (v > 195) & (s < 70)
+                dark = cv2.dilate((v < 80).astype(np.uint8), kernel)
+                mask = cv2.morphologyEx((white & (dark > 0)).astype(np.uint8), cv2.MORPH_CLOSE, close_k)
+                present = int(mask.sum()) >= 350 and int((mask.sum(axis=0) > 3).sum()) >= 40
+                t = round(idx / fps, 2)
+
+                if present:
+                    if cur is None:
+                        cur = {"start": t, "end": t, "mask": mask}
+                    else:
+                        inter = float((mask & cur["mask"]).sum())
+                        union = float((mask | cur["mask"]).sum()) or 1.0
+                        if inter / union < 0.45:
+                            events.append({"start": cur["start"], "end": cur["end"]})
+                            cur = {"start": t, "end": t, "mask": mask}
+                        else:
+                            cur["end"] = t
+                            cur["mask"] = mask
+                elif cur is not None:
+                    events.append({"start": cur["start"], "end": cur["end"]})
+                    cur = None
+            idx += 1
+    finally:
+        cap.release()
+
+    if cur is not None:
+        events.append({"start": cur["start"], "end": cur["end"]})
+
+    cleaned = []
+    for ev in events:
+        if ev["end"] - ev["start"] < 0.08:
+            continue
+        cleaned.append(
+            {
+                "start": round(max(0.0, ev["start"] - 0.05), 2),
+                "end": round(ev["end"] + 0.10, 2),
+            }
+        )
+    print(f"[SUBTITLE-DETECT] Tìm thấy {len(cleaned)} sự kiện phụ đề.", flush=True)
+    return cleaned
+
+
 def run_ocr_with_qwen25_vl(
     video_path: str,
     work_dir: str,
     vocals_wav: str = "",
-) -> tuple[dict, list[dict], str, float, list[list[float]]]:
-    """Lấy mẫu khung hình theo mốc VAD (hoặc step_sec) và trích xuất phụ đề + gợi ý nhân vật bằng Qwen2.5-VL-3B."""
-    roi = {"x1": 0.02, "y1": 0.58, "x2": 0.98, "y2": 0.97}
+) -> tuple[dict, list[dict], str, float, list[list[float]], list[dict]]:
+    """Lấy mẫu khung hình theo sự kiện phụ đề + mốc VAD và trích xuất phụ đề + gợi ý nhân vật bằng Qwen2.5-VL-3B."""
+    roi = {"x1": 0.02, "y1": 0.55, "x2": 0.98, "y2": 0.72}
     vis_dir = os.path.join(work_dir, "bbox_vis")
     crops_dir = os.path.join(work_dir, "ocr_crops")
     zip_path = os.path.join(work_dir, f"{JOB_ID}_bbox_vis.zip")
     duration = 60.0
     vad_intervals: list[list[float]] = []
+    subtitle_events: list[dict] = []
 
     try:
         import cv2
@@ -846,45 +970,86 @@ def run_ocr_with_qwen25_vl(
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         duration = round(total_frames / float(fps), 2) if fps > 0 else 60.0
+        cap.release()
 
-        sampled_entries = []
+        # Dò sự kiện phụ đề bằng CV (rẻ, không cần model) để lấy mẫu đúng chỗ và đủ câu
+        subtitle_events = detect_subtitle_events(video_path, roi)
+
         if cfg["use_vad_ocr"] and vocals_wav and os.path.exists(vocals_wav):
-            vad_intervals, target_ts = extract_vad_intervals_and_timestamps(vocals_wav, duration)
-            for idx_s, cur_t in enumerate(target_ts):
-                target_f = min(max(0, total_frames - 1), int(round(cur_t * fps))) if total_frames > 0 else int(round(cur_t * fps))
+            vad_intervals, vad_ts = extract_vad_intervals_and_timestamps(vocals_wav, duration)
+        else:
+            vad_ts = []
+            _t = 0.25
+            while _t < max(0.3, duration):
+                vad_ts.append(round(float(_t), 2))
+                _t += cfg["step_sec"]
+
+        # Mỗi sự kiện phụ đề: 1 khung giữa + 1 khung dự phòng (dùng khi OCR ra rác)
+        specs: list[dict] = []
+        for ev in subtitle_events:
+            span = max(0.12, ev["end"] - ev["start"])
+            mid_t = round(
+                min(max(ev["start"] + 0.18, ev["start"] + span * 0.45), max(ev["start"] + 0.10, ev["end"] - 0.06)),
+                2,
+            )
+            alt_t = round(
+                min(max(ev["start"] + 0.06, ev["start"] + span * 0.80), max(ev["start"] + 0.05, ev["end"] - 0.04)),
+                2,
+            )
+            specs.append({"time": mid_t, "alt_time": alt_t, "event": ev})
+
+        # Lưới an toàn: mốc VAD không nằm trong sự kiện nào (phụ đề lạ màu/vị trí, detector bỏ sót)
+        def _covered(t: float, pad: float = 0.9) -> bool:
+            return any((ev["start"] - pad) <= t <= (ev["end"] + pad) for ev in subtitle_events)
+
+        for _t in vad_ts:
+            _t = round(float(_t), 2)
+            if specs and _covered(_t):
+                continue
+            specs.append({"time": _t, "alt_time": round(min(duration - 0.05, _t + 0.28), 2), "event": None})
+
+        specs.sort(key=lambda x: x["time"])
+        dedup_specs: list[dict] = []
+        for sp in specs:
+            if not dedup_specs or sp["time"] - dedup_specs[-1]["time"] >= 0.20:
+                dedup_specs.append(sp)
+        specs = dedup_specs
+
+        cap = cv2.VideoCapture(video_path)
+        sampled_entries = []
+        for idx_s, sp in enumerate(specs):
+            cur_t = sp["time"]
+            cur_entry = None
+            frames = [(cur_t, "")]
+            alt_t = sp.get("alt_time")
+            if alt_t is not None and abs(float(alt_t) - cur_t) >= 0.08:
+                frames.append((round(float(alt_t), 2), "_alt"))
+            for t_c, suffix in frames:
+                target_f = min(max(0, total_frames - 1), int(round(t_c * fps))) if total_frames > 0 else int(round(t_c * fps))
                 cap.set(cv2.CAP_PROP_POS_FRAMES, target_f)
                 ok, frm = cap.read()
                 if not ok or frm is None:
                     continue
                 fh, fw, _ = frm.shape
                 crp = frm[int(fh * roi["y1"]) : int(fh * roi["y2"]), int(fw * roi["x1"]) : int(fw * roi["x2"])]
-                if crp is not None and crp.size > 0:
-                    cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{cur_t:.2f}s.jpg")
-                    cv2.imwrite(cp, crp)
-                    sampled_entries.append({"time": cur_t, "crop_path": cp})
-        else:
-            step_sec = cfg["step_sec"]
-            step_frames = max(1, int(round(step_sec * fps)))
-            frame_idx = 0
-            idx_s = 0
-            while True:
-                ok, frm = cap.read()
-                if not ok or frm is None:
-                    break
-                if frame_idx % step_frames == 0:
-                    cur_t = round(frame_idx / float(fps), 2)
-                    fh, fw, _ = frm.shape
-                    crp = frm[int(fh * roi["y1"]) : int(fh * roi["y2"]), int(fw * roi["x1"]) : int(fw * roi["x2"])]
-                    if crp is not None and crp.size > 0:
-                        cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{cur_t:.2f}s.jpg")
-                        cv2.imwrite(cp, crp)
-                        sampled_entries.append({"time": cur_t, "crop_path": cp})
-                        idx_s += 1
-                frame_idx += 1
-            if frame_idx > 0:
-                duration = round(frame_idx / float(fps), 2)
+                if crp is None or crp.size == 0:
+                    continue
+                cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{t_c:.2f}s{suffix}.jpg")
+                cv2.imwrite(cp, crp)
+                if suffix:
+                    if cur_entry is not None:
+                        cur_entry["alt_path"] = cp
+                        cur_entry["alt_time"] = t_c
+                else:
+                    cur_entry = {"time": t_c, "crop_path": cp, "event": sp.get("event")}
+                    sampled_entries.append(cur_entry)
 
         cap.release()
+        print(
+            f"[SUBTITLE-DETECT] {len(subtitle_events)} sự kiện phụ đề -> {len(sampled_entries)} khung OCR "
+            f"(VAD {len(vad_intervals)} khoảng thoại).",
+            flush=True,
+        )
 
         raw_ocr_map, active_gpu = _run_qwen25_vl_ocr(sampled_entries, cfg, cv2)
 
@@ -935,11 +1100,11 @@ def run_ocr_with_qwen25_vl(
             f"[INFO] [Qwen2.5-VL-3B (GPU={active_gpu}) | {mode_str}] "
             f"tổng frame OCR={len(sampled_entries)} | hits={hits}"
         )
-        return roi, screen_texts, zip_path if (save_vis and vis_files) else "", duration, vad_intervals
+        return roi, screen_texts, zip_path if (save_vis and vis_files) else "", duration, vad_intervals, subtitle_events
     except Exception as e:
         shutil.rmtree(crops_dir, ignore_errors=True)
         print(f"[WARN] Qwen2.5-VL-3B OCR lỗi: {e}\n{traceback.format_exc()[-1500:]}")
-        return roi, [], "", duration, vad_intervals
+        return roi, [], "", duration, vad_intervals, subtitle_events
 
 
 def _is_same_subtitle(t1: str, t2: str, strict: bool = False) -> bool:
@@ -947,9 +1112,13 @@ def _is_same_subtitle(t1: str, t2: str, strict: bool = False) -> bool:
     s2 = re.sub(r"[\s\W_]+", "", str(t2 or ""), flags=re.UNICODE).lower()
     if not s1 or not s2:
         return False
-    if s1 == s2 or s1 in s2 or s2 in s1:
+    if s1 == s2:
         return True
     min_len = min(len(s1), len(s2))
+    max_len = max(len(s1), len(s2))
+    # "吃" nằm trong "该你吃了" nhưng là câu thoại khác -> chỉ coi là cùng câu khi độ dài tương đương
+    if (s1 in s2 or s2 in s1) and (min_len / float(max(1, max_len))) >= 0.6:
+        return True
     if min_len <= 3:
         return SequenceMatcher(None, s1, s2).ratio() >= (0.88 if strict else 0.85)
     thr = 0.85 if strict else 0.78
@@ -970,15 +1139,31 @@ def _find_enclosing_vad(ts: float, vad_intervals: list[list[float]]) -> tuple[fl
     return best
 
 
+def _find_subtitle_event(ts: float, events: list[dict]) -> dict | None:
+    """Tìm sự kiện phụ đề chứa mốc ts (hoặc gần nhất trong 0.45s)."""
+    best = None
+    best_dist = 1e9
+    for ev in events or []:
+        if (ev["start"] - 0.25) <= ts <= (ev["end"] + 0.25):
+            return ev
+        dist = min(abs(ts - ev["start"]), abs(ts - ev["end"]))
+        if dist < best_dist and dist <= 0.45:
+            best_dist = dist
+            best = ev
+    return best
+
+
 def build_ocr_segments(
     screen_texts: list[dict],
     duration: float = 60.0,
     step_sec: float = 0.50,
     vad_intervals: list[list[float]] | None = None,
+    subtitle_events: list[dict] | None = None,
 ) -> list[dict]:
     grouped: list[dict] = []
     max_merge_gap = max(1.35, step_sec * 3.0)
     vad_list = vad_intervals or []
+    ev_list = subtitle_events or []
 
     for item in sorted(screen_texts, key=lambda x: float(x.get("time", 0.0))):
         ts = float(item.get("time", 0.0))
@@ -987,6 +1172,9 @@ def build_ocr_segments(
         joined = " ".join(texts).strip()
         if not joined:
             continue
+
+        ev = _find_subtitle_event(ts, ev_list)
+        enc = _find_enclosing_vad(ts, vad_list) if vad_list else None
 
         if (
             grouped
@@ -999,13 +1187,23 @@ def build_ocr_segments(
             if grouped[-1].get("visual_speaker", "unknown") == "unknown" and v_spk != "unknown":
                 grouped[-1]["visual_speaker"] = v_spk
             grouped[-1]["_last_ts"] = ts
-            enc = _find_enclosing_vad(ts, vad_list) if vad_list else None
-            ext_end = enc[1] if enc else (ts + step_sec * 0.5)
+            if ev:
+                ext_end = ev["end"]
+            elif enc:
+                ext_end = enc[1]
+            else:
+                ext_end = ts + step_sec * 0.5
             grouped[-1]["end"] = round(min(duration, max(grouped[-1]["end"], ext_end)), 2)
             continue
 
-        enc = _find_enclosing_vad(ts, vad_list) if vad_list else None
-        if enc:
+        if ev:
+            # Dùng đúng biên hiển thị thật của phụ đề (chính xác hơn VAD)
+            start_t = round(max(0.0, ev["start"]), 2)
+            end_t = round(min(duration, ev["end"]), 2)
+            if grouped and grouped[-1]["end"] > start_t:
+                start_t = round(max(ev["start"], grouped[-1]["end"] + 0.03), 2)
+                end_t = round(max(end_t, start_t + 0.12), 2)
+        elif enc:
             # Nếu trong cùng 1 khoảng VAD dài có nhiều câu phụ đề khác nhau nối tiếp, giới hạn biên theo ts
             start_t = round(max(0.0, enc[0]), 2)
             if grouped and grouped[-1]["end"] > start_t:
@@ -1053,7 +1251,7 @@ def deduplicate_adjacent_segments(segments: list[dict]) -> list[dict]:
     for seg in segments[1:]:
         prev = deduped[-1]
         gap = float(seg["start"]) - float(prev["end"])
-        if gap <= 0.45 and _is_same_subtitle(prev.get("best_text", ""), seg.get("best_text", ""), strict=False):
+        if gap <= 0.30 and _is_same_subtitle(prev.get("best_text", ""), seg.get("best_text", ""), strict=True):
             prev["end"] = max(float(prev["end"]), float(seg["end"]))
             if len(str(seg.get("best_text", ""))) > len(str(prev.get("best_text", ""))):
                 prev["best_text"] = seg["best_text"]
@@ -1606,17 +1804,36 @@ def main():
     extract_audio_16k(video_path, audio_16k)
 
     qwen_model_id = _get_qwen25_vl_config()["model_id"]
+    t_demucs = time.time()
     with ThreadPoolExecutor(max_workers=2) as pool:
         fut_qwen = pool.submit(prefetch_qwen_model_async, qwen_model_id)
         vocals_wav, bgm_wav = separate_vocals_and_bgm(audio_16k, work_dir)
         fut_qwen.result()
-    subtitle_roi, screen_texts, bbox_zip_path, duration, vad_intervals = run_ocr_with_qwen25_vl(
+    print(f"[TIMING] Tách vocals/BGM (demucs, song song prefetch Qwen): {time.time() - t_demucs:.2f}s", flush=True)
+
+    t_ocr = time.time()
+    subtitle_roi, screen_texts, bbox_zip_path, duration, vad_intervals, subtitle_events = run_ocr_with_qwen25_vl(
         video_path, work_dir, vocals_wav=vocals_wav
     )
+    print(f"[TIMING] Dò phụ đề + OCR Qwen: {time.time() - t_ocr:.2f}s", flush=True)
+
     step_sec = _get_qwen25_vl_config()["step_sec"]
-    segments = build_ocr_segments(screen_texts, duration=duration, step_sec=step_sec, vad_intervals=vad_intervals)
+    segments = build_ocr_segments(
+        screen_texts,
+        duration=duration,
+        step_sec=step_sec,
+        vad_intervals=vad_intervals,
+        subtitle_events=subtitle_events,
+    )
+    n_before = len(segments)
+    segments = [s for s in segments if not _is_garbage_text(s.get("best_text") or s.get("ocr_text") or "")]
+    if len(segments) != n_before:
+        print(f"[INFO] Bỏ {n_before - len(segments)} đoạn rác (chỉ dấu câu).", flush=True)
+
+    t_diar = time.time()
     speaker_refs = align_vad_and_diarize_from_vocals(vocals_wav, segments, work_dir)
     segments = deduplicate_adjacent_segments(segments)
+    print(f"[TIMING] Diarization + gán speaker: {time.time() - t_diar:.2f}s", flush=True)
 
     srt_s1_path = os.path.join(work_dir, f"{JOB_ID}_stage1.srt")
     export_stage1_srt(segments, srt_s1_path)
