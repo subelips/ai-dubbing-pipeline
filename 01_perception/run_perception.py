@@ -174,9 +174,10 @@ def _install_numpy_py313_hook():
                     "getattr(ufunc, '__qualname__', getattr(ufunc, '__name__', 'ufunc'))",
                 )
             elif module.__name__ in ("numpy._core.strings", "numpy.core.strings"):
+                # Vô hiệu hóa hoàn toàn _override___module__() vì Python 3.13 cấm gán thuộc tính lên C-type ufunc
                 source = source.replace(
-                    'ufunc.__module__ = "numpy.strings"',
-                    'try:\n            ufunc.__module__ = "numpy.strings"\n        except (AttributeError, TypeError):\n            pass',
+                    "_override___module__()",
+                    "pass  # skipped on Python 3.13",
                 )
             code = compile(source, origin, "exec")
             exec(code, module.__dict__)
