@@ -7,7 +7,7 @@
     "SPEAKER_00_M": {
       "ref_asset": "ref_speaker_SPEAKER_00_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 113.2,
+      "pitch_hz": 113.3,
       "segments_count": 32,
       "pyannote_label": "SPEAKER_01",
       "gender": "male"
@@ -15,7 +15,7 @@
     "SPEAKER_01_M": {
       "ref_asset": "ref_speaker_SPEAKER_01_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 180.7,
+      "pitch_hz": 181.1,
       "segments_count": 21,
       "pyannote_label": "SPEAKER_00",
       "gender": "female"
@@ -111,7 +111,7 @@
     },
     {
       "id": 7,
-      "start": 24.04,
+      "start": 24.02,
       "end": 24.84,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
@@ -147,8 +147,8 @@
     },
     {
       "id": 10,
-      "start": 28.62,
-      "end": 29.54,
+      "start": 28.74,
+      "end": 29.53,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "从不吃外卖",
@@ -160,7 +160,7 @@
     {
       "id": 11,
       "start": 29.71,
-      "end": 30.64,
+      "end": 30.65,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "不碰垃圾食品",
@@ -267,7 +267,7 @@
     },
     {
       "id": 20,
-      "start": 43.96,
+      "start": 43.95,
       "end": 44.43,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
@@ -280,7 +280,7 @@
     {
       "id": 21,
       "start": 44.91,
-      "end": 45.47,
+      "end": 45.5,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "你走吧",
@@ -316,7 +316,7 @@
     {
       "id": 24,
       "start": 49.19,
-      "end": 51.06,
+      "end": 50.91,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "会引起别人不必要的揣测",
@@ -356,31 +356,31 @@
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "凉了对胃不好",
-      "text_vi": "Nóng hơn thì tốt cho dạ dày hơn",
+      "text_vi": "Nóng hơn tốt cho dạ dày hơn",
       "segment_ids": [
         27
       ]
     },
     {
       "id": 28,
-      "start": 62.45,
-      "end": 62.9,
+      "start": 62.84,
+      "end": 63.31,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
-      "src_text": "义亲 炎辰",
-      "text_vi": "Anh họ",
+      "src_text": "炎辰",
+      "text_vi": "炎辰",
       "segment_ids": [
         28
       ]
     },
     {
       "id": 29,
-      "start": 62.93,
+      "start": 63.5,
       "end": 64.75,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "你又去给瑶瑶送饭了",
-      "text_vi": "Thật là vất vả anh ấy",
+      "text_vi": "Anh lại đi mang cơm cho rồi",
       "segment_ids": [
         29
       ]
@@ -404,7 +404,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "照顾妻子",
-      "text_vi": "Chỉ là trách nhiệm của tôi như một người chồng",
+      "text_vi": "照顾妻子",
       "segment_ids": [
         31
       ]
@@ -436,7 +436,7 @@
     {
       "id": 34,
       "start": 71.44,
-      "end": 73.12,
+      "end": 73.11,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "与我们夏氏商业联姻",
@@ -728,7 +728,7 @@
     },
     {
       "id": 7,
-      "start": 24.04,
+      "start": 24.02,
       "end": 24.84,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
@@ -755,8 +755,8 @@
     },
     {
       "id": 10,
-      "start": 28.62,
-      "end": 29.54,
+      "start": 28.74,
+      "end": 29.53,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "从不吃外卖",
@@ -765,7 +765,7 @@
     {
       "id": 11,
       "start": 29.71,
-      "end": 30.64,
+      "end": 30.65,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "不碰垃圾食品",
@@ -845,7 +845,7 @@
     },
     {
       "id": 20,
-      "start": 43.96,
+      "start": 43.95,
       "end": 44.43,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
@@ -855,7 +855,7 @@
     {
       "id": 21,
       "start": 44.91,
-      "end": 45.47,
+      "end": 45.5,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "你走吧",
@@ -882,7 +882,7 @@
     {
       "id": 24,
       "start": 49.19,
-      "end": 51.06,
+      "end": 50.91,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "会引起别人不必要的揣测",
@@ -913,25 +913,25 @@
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "凉了对胃不好",
-      "text_vi": "Nóng hơn thì tốt cho dạ dày hơn"
+      "text_vi": "Nóng hơn tốt cho dạ dày hơn"
     },
     {
       "id": 28,
-      "start": 62.45,
-      "end": 62.9,
+      "start": 62.84,
+      "end": 63.31,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
-      "src_text": "义亲 炎辰",
-      "text_vi": "Anh họ"
+      "src_text": "炎辰",
+      "text_vi": "炎辰"
     },
     {
       "id": 29,
-      "start": 62.93,
+      "start": 63.5,
       "end": 64.75,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "你又去给瑶瑶送饭了",
-      "text_vi": "Thật là vất vả anh ấy"
+      "text_vi": "Anh lại đi mang cơm cho rồi"
     },
     {
       "id": 30,
@@ -949,7 +949,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "照顾妻子",
-      "text_vi": "Chỉ là trách nhiệm của tôi như một người chồng"
+      "text_vi": "照顾妻子"
     },
     {
       "id": 32,
@@ -972,7 +972,7 @@
     {
       "id": 34,
       "start": 71.44,
-      "end": 73.12,
+      "end": 73.11,
       "speaker_id": "SPEAKER_01_M",
       "gender": "female",
       "src_text": "与我们夏氏商业联姻",
