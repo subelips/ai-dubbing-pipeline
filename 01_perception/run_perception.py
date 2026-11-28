@@ -613,6 +613,20 @@ def _get_qwen25_vl_config() -> dict:
     }
 
 
+def _fix_ocr_confusions(txt: str) -> str:
+    """Sửa các nhầm lẫn OCR đã biết của VLM với phụ đề Trung.
+
+    VLM (Qwen2.5-VL, PaddleOCR...) rất hay đọc chữ 二 thành dấu '=' (hoặc '==', '＝').
+    """
+    s = str(txt or "").strip()
+    if not s:
+        return s
+    core = re.sub(r"\s+", "", s)
+    if re.fullmatch(r"[=＝]{1,3}", core):
+        return "二"
+    return s
+
+
 def _is_garbage_text(txt: str) -> bool:
     """True nếu chuỗi không có chữ/số thực sự (chỉ dấu câu, khoảng trắng...)."""
     s = str(txt or "").strip()
@@ -647,7 +661,7 @@ def _parse_qwen_ocr_and_speaker(raw_text: str) -> tuple[list[str], str]:
         cleaned = re.sub(r"^\s*[-*•\d.)]+\s*", "", s).strip().strip('"').strip("'")
         if not cleaned or cleaned.upper() in ("NONE", "NO_TEXT", "EMPTY", "N/A"):
             continue
-        text_lines.append(cleaned)
+        text_lines.append(_fix_ocr_confusions(cleaned))
 
     return text_lines, visual_spk
 
@@ -884,7 +898,11 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                             if bgr_r is None or bgr_r.size == 0:
                                 continue
                             fb_res, _ = fb_ocr(bgr_r)
-                            texts_fb = [str(r[1]).strip() for r in (fb_res or []) if str(r[1]).strip()]
+                            texts_fb = [
+                                _fix_ocr_confusions(str(r[1]).strip())
+                                for r in (fb_res or [])
+                                if str(r[1]).strip()
+                            ]
                             joined_fb = " ".join(texts_fb).strip()
                             if joined_fb and not _is_garbage_text(joined_fb):
                                 raw_ocr_map[float(entry["time"])] = {
