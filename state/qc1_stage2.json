@@ -7,7 +7,7 @@
     "SPEAKER_00_M": {
       "ref_asset": "ref_speaker_SPEAKER_00_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 114.7,
+      "pitch_hz": 114.8,
       "segments_count": 30,
       "pyannote_label": "SPEAKER_01",
       "gender": "male"
@@ -15,7 +15,7 @@
     "SPEAKER_01_M": {
       "ref_asset": "ref_speaker_SPEAKER_01_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 151.7,
+      "pitch_hz": 151.6,
       "segments_count": 19,
       "pyannote_label": "SPEAKER_00",
       "gender": "male"
@@ -147,7 +147,7 @@
     },
     {
       "id": 10,
-      "start": 28.62,
+      "start": 28.74,
       "end": 30.0,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
@@ -160,7 +160,7 @@
     {
       "id": 11,
       "start": 31.06,
-      "end": 32.52,
+      "end": 32.5,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "所以我每天四点起",
@@ -387,7 +387,7 @@
     },
     {
       "id": 30,
-      "start": 69.95,
+      "start": 69.94,
       "end": 70.99,
       "speaker_id": "SPEAKER_01_M",
       "gender": "male",
@@ -400,7 +400,7 @@
     {
       "id": 31,
       "start": 71.44,
-      "end": 73.11,
+      "end": 73.12,
       "speaker_id": "SPEAKER_01_M",
       "gender": "male",
       "src_text": "与我们夏氏商业联姻",
@@ -412,7 +412,7 @@
     {
       "id": 32,
       "start": 73.39,
-      "end": 74.39,
+      "end": 74.4,
       "speaker_id": "SPEAKER_01_M",
       "gender": "male",
       "src_text": "我们夏氏集团",
@@ -568,7 +568,7 @@
     {
       "id": 45,
       "start": 96.11,
-      "end": 97.3,
+      "end": 97.31,
       "speaker_id": "SPEAKER_01_M",
       "gender": "male",
       "src_text": "真的很感激你啊",
@@ -707,7 +707,7 @@
     },
     {
       "id": 10,
-      "start": 28.62,
+      "start": 28.74,
       "end": 30.0,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
@@ -717,7 +717,7 @@
     {
       "id": 11,
       "start": 31.06,
-      "end": 32.52,
+      "end": 32.5,
       "speaker_id": "SPEAKER_00_M",
       "gender": "male",
       "src_text": "所以我每天四点起",
@@ -887,7 +887,7 @@
     },
     {
       "id": 30,
-      "start": 69.95,
+      "start": 69.94,
       "end": 70.99,
       "speaker_id": "SPEAKER_01_M",
       "gender": "male",
@@ -897,7 +897,7 @@
     {
       "id": 31,
       "start": 71.44,
-      "end": 73.11,
+      "end": 73.12,
       "speaker_id": "SPEAKER_01_M",
       "gender": "male",
       "src_text": "与我们夏氏商业联姻",
@@ -906,7 +906,7 @@
     {
       "id": 32,
       "start": 73.39,
-      "end": 74.39,
+      "end": 74.4,
       "speaker_id": "SPEAKER_01_M",
       "gender": "male",
       "src_text": "我们夏氏集团",
@@ -1023,7 +1023,7 @@
     {
       "id": 45,
       "start": 96.11,
-      "end": 97.3,
+      "end": 97.31,
       "speaker_id": "SPEAKER_01_M",
       "gender": "male",
       "src_text": "真的很感激你啊",
