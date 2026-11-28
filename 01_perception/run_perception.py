@@ -1379,6 +1379,21 @@ def build_ocr_segments(
         if idx + 1 < len(grouped) and grouped[idx]["end"] > grouped[idx + 1]["start"] - 0.03:
             grouped[idx]["end"] = round(max(grouped[idx]["start"] + 0.25, grouped[idx + 1]["start"] - 0.03), 2)
 
+    # Card phụ đề không đọc được chữ (vd "二" một ký tự): nới start của đoạn kế để phủ đúng thời gian thoại
+    for ev in ev_list:
+        ev_mid = (ev["start"] + ev["end"]) / 2.0
+        covered = any(g["start"] - 0.15 <= ev_mid <= g["end"] + 0.15 for g in grouped)
+        if covered:
+            continue
+        nxt = sorted([g for g in grouped if g["start"] > ev["start"]], key=lambda g: g["start"])
+        if not nxt:
+            continue
+        cand = nxt[0]
+        if cand["start"] - ev["end"] > 0.5:
+            continue
+        prev_end = max([g["end"] for g in grouped if g["end"] <= cand["start"] - 0.001], default=0.0)
+        cand["start"] = round(max(prev_end + 0.03, ev["start"], 0.0), 2)
+
     return grouped
 
 
