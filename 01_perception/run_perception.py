@@ -468,37 +468,63 @@ def _get_qwen25_vl_config() -> dict:
             or "Qwen/Qwen2.5-VL-3B-Instruct"
         ),
         "step_sec": max(0.25, float(os.environ.get("OCR_STEP_SEC", "0.50"))),
-        "max_new_tokens": max(32, int(os.environ.get("QWEN_OCR_MAX_NEW_TOKENS", "128"))),
+        "batch_size": max(1, min(16, int(os.environ.get("QWEN_OCR_BATCH_SIZE", "8")))),
+        "max_pixels": max(65536, int(os.environ.get("QWEN_OCR_MAX_PIXELS", str(384 * 28 * 28)))),
+        "max_new_tokens": max(48, int(os.environ.get("QWEN_OCR_MAX_NEW_TOKENS", "160"))),
         "save_bbox_vis": os.environ.get("SAVE_BBOX_VIS", "0").strip() == "1",
     }
 
 
-def _parse_qwen_ocr_response(raw_text: str) -> list[str]:
-    # Loại bỏ mọi khối <think>...</think> nếu có và đọc trực tiếp văn bản phụ đề
+def _parse_qwen_ocr_and_speaker(raw_text: str) -> tuple[list[str], str]:
+    """Tách văn bản phụ đề và mô tả ngắn nhân vật/người nói từ phản hồi Qwen2.5-VL-3B (reasoning=OFF)."""
     txt = re.sub(r"<think>.*?</think>", "", str(raw_text or ""), flags=re.DOTALL | re.IGNORECASE).strip()
     if not txt or txt.upper() in ("NONE", "NO_TEXT", "EMPTY", "N/A"):
-        return []
-    lines = []
+        return [], "unknown"
+
+    visual_spk = "unknown"
+    text_lines: list[str] = []
+
     for ln in re.split(r"[\r\n]+", txt):
-        cleaned = re.sub(r"^\s*[-*•\d.)]+\s*", "", ln).strip().strip('"').strip("'")
+        s = ln.strip()
+        if not s:
+            continue
+        m_spk = re.match(r"^(?:SPEAKER|SPK|PERSON|NHAN_VAT|NHÂN VẬT)\s*[:=]\s*(.+)$", s, flags=re.IGNORECASE)
+        if m_spk:
+            val = m_spk.group(1).strip().strip('"').strip("'").lower()
+            if val and val not in ("none", "unknown", "n/a", "không rõ"):
+                visual_spk = val
+            continue
+        m_txt = re.match(r"^(?:TEXT|SUBTITLE|OCR|PHU_DE|PHỤ ĐỀ)\s*[:=]\s*(.+)$", s, flags=re.IGNORECASE)
+        if m_txt:
+            s = m_txt.group(1).strip()
+
+        cleaned = re.sub(r"^\s*[-*•\d.)]+\s*", "", s).strip().strip('"').strip("'")
         if not cleaned or cleaned.upper() in ("NONE", "NO_TEXT", "EMPTY", "N/A"):
             continue
-        lines.append(cleaned)
-    return lines
+        text_lines.append(cleaned)
+
+    return text_lines, visual_spk
 
 
-def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple[dict[float, list[dict]], bool]:
-    """Chạy Qwen/Qwen2.5-VL-3B-Instruct trực tiếp trên ảnh RGB gốc, vô hiệu hóa hoàn toàn reasoning."""
+def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple[dict[float, dict], bool]:
+    """Chạy Qwen/Qwen2.5-VL-3B-Instruct theo batch trên GPU (reasoning=OFF) cho cả OCR và gợi ý nhân vật."""
     if not sampled_entries:
         return {}, False
 
     _install_numpy_py313_hook()
     _patch_pyannote_ufunc_compat()
+    import logging
+    import warnings
     import torch
     from PIL import Image
 
+    warnings.filterwarnings("ignore", message=".*Kwargs passed to `processor.__call__`.*")
+    logging.getLogger("transformers").setLevel(logging.ERROR)
+
     model_id = cfg["model_id"]
-    max_new_tokens = int(cfg.get("max_new_tokens", 128))
+    batch_size = max(1, int(cfg.get("batch_size", 8)))
+    max_pixels = int(cfg.get("max_pixels", 384 * 28 * 28))
+    max_new_tokens = int(cfg.get("max_new_tokens", 160))
 
     try:
         from transformers.models.qwen2_5_vl.processing_qwen2_5_vl import Qwen2_5_VLProcessor as VLProcessorClass
@@ -508,6 +534,24 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
         print(f"[QWEN2.5-VL-3B][INFO] Submodule import fallback ({_sub_err}), dùng AutoProcessor...", flush=True)
         from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration as VLModelClass
         processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+
+    try:
+        img_proc = getattr(processor, "image_processor", None)
+        if img_proc is not None:
+            if hasattr(img_proc, "max_pixels"):
+                img_proc.max_pixels = max_pixels
+            if hasattr(img_proc, "min_pixels"):
+                img_proc.min_pixels = min(getattr(img_proc, "min_pixels", 3136), 64 * 28 * 28)
+    except Exception:
+        pass
+
+    try:
+        tok = getattr(processor, "tokenizer", None)
+        if tok is not None:
+            tok.padding_side = "left"
+    except Exception:
+        pass
+
     has_cuda = bool(torch.cuda.is_available())
     dtype = torch.float16 if has_cuda else torch.float32
 
@@ -523,62 +567,73 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
     if not has_cuda:
         model.to("cpu")
     model.eval()
-    print(f"[QWEN2.5-VL-3B] Đã tải {model_id} (dtype={dtype}, cuda={has_cuda}, reasoning=OFF) trong {time.time() - t0:.2f}s", flush=True)
-
-    prompt_text = (
-        "Trích xuất chính xác toàn bộ chữ phụ đề xuất hiện trong ảnh. "
-        "Chỉ xuất trực tiếp văn bản gốc, không suy luận, không giải thích. "
-        "Nếu không có chữ phụ đề, trả lời duy nhất: NONE"
+    print(
+        f"[QWEN2.5-VL-3B] Đã tải {model_id} (dtype={dtype}, cuda={has_cuda}, "
+        f"batch_size={batch_size}, max_pixels={max_pixels}, reasoning=OFF) trong {time.time() - t0:.2f}s",
+        flush=True,
     )
 
-    raw_ocr_map: dict[float, list[dict]] = {}
+    prompt_text = (
+        "Đọc phụ đề và nhận diện người nói trong ảnh. Trả lời ngắn gọn đúng định dạng sau (không suy luận, không giải thích):\n"
+        "SPEAKER: <mô tả ngắn gọn giới tính/độ tuổi/trang phục người nói hoặc off_screen/unknown>\n"
+        "TEXT: <nội dung chữ phụ đề gốc, hoặc NONE nếu không có>"
+    )
+
+    raw_ocr_map: dict[float, dict] = {}
     t_inf = time.time()
 
+    def _build_chat_str(img_obj) -> str:
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": img_obj},
+                    {"type": "text", "text": prompt_text},
+                ],
+            }
+        ]
+        try:
+            return processor.apply_chat_template(
+                msgs,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        except TypeError:
+            return processor.apply_chat_template(
+                msgs,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
     try:
+        valid_items = []
         for entry in sampled_entries:
             ts = float(entry["time"])
             cp = entry["crop_path"]
             bgr = cv2_mod.imread(cp)
             if bgr is None or bgr.size == 0:
-                raw_ocr_map[ts] = []
+                raw_ocr_map[ts] = {"boxes": [], "visual_speaker": "unknown"}
                 continue
-
             rgb = cv2_mod.cvtColor(bgr, cv2_mod.COLOR_BGR2RGB)
             pil_img = Image.fromarray(rgb)
+            valid_items.append((ts, pil_img))
 
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": pil_img},
-                        {"type": "text", "text": prompt_text},
-                    ],
-                }
-            ]
+        target_dev = next(model.parameters()).device
+
+        for b_start in range(0, len(valid_items), batch_size):
+            chunk = valid_items[b_start : b_start + batch_size]
+            batch_ts = [x[0] for x in chunk]
+            batch_imgs = [x[1] for x in chunk]
+            batch_chats = [_build_chat_str(im) for im in batch_imgs]
 
             try:
-                # Vô hiệu hóa reasoning / thinking mode ở mức chat template
-                try:
-                    chat_text = processor.apply_chat_template(
-                        messages,
-                        tokenize=False,
-                        add_generation_prompt=True,
-                        enable_thinking=False,
-                    )
-                except TypeError:
-                    chat_text = processor.apply_chat_template(
-                        messages,
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    )
-
                 inputs = processor(
-                    text=[chat_text],
-                    images=[pil_img],
+                    text=batch_chats,
+                    images=batch_imgs,
                     padding=True,
                     return_tensors="pt",
                 )
-                target_dev = next(model.parameters()).device
                 inputs = {k: (v.to(target_dev) if hasattr(v, "to") else v) for k, v in inputs.items()}
 
                 with torch.inference_mode():
@@ -587,20 +642,41 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                         max_new_tokens=max_new_tokens,
                         do_sample=False,
                     )
+
                 in_len = inputs["input_ids"].shape[1]
                 trimmed = [out_ids[in_len:] for out_ids in gen_ids]
                 decoded = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-                out_str = decoded[0] if decoded else ""
-                lines = _parse_qwen_ocr_response(out_str)
-                raw_ocr_map[ts] = [{"poly": [], "text": ln, "score": 1.0} for ln in lines]
-            except Exception as e_item:
-                print(f"[QWEN2.5-VL-3B][WARN] Lỗi OCR tại t={ts:.2f}s: {e_item}", flush=True)
-                raw_ocr_map[ts] = []
+
+                for idx_c, ts_c in enumerate(batch_ts):
+                    out_str = decoded[idx_c] if idx_c < len(decoded) else ""
+                    lines, v_spk = _parse_qwen_ocr_and_speaker(out_str)
+                    raw_ocr_map[ts_c] = {
+                        "boxes": [{"poly": [], "text": ln, "score": 1.0} for ln in lines],
+                        "visual_speaker": v_spk,
+                    }
+            except Exception as e_batch:
+                print(f"[QWEN2.5-VL-3B][WARN] Batch lỗi ({e_batch}), chạy dự phòng từng ảnh trong batch...", flush=True)
+                for ts_c, im_c in chunk:
+                    try:
+                        c_txt = _build_chat_str(im_c)
+                        inp1 = processor(text=[c_txt], images=[im_c], padding=True, return_tensors="pt")
+                        inp1 = {k: (v.to(target_dev) if hasattr(v, "to") else v) for k, v in inp1.items()}
+                        with torch.inference_mode():
+                            g1 = model.generate(**inp1, max_new_tokens=max_new_tokens, do_sample=False)
+                        l1 = inp1["input_ids"].shape[1]
+                        dec1 = processor.batch_decode([g1[0][l1:]], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                        lines1, v_spk1 = _parse_qwen_ocr_and_speaker(dec1[0] if dec1 else "")
+                        raw_ocr_map[ts_c] = {
+                            "boxes": [{"poly": [], "text": ln, "score": 1.0} for ln in lines1],
+                            "visual_speaker": v_spk1,
+                        }
+                    except Exception:
+                        raw_ocr_map[ts_c] = {"boxes": [], "visual_speaker": "unknown"}
     finally:
         del model, processor
         free_gpu()
 
-    print(f"[QWEN2.5-VL-3B] Hoàn tất OCR {len(sampled_entries)} ảnh trong {time.time() - t_inf:.2f}s.", flush=True)
+    print(f"[QWEN2.5-VL-3B] Hoàn tất OCR + gợi ý nhân vật {len(sampled_entries)} ảnh trong {time.time() - t_inf:.2f}s.", flush=True)
     return raw_ocr_map, has_cuda
 
 
@@ -628,7 +704,7 @@ def _draw_roi_visualization(full_frame, roi: dict, out_vis_path: str, ts_sec: fl
 
 
 def run_ocr_with_qwen25_vl(video_path: str, work_dir: str) -> tuple[dict, list[dict], str, float]:
-    """Lấy mẫu khung hình tuần tự theo step_sec và trích xuất phụ đề trực tiếp bằng Qwen2.5-VL-3B."""
+    """Lấy mẫu khung hình tuần tự theo step_sec và trích xuất phụ đề + gợi ý nhân vật bằng Qwen2.5-VL-3B."""
     roi = {"x1": 0.02, "y1": 0.58, "x2": 0.98, "y2": 0.97}
     vis_dir = os.path.join(work_dir, "bbox_vis")
     crops_dir = os.path.join(work_dir, "ocr_crops")
@@ -683,7 +759,9 @@ def run_ocr_with_qwen25_vl(video_path: str, work_dir: str) -> tuple[dict, list[d
         cap_vis = cv2.VideoCapture(video_path) if save_vis else None
         for entry in sampled_entries:
             ts = float(entry["time"])
-            dets = raw_ocr_map.get(ts, [])
+            item_res = raw_ocr_map.get(ts) or {"boxes": [], "visual_speaker": "unknown"}
+            dets = item_res.get("boxes") or []
+            v_spk = str(item_res.get("visual_speaker") or "unknown")
             texts_found = [d["text"] for d in dets if str(d.get("text") or "").strip()]
             if texts_found:
                 hits += 1
@@ -700,6 +778,7 @@ def run_ocr_with_qwen25_vl(video_path: str, work_dir: str) -> tuple[dict, list[d
                     {
                         "time": ts,
                         "texts": texts_found,
+                        "visual_speaker": v_spk,
                         "boxes": dets,
                         "vis_image": vis_name if save_vis else "",
                     }
@@ -745,6 +824,7 @@ def build_ocr_segments(screen_texts: list[dict], duration: float = 60.0, step_se
     for item in sorted(screen_texts, key=lambda x: float(x.get("time", 0.0))):
         ts = float(item.get("time", 0.0))
         texts = [str(t).strip() for t in (item.get("texts") or []) if str(t).strip()]
+        v_spk = str(item.get("visual_speaker") or "unknown").strip()
         joined = " ".join(texts).strip()
         if not joined:
             continue
@@ -757,6 +837,8 @@ def build_ocr_segments(screen_texts: list[dict], duration: float = 60.0, step_se
             if len(joined) > len(grouped[-1]["ocr_text"]):
                 grouped[-1]["ocr_text"] = joined
                 grouped[-1]["best_text"] = joined
+            if grouped[-1].get("visual_speaker", "unknown") == "unknown" and v_spk != "unknown":
+                grouped[-1]["visual_speaker"] = v_spk
             grouped[-1]["_last_ts"] = ts
             grouped[-1]["end"] = round(min(duration, max(grouped[-1]["end"], ts + step_sec * 0.5)), 2)
             continue
@@ -771,6 +853,7 @@ def build_ocr_segments(screen_texts: list[dict], duration: float = 60.0, step_se
                 "_last_ts": ts,
                 "speaker_id": "SPEAKER_00",
                 "gender_hint": "unknown",
+                "visual_speaker": v_spk,
                 "pitch_hz": None,
                 "asr_raw": "",
                 "asr_text": "",
@@ -834,154 +917,288 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
     return pitch_med, cent_med
 
 
+def _extract_acoustic_fingerprint(samples, sr: int):
+    """Trích xuất vector đặc trưng âm sắc (MFCC/spectral envelope + pitch) ổn định bằng numpy/torch."""
+    import numpy as np
+
+    if samples is None or len(samples) < max(160, sr // 5):
+        return None
+    s = samples.astype(np.float32)
+    s = s - float(np.mean(s))
+    rms = float(np.sqrt(np.mean(s ** 2)))
+    if rms < 1e-4:
+        return None
+    s = s / rms
+
+    n_fft = 512
+    hop = 160
+    if len(s) < n_fft:
+        s = np.pad(s, (0, n_fft - len(s)))
+
+    win = np.hanning(n_fft).astype(np.float32)
+    frames = []
+    for st in range(0, len(s) - n_fft + 1, hop):
+        fr = s[st : st + n_fft]
+        if float(np.sqrt(np.mean(fr ** 2))) >= 0.15:
+            frames.append(fr * win)
+    if not frames:
+        frames.append(s[:n_fft] * win)
+
+    mat = np.stack(frames, axis=0)
+    mag = np.abs(np.fft.rfft(mat, n=n_fft, axis=-1)) + 1e-7
+    log_mag = np.log(mag)
+
+    # Nén 257 bin phổ thành 32 dải phổ đều để so sánh âm sắc (timbre/formant)
+    n_bins = log_mag.shape[1]
+    edges = np.linspace(0, n_bins, 33, dtype=int)
+    bands = np.stack(
+        [np.mean(log_mag[:, edges[i] : max(edges[i] + 1, edges[i + 1])], axis=-1) for i in range(32)],
+        axis=-1,
+    )
+    mean_vec = np.mean(bands, axis=0)
+    std_vec = np.std(bands, axis=0)
+    feat = np.concatenate([mean_vec, std_vec]).astype(np.float32)
+    nrm = float(np.linalg.norm(feat))
+    if nrm <= 1e-8:
+        return None
+    return feat / nrm
+
+
+def _infer_gender_from_visual_and_pitch(visual_spk: str, pitch_hz: float | None) -> str:
+    v = (visual_spk or "").lower()
+    has_female_kw = any(k in v for k in ("nữ", "nu", "female", "woman", "girl", "cô", "chị", "bà"))
+    has_male_kw = any(k in v for k in ("nam", "male", "man", "boy", "anh", "chú", "ông", "thầy"))
+
+    if has_female_kw and not has_male_kw:
+        return "female"
+    if has_male_kw and not has_female_kw:
+        return "male"
+    if pitch_hz is not None:
+        return "female" if float(pitch_hz) >= 188.0 else "male"
+    return "male"
+
+
 def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: int, work_dir: str) -> dict | None:
+    """Chạy pyannote.audio nếu có token, đồng thời kết hợp embedding từng câu + gợi ý nhân vật từ Qwen2.5-VL-3B."""
     hf_tok = _clean_url_or_str(
         os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN
     )
-    if not hf_tok:
-        print("[WARN] Thiếu HF_TOKEN cho pyannote.audio, dùng VAD/pitch dự phòng.")
-        return None
-
     model_id = (
         os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip()
         or "pyannote/speaker-diarization-3.1"
     )
 
-    try:
-        _patch_pyannote_ufunc_compat()
-        import numpy as np
-        import soundfile as sf
-        import torch
-        from pyannote.audio import Pipeline
+    import numpy as np
+    import soundfile as sf
 
+    pyannote_turns: list[tuple[float, float, str]] = []
+    if hf_tok:
         try:
-            pipeline = Pipeline.from_pretrained(model_id, token=hf_tok)
-        except TypeError:
-            pipeline = Pipeline.from_pretrained(model_id, use_auth_token=hf_tok)
+            _patch_pyannote_ufunc_compat()
+            import torch
+            from pyannote.audio import Pipeline
 
-        if pipeline is None:
-            print(f"[WARN] Không tải được pipeline pyannote ({model_id}).")
-            return None
+            try:
+                pipeline = Pipeline.from_pretrained(model_id, token=hf_tok)
+            except TypeError:
+                pipeline = Pipeline.from_pretrained(model_id, use_auth_token=hf_tok)
 
-        if torch.cuda.is_available():
-            pipeline.to(torch.device("cuda"))
+            if pipeline is not None:
+                if torch.cuda.is_available():
+                    pipeline.to(torch.device("cuda"))
+                waveform_tensor = torch.from_numpy(wav_data.astype(np.float32)).unsqueeze(0)
+                diarization = pipeline({"waveform": waveform_tensor, "sample_rate": int(sr)})
+                annotation = getattr(diarization, "speaker_diarization", diarization)
+                for turn, _, speaker in annotation.itertracks(yield_label=True):
+                    if float(turn.end) > float(turn.start):
+                        pyannote_turns.append((float(turn.start), float(turn.end), str(speaker)))
+                del pipeline, diarization, waveform_tensor
+                free_gpu()
+        except Exception as e:
+            tb_full = traceback.format_exc()[-1200:]
+            print(f"[WARN] pyannote.audio bỏ qua ({e}), dùng Audio-Visual clustering trực tiếp trên từng câu.\n{tb_full}", flush=True)
+            free_gpu()
 
-        waveform_tensor = torch.from_numpy(wav_data.astype(np.float32)).unsqueeze(0)
-        diarization = pipeline({"waveform": waveform_tensor, "sample_rate": int(sr)})
-        annotation = getattr(diarization, "speaker_diarization", diarization)
+    # Lớp 1 & 2: Trích xuất đặc trưng âm thanh sạch của từng câu + kết hợp gợi ý nhân vật từ Qwen2.5-VL-3B
+    seg_feats = []
+    for seg in segments:
+        s0 = float(seg["start"])
+        s1 = float(seg["end"])
+        dur = max(0.05, s1 - s0)
+        # Cắt lõi 15%..85% của đoạn để giảm nhiễu biên chuyển lượt nói
+        core_s = s0 + dur * 0.15
+        core_e = s1 - dur * 0.15
+        if core_e <= core_s + 0.12:
+            core_s, core_e = s0, s1
 
-        turns: list[tuple[float, float, str]] = []
-        for turn, _, speaker in annotation.itertracks(yield_label=True):
-            t0 = float(turn.start)
-            t1 = float(turn.end)
-            if t1 > t0:
-                turns.append((t0, t1, str(speaker)))
+        i0 = max(0, int(core_s * sr))
+        i1 = min(len(wav_data), int(core_e * sr))
+        chunk = wav_data[i0:i1] if i1 > i0 else np.zeros(0, dtype=np.float32)
 
-        if not turns:
-            print("[WARN] pyannote không trả về lượt nói nào, dùng VAD/pitch dự phòng.")
-            return None
+        pitch_val, _ = _extract_voice_features(chunk, sr) if len(chunk) >= max(64, sr // 10) else (None, 0.0)
+        seg["pitch_hz"] = pitch_val
 
-        raw_spk_order = []
-        for _, _, spk_raw in sorted(turns, key=lambda x: x[0]):
-            if spk_raw not in raw_spk_order:
-                raw_spk_order.append(spk_raw)
+        v_spk = str(seg.get("visual_speaker") or "unknown").strip().lower()
+        g_hint = _infer_gender_from_visual_and_pitch(v_spk, pitch_val)
+        seg["gender_hint"] = g_hint
 
-        spk_pitches: dict[str, list[float]] = {k: [] for k in raw_spk_order}
-        for t0, t1, spk_raw in turns:
-            i0 = max(0, int(t0 * sr))
-            i1 = min(len(wav_data), int(t1 * sr))
-            if i1 > i0:
-                p_val, _ = _extract_voice_features(wav_data[i0:i1], sr)
-                if p_val is not None:
-                    spk_pitches[spk_raw].append(p_val)
-
-        raw_to_clean: dict[str, str] = {}
-        male_idx = 0
-        female_idx = 0
-        for spk_raw in raw_spk_order:
-            p_list = spk_pitches.get(spk_raw) or []
-            med_p = float(statistics.median(p_list)) if p_list else None
-            if med_p is not None and med_p >= 185.0:
-                raw_to_clean[spk_raw] = f"SPEAKER_{female_idx:02d}_F"
-                female_idx += 1
-            else:
-                raw_to_clean[spk_raw] = f"SPEAKER_{male_idx:02d}_M"
-                male_idx += 1
-
-        for seg in segments:
-            s_start = float(seg["start"])
-            s_end = float(seg["end"])
-            overlap_by_spk: dict[str, float] = {}
-            nearest_spk = raw_spk_order[0]
-            best_dist = float("inf")
-
-            for t0, t1, spk_raw in turns:
-                ov = max(0.0, min(s_end, t1) - max(s_start, t0))
+        py_label = ""
+        if pyannote_turns:
+            ov_map: dict[str, float] = {}
+            for pt0, pt1, p_spk in pyannote_turns:
+                ov = max(0.0, min(s1, pt1) - max(s0, pt0))
                 if ov > 0.0:
-                    overlap_by_spk[spk_raw] = overlap_by_spk.get(spk_raw, 0.0) + ov
-                dist = (
-                    0.0
-                    if (t0 <= s_start <= t1 or t0 <= s_end <= t1)
-                    else min(abs(t0 - s_end), abs(s_start - t1))
-                )
-                if dist < best_dist:
-                    best_dist = dist
-                    nearest_spk = spk_raw
+                    ov_map[p_spk] = ov_map.get(p_spk, 0.0) + ov
+            if ov_map:
+                py_label = max(ov_map.items(), key=lambda x: x[1])[0]
 
-            chosen_raw = max(overlap_by_spk.items(), key=lambda x: x[1])[0] if overlap_by_spk else nearest_spk
-            clean_spk = raw_to_clean.get(chosen_raw, "SPEAKER_00_M")
-            seg["speaker_id"] = clean_spk
-            seg["gender_hint"] = "female" if clean_spk.endswith("_F") else "male"
+        fp = _extract_acoustic_fingerprint(chunk, sr)
+        seg_feats.append({
+            "fp": fp,
+            "pitch": pitch_val,
+            "gender": g_hint,
+            "v_spk": v_spk,
+            "py_label": py_label,
+            "dur": dur,
+        })
 
-            i0 = max(0, int(s_start * sr))
-            i1 = min(len(wav_data), int(s_end * sr))
-            p_seg, _ = _extract_voice_features(wav_data[i0:i1], sr) if i1 > i0 else (None, 0.0)
-            if p_seg is not None:
-                seg["pitch_hz"] = p_seg
+    # Gom cụm phân cấp có ràng buộc giới tính & gợi ý hình ảnh từ Qwen2.5-VL-3B
+    # Ngưỡng tương đồng âm sắc (cosine similarity): cao hơn để không gộp nhầm 3 speaker thành 2
+    sim_threshold = float(os.environ.get("AV_SPEAKER_SIM_THRESHOLD", "0.84"))
+    clusters: list[dict] = []
 
-        speaker_refs = {}
-        spk_groups: dict[str, list[tuple[float, float]]] = {}
-        for seg in segments:
-            spk_groups.setdefault(seg["speaker_id"], []).append((float(seg["start"]), float(seg["end"])))
+    for idx_s, info in enumerate(seg_feats):
+        fp = info["fp"]
+        g_s = info["gender"]
+        p_s = info["pitch"]
+        v_s = info["v_spk"]
+        py_s = info["py_label"]
+        can_seed_cluster = (fp is not None) and (info["dur"] >= 0.45)
 
-        for spk, intervals in spk_groups.items():
-            chunks = []
-            total_len = 0
-            for t0, t1 in sorted(intervals, key=lambda x: x[1] - x[0], reverse=True):
-                a0 = max(0, int(t0 * sr))
-                a1 = min(len(wav_data), int(t1 * sr))
-                if a1 > a0:
-                    chunks.append(wav_data[a0:a1])
-                    total_len += a1 - a0
-                if total_len >= sr * 5:
-                    break
-            ref_name = f"ref_speaker_{spk}.wav"
-            ref_path = os.path.join(work_dir, ref_name)
-            merged_wav = np.concatenate(chunks)[: sr * 6] if chunks else np.zeros(sr, dtype=np.float32)
-            sf.write(ref_path, merged_wav, sr)
+        best_c_idx = -1
+        best_score = -1.0
 
-            pitches = [float(s["pitch_hz"]) for s in segments if s["speaker_id"] == spk and s.get("pitch_hz")]
-            avg_pitch = round(float(statistics.mean(pitches)), 1) if pitches else None
-            g_hint = "female" if spk.endswith("_F") else "male"
-            speaker_refs[spk] = {
-                "ref_asset": ref_name,
-                "gender_hint": g_hint,
-                "pitch_hz": avg_pitch,
-            }
+        for c_i, cl in enumerate(clusters):
+            if cl["gender"] != g_s:
+                continue
+            # Nếu cả hai đều có mô tả nhân vật thị giác rõ ràng và khác nhau rõ rệt (không có từ chung), tránh gộp nhầm
+            if v_s not in ("", "unknown", "off_screen") and cl["v_speakers"]:
+                v_tokens_s = set(re.findall(r"\w+", v_s))
+                cl_tokens = set()
+                for vt in cl["v_speakers"]:
+                    cl_tokens.update(re.findall(r"\w+", vt))
+                if v_tokens_s and cl_tokens and len(v_tokens_s & cl_tokens) == 0:
+                    continue
 
-        del pipeline, diarization, waveform_tensor
-        free_gpu()
-        print(
-            f"[INFO] pyannote.audio ({model_id}) phân tách thành công {len(speaker_refs)} người nói: "
-            f"{list(speaker_refs.keys())}"
-        )
-        return speaker_refs
-    except Exception as e:
-        tb_full = traceback.format_exc()[-1500:]
-        print(f"[WARN] pyannote.audio lỗi ({e}), chuyển sang VAD/pitch dự phòng.\n{tb_full}", flush=True)
-        free_gpu()
-        return None
+            if fp is None or cl["centroid"] is None:
+                continue
 
+            cos_sim = float(np.dot(fp, cl["centroid"]))
+            pitch_bonus = 0.0
+            if p_s is not None and cl["pitch_med"] is not None:
+                dp = abs(float(p_s) - float(cl["pitch_med"]))
+                if dp <= 16.0:
+                    pitch_bonus = 0.03
+                elif dp >= 32.0:
+                    pitch_bonus = -0.06
+
+            py_bonus = 0.02 if (py_s and py_s in cl["py_labels"]) else 0.0
+            total_sc = cos_sim + pitch_bonus + py_bonus
+
+            if cos_sim >= sim_threshold and total_sc > best_score:
+                best_score = total_sc
+                best_c_idx = c_i
+
+        if best_c_idx >= 0:
+            cl = clusters[best_c_idx]
+            cl["members"].append(idx_s)
+            if fp is not None:
+                if cl["centroid"] is None:
+                    cl["centroid"] = fp
+                else:
+                    n_m = float(len(cl["members"]))
+                    upd = cl["centroid"] * ((n_m - 1.0) / n_m) + fp / n_m
+                    nrm = float(np.linalg.norm(upd))
+                    cl["centroid"] = upd / nrm if nrm > 1e-8 else cl["centroid"]
+            if p_s is not None:
+                cl["pitches"].append(float(p_s))
+                cl["pitch_med"] = float(statistics.median(cl["pitches"]))
+            if v_s and v_s != "unknown":
+                cl["v_speakers"].add(v_s)
+            if py_s:
+                cl["py_labels"].add(py_s)
+        else:
+            if can_seed_cluster or not clusters:
+                clusters.append({
+                    "members": [idx_s],
+                    "centroid": fp,
+                    "gender": g_s,
+                    "pitches": [float(p_s)] if p_s is not None else [],
+                    "pitch_med": float(p_s) if p_s is not None else None,
+                    "v_speakers": {v_s} if (v_s and v_s != "unknown") else set(),
+                    "py_labels": {py_s} if py_s else set(),
+                })
+            else:
+                # Câu quá ngắn không đủ đặc trưng để lập cụm mới: chọn cụm cùng giới tính gần nhất
+                same_g = [i for i, c in enumerate(clusters) if c["gender"] == g_s]
+                target_i = same_g[0] if same_g else 0
+                clusters[target_i]["members"].append(idx_s)
+
+    # Đặt tên chuẩn SPEAKER_00_M / SPEAKER_01_F / SPEAKER_02_M... theo thứ tự xuất hiện đầu tiên
+    ordered_clusters = sorted(clusters, key=lambda c: min(c["members"]))
+    male_cnt = 0
+    female_cnt = 0
+
+    for cl in ordered_clusters:
+        if cl["gender"] == "female":
+            label = f"SPEAKER_{female_cnt:02d}_F"
+            female_cnt += 1
+        else:
+            label = f"SPEAKER_{male_cnt:02d}_M"
+            male_cnt += 1
+        cl["label"] = label
+        for m_idx in cl["members"]:
+            segments[m_idx]["speaker_id"] = label
+            segments[m_idx]["gender_hint"] = cl["gender"]
+
+    # Trích xuất file tham chiếu âm thanh sạch (2s-5s) cho từng speaker
+    speaker_refs = {}
+    for cl in ordered_clusters:
+        spk = cl["label"]
+        mem_idxs = cl["members"]
+        # Ưu tiên các đoạn dài hơn để làm mẫu tham chiếu giọng nói cho VieNeu-TTS
+        ranked_m = sorted(mem_idxs, key=lambda k: float(segments[k]["end"]) - float(segments[k]["start"]), reverse=True)
+        chunks = []
+        total_samples = 0
+        for k in ranked_m:
+            t0 = float(segments[k]["start"])
+            t1 = float(segments[k]["end"])
+            a0 = max(0, int(t0 * sr))
+            a1 = min(len(wav_data), int(t1 * sr))
+            if a1 > a0:
+                chunks.append(wav_data[a0:a1])
+                total_samples += (a1 - a0)
+            if total_samples >= sr * 5:
+                break
+
+        ref_name = f"ref_speaker_{spk}.wav"
+        ref_path = os.path.join(work_dir, ref_name)
+        merged_wav = np.concatenate(chunks)[: sr * 6] if chunks else np.zeros(sr, dtype=np.float32)
+        sf.write(ref_path, merged_wav, sr)
+
+        avg_pitch = round(float(statistics.mean(cl["pitches"])), 1) if cl["pitches"] else None
+        speaker_refs[spk] = {
+            "ref_asset": ref_name,
+            "gender_hint": cl["gender"],
+            "pitch_hz": avg_pitch,
+            "segments_count": len(mem_idxs),
+        }
+
+    print(
+        f"[INFO] Audio-Visual Speaker Diarization phân tách {len(speaker_refs)} người nói: "
+        f"{list(speaker_refs.keys())}"
+    )
+    return speaker_refs
 
 def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], work_dir: str) -> dict:
     import numpy as np
@@ -1284,7 +1501,7 @@ def main():
     sync.trigger_dispatch("stage1_completed", {"job_id": JOB_ID})
     send_ntfy(
         f"[Stage 1 Done] {JOB_ID}",
-        f"Hoàn tất Qwen2.5-VL-3B ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
+        f"Hoàn tất Qwen2.5-VL-3B + AV Diarization ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
         tags="white_check_mark",
     )
 
