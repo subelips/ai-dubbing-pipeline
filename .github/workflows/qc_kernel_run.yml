@@ -2,6 +2,7 @@ name: QC Kernel Runner (temp)
 
 # Workflow tạm: đẩy kernel lên Kaggle, nếu kẹt QUEUED thì đẩy lại ngay (không chờ),
 # lặp vài lần; sau khi RUNNING thì theo dõi tới COMPLETE/ERROR.
+# Có thể chọn account Kaggle dùng để chạy (mặc định perception) và slug kernel riêng.
 
 on:
   workflow_dispatch:
@@ -14,6 +15,14 @@ on:
         description: "Giai đoạn chạy (stage1 | stage2 | stage3)"
         required: true
         default: "stage1"
+      cred_account:
+        description: "Account Kaggle dùng để chạy (perception | translation | synthesis)"
+        required: true
+        default: "perception"
+      kernel_slug:
+        description: "Slug kernel (để trống = slug mặc định của stage)"
+        required: false
+        default: ""
       max_attempts:
         description: "Số lần đẩy lại tối đa nếu kernel bị QUEUED"
         required: false
@@ -49,6 +58,8 @@ jobs:
         env:
           JOB_ID: ${{ inputs.job_id }}
           STAGE: ${{ inputs.stage }}
+          CRED_ACCOUNT: ${{ inputs.cred_account }}
+          KERNEL_SLUG: ${{ inputs.kernel_slug }}
           MAX_ATTEMPTS: ${{ inputs.max_attempts }}
           RUN_TIMEOUT_MIN: ${{ inputs.run_timeout_min }}
           PERCEPTION_KAGGLE_USER: ${{ secrets.PERCEPTION_KAGGLE_USER }}
@@ -63,15 +74,23 @@ jobs:
 
           stage = os.environ["STAGE"].strip().lower()
           job_id = os.environ["JOB_ID"].strip()
+          acct = (os.environ.get("CRED_ACCOUNT") or "perception").strip().lower()
           max_attempts = max(1, int(os.environ.get("MAX_ATTEMPTS", "6")))
           run_timeout_min = max(5, int(os.environ.get("RUN_TIMEOUT_MIN", "90")))
 
           stage_map = {
-              "stage1": ("01_perception/run_perception.py", "dubbing-perception", "PERCEPTION_KAGGLE_USER", "PERCEPTION_KAGGLE_KEY"),
-              "stage2": ("02_translation/run_translation.py", "dubbing-translation", "TRANSLATION_KAGGLE_USER", "TRANSLATION_KAGGLE_KEY"),
-              "stage3": ("03_synthesis/run_synthesis.py", "dubbing-synthesis", "SYNTHESIS_KAGGLE_USER", "SYNTHESIS_KAGGLE_KEY"),
+              "stage1": ("01_perception/run_perception.py", "dubbing-perception"),
+              "stage2": ("02_translation/run_translation.py", "dubbing-translation"),
+              "stage3": ("03_synthesis/run_synthesis.py", "dubbing-synthesis"),
           }
-          src_file, slug_suffix, u_key, k_key = stage_map[stage]
+          acct_map = {
+              "perception": ("PERCEPTION_KAGGLE_USER", "PERCEPTION_KAGGLE_KEY"),
+              "translation": ("TRANSLATION_KAGGLE_USER", "TRANSLATION_KAGGLE_KEY"),
+              "synthesis": ("SYNTHESIS_KAGGLE_USER", "SYNTHESIS_KAGGLE_KEY"),
+          }
+          src_file, default_slug = stage_map[stage]
+          u_key, k_key = acct_map[acct]
+          slug_suffix = (os.environ.get("KERNEL_SLUG") or "").strip() or default_slug
           k_user = os.environ.get(u_key, "").strip()
           k_val = os.environ.get(k_key, "").strip()
           if not k_user or not k_val:
@@ -136,7 +155,10 @@ jobs:
           api.authenticate()
 
           slug = f"{k_user}/{slug_suffix}"
-          print(f"[INFO] Kernel: {slug} | job={job_id} | stage={stage}", flush=True)
+          print(f"[INFO] Kernel: {slug} | job={job_id} | stage={stage} | cred_account={acct}", flush=True)
+
+          q = subprocess.run(["kaggle", "quota"], env=sub_env, capture_output=True, text=True)
+          print((q.stdout or "").strip()[:800], flush=True)
 
           status = "UNKNOWN"
           for attempt in range(1, max_attempts + 1):
@@ -147,12 +169,14 @@ jobs:
               )
               if res.stdout.strip():
                   print(res.stdout.strip(), flush=True)
+              if res.stderr.strip():
+                  print("[stderr]", res.stderr.strip(), flush=True)
               if res.returncode != 0:
-                  print(res.stderr.strip(), flush=True)
-                  sys.exit(f"[FATAL] kaggle kernels push lỗi (code {res.returncode})")
+                  # Lỗi push (kể cả khi bị chặn do session cũ) vẫn đọc status rồi thử lại.
+                  print(f"[WARN] push trả code {res.returncode} — vẫn kiểm tra status", flush=True)
 
-              # Không chờ lâu: QUEUED ở đây sẽ không tự chuyển RUNNING.
-              time.sleep(30)
+              # KHÔNG chờ lâu: QUEUED ở đây không tự chuyển RUNNING.
+              time.sleep(25)
               try:
                   status = api.kernels_status(slug).status.name
               except Exception as e:
