@@ -947,6 +947,13 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
 
         fixed = 0
         dropped = 0
+        recovered = 0
+        fb_ocr = None
+        try:
+            fb_ocr = _get_rapidocr()
+        except Exception:
+            fb_ocr = None
+
         for entry in sampled_entries:
             ts_c = float(entry["time"])
             res_q = raw_ocr_map.get(ts_c) or {}
@@ -963,6 +970,35 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                 continue
 
             merged, src = _merge_dual_ocr(q_txt, r_txt, r_score)
+
+            # Cứu các khung Qwen trả rác: đọc lại trực tiếp bằng RapidOCR trên crop/alt
+            if (not merged or _is_garbage_text(merged)) and fb_ocr is not None:
+                for cand_path in (entry.get("crop_path"), entry.get("alt2_path"), entry.get("alt3_path")):
+                    if not cand_path:
+                        continue
+                    try:
+                        bgr_fb = cv2_mod.imread(cand_path)
+                        if bgr_fb is None or bgr_fb.size == 0:
+                            continue
+                        res_fb, _ = fb_ocr(bgr_fb)
+                        texts_fb = [
+                            _fix_ocr_confusions(str(x[1]).strip())
+                            for x in (res_fb or [])
+                            if str(x[1]).strip()
+                        ]
+                        cand_txt = " ".join(texts_fb).strip()
+                        if cand_txt and not _is_garbage_text(cand_txt):
+                            merged = _merge_dual_ocr(q_txt, cand_txt, 0.7)[0]
+                            recovered += 1
+                            break
+                    except Exception:
+                        continue
+
+            if _is_garbage_text(q_txt) and merged and not _is_garbage_text(merged):
+                print(f"[DUAL-OCR][DBG] {ts_c:.2f} q={q_txt[:12]!r} r={r_txt[:24]!r} score={r_score:.2f} -> {merged[:24]!r}", flush=True)
+            elif _is_garbage_text(q_txt):
+                print(f"[DUAL-OCR][DBG] {ts_c:.2f} q={q_txt[:12]!r} r={r_txt[:24]!r} score={r_score:.2f} in_map={ts_c in rapid_map}", flush=True)
+
             if merged and merged != q_txt:
                 fixed += 1
             raw_ocr_map[ts_c] = {
@@ -970,8 +1006,7 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                 "visual_speaker": res_q.get("visual_speaker", "unknown"),
             }
 
-        if fixed or dropped:
-            print(f"[DUAL-OCR] RapidOCR sửa {fixed} dòng | bỏ {dropped} khung không giống chữ.", flush=True)
+        print(f"[DUAL-OCR] map={len(rapid_map)} | sửa {fixed} dòng | cứu {recovered} | bỏ {dropped} khung không giống chữ.", flush=True)
 
         # Khung vẫn trống nhưng có chữ: đọc lại crop zoom bằng Qwen (ký tự ngắn)
         still_bad = [
