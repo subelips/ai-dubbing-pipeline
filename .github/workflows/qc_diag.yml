@@ -14,34 +14,23 @@ permissions:
 jobs:
   diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-
-      - name: GetKernel qua web RPC (kernels.KernelsService)
+      - name: Trạng thái các kernel perception
         env:
           P_USER: ${{ secrets.PERCEPTION_KAGGLE_USER }}
           P_KEY: ${{ secrets.PERCEPTION_KAGGLE_KEY }}
         run: |
           python3 - << 'PY'
-          import json, os
+          import os
           import requests
 
           user = (os.environ.get("P_USER") or "").strip()
           key = (os.environ.get("P_KEY") or "").strip()
           s = requests.Session()
-          s.headers.update({
-              "Authorization": f"Bearer {key}",
-              "Content-Type": "application/json",
-              "Accept": "application/json",
-              "User-Agent": "Mozilla/5.0 kaggle-api/v2.2.5",
-          })
-          url = "https://www.kaggle.com/api/i/kernels.KernelsService/GetKernel"
-          r = s.post(url, json={"userName": user, "kernelSlug": "dubbing-perception"}, timeout=30)
-          print("http", r.status_code)
-          try:
-              data = r.json()
-              print(json.dumps(data, ensure_ascii=False)[:8000])
-          except Exception:
-              print(r.text[:3000])
+          s.headers.update({"Authorization": f"Bearer {key}", "Accept": "application/json"})
+          for slug in ("dubbing-perception", "dubbing-perception-qc2"):
+              r = s.get("https://www.kaggle.com/api/v1/kernels/status",
+                        params={"userName": user, "kernelSlug": slug}, timeout=30)
+              print(slug, "->", r.status_code, r.text[:300], flush=True)
           PY
