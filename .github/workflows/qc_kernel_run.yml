@@ -233,6 +233,14 @@ jobs:
               else:
                   sys.exit(f"[TIMEOUT] Kernel chưa xong sau {run_timeout_min} phút (status={status}).")
 
+          if status == "COMPLETE":
+              lr = subprocess.run(
+                  ["kaggle", "kernels", "logs", slug],
+                  env=sub_env, capture_output=True, text=True,
+              )
+              tail = ((lr.stdout or "") + "\n" + (lr.stderr or ""))[-4000:]
+              print("[KERNEL LOG TAIL]\n" + tail, flush=True)
+
           print(f"[FINAL] kernel status={status}", flush=True)
           if status == "ERROR":
               sys.exit("[FAIL] Kernel chạy lỗi.")

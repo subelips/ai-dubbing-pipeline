@@ -110,9 +110,12 @@ def _patch_pyannote_ufunc_compat():
 
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-os.environ.setdefault("HF_HOME", "/kaggle/working/hf_cache")
-os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/kaggle/working/hf_cache/hub")
-os.environ.setdefault("TORCH_HOME", "/kaggle/working/torch_cache")
+os.environ.setdefault("HF_HOME", "/root/.cache/huggingface")
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/root/.cache/huggingface/hub")
+os.environ.setdefault("TORCH_HOME", "/root/.cache/torch")
+
+# ROI phụ đề (dùng chung cho dò sự kiện và cắt ảnh OCR)
+SUBTITLE_ROI = {"x1": 0.02, "y1": 0.55, "x2": 0.98, "y2": 0.72}
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "180")
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
@@ -657,6 +660,7 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
         from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration as VLModelClass
         processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
 
+    img_proc = None
     try:
         img_proc = getattr(processor, "image_processor", None)
         if img_proc is not None:
@@ -808,31 +812,45 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                 retry_items.append(entry)
 
         if retry_items:
-            print(f"[QWEN2.5-VL-3B] Retry {len(retry_items)} khung OCR rác bằng khung dự phòng...", flush=True)
+            print(f"[QWEN2.5-VL-3B] Retry {len(retry_items)} khung OCR rác ở độ phân giải cao hơn...", flush=True)
+            try:
+                if img_proc is not None and hasattr(img_proc, "max_pixels"):
+                    img_proc.max_pixels = 512 * 28 * 28
+            except Exception:
+                pass
             for entry in retry_items[:12]:
-                try:
-                    bgr_r = cv2_mod.imread(entry["alt_path"])
-                    if bgr_r is None or bgr_r.size == 0:
+                for cand_path in (entry.get("crop_path"), entry.get("alt_path")):
+                    if not cand_path:
                         continue
-                    rgb_r = cv2_mod.cvtColor(bgr_r, cv2_mod.COLOR_BGR2RGB)
-                    im_r = Image.fromarray(rgb_r)
-                    chat_r = _build_chat_str(im_r)
-                    inp_r = processor(text=[chat_r], images=[im_r], padding=True, return_tensors="pt")
-                    inp_r = {k: (v.to(target_dev) if hasattr(v, "to") else v) for k, v in inp_r.items()}
-                    with torch.inference_mode():
-                        g_r = model.generate(**inp_r, max_new_tokens=max_new_tokens, do_sample=False)
-                    l_r = inp_r["input_ids"].shape[1]
-                    dec_r = processor.batch_decode(
-                        [g_r[0][l_r:]], skip_special_tokens=True, clean_up_tokenization_spaces=False
-                    )
-                    lines_r, v_spk_r = _parse_qwen_ocr_and_speaker(dec_r[0] if dec_r else "")
-                    if lines_r and not _is_garbage_text(" ".join(lines_r)):
-                        raw_ocr_map[float(entry["time"])] = {
-                            "boxes": [{"poly": [], "text": x, "score": 1.0} for x in lines_r],
-                            "visual_speaker": v_spk_r,
-                        }
-                except Exception as e_r:
-                    print(f"[QWEN2.5-VL-3B][WARN] retry lỗi: {e_r}", flush=True)
+                    try:
+                        bgr_r = cv2_mod.imread(cand_path)
+                        if bgr_r is None or bgr_r.size == 0:
+                            continue
+                        rgb_r = cv2_mod.cvtColor(bgr_r, cv2_mod.COLOR_BGR2RGB)
+                        im_r = Image.fromarray(rgb_r)
+                        chat_r = _build_chat_str(im_r)
+                        inp_r = processor(text=[chat_r], images=[im_r], padding=True, return_tensors="pt")
+                        inp_r = {k: (v.to(target_dev) if hasattr(v, "to") else v) for k, v in inp_r.items()}
+                        with torch.inference_mode():
+                            g_r = model.generate(**inp_r, max_new_tokens=max_new_tokens, do_sample=False)
+                        l_r = inp_r["input_ids"].shape[1]
+                        dec_r = processor.batch_decode(
+                            [g_r[0][l_r:]], skip_special_tokens=True, clean_up_tokenization_spaces=False
+                        )
+                        lines_r, v_spk_r = _parse_qwen_ocr_and_speaker(dec_r[0] if dec_r else "")
+                        if lines_r and not _is_garbage_text(" ".join(lines_r)):
+                            raw_ocr_map[float(entry["time"])] = {
+                                "boxes": [{"poly": [], "text": x, "score": 1.0} for x in lines_r],
+                                "visual_speaker": v_spk_r,
+                            }
+                            break
+                    except Exception as e_r:
+                        print(f"[QWEN2.5-VL-3B][WARN] retry lỗi: {e_r}", flush=True)
+            try:
+                if img_proc is not None and hasattr(img_proc, "max_pixels"):
+                    img_proc.max_pixels = max_pixels
+            except Exception:
+                pass
     finally:
         del model, processor
         free_gpu()
@@ -947,15 +965,16 @@ def run_ocr_with_qwen25_vl(
     video_path: str,
     work_dir: str,
     vocals_wav: str = "",
+    subtitle_events_in: list[dict] | None = None,
 ) -> tuple[dict, list[dict], str, float, list[list[float]], list[dict]]:
     """Lấy mẫu khung hình theo sự kiện phụ đề + mốc VAD và trích xuất phụ đề + gợi ý nhân vật bằng Qwen2.5-VL-3B."""
-    roi = {"x1": 0.02, "y1": 0.55, "x2": 0.98, "y2": 0.72}
+    roi = dict(SUBTITLE_ROI)
     vis_dir = os.path.join(work_dir, "bbox_vis")
     crops_dir = os.path.join(work_dir, "ocr_crops")
     zip_path = os.path.join(work_dir, f"{JOB_ID}_bbox_vis.zip")
     duration = 60.0
     vad_intervals: list[list[float]] = []
-    subtitle_events: list[dict] = []
+    subtitle_events: list[dict] = list(subtitle_events_in or [])
 
     try:
         import cv2
@@ -973,7 +992,8 @@ def run_ocr_with_qwen25_vl(
         cap.release()
 
         # Dò sự kiện phụ đề bằng CV (rẻ, không cần model) để lấy mẫu đúng chỗ và đủ câu
-        subtitle_events = detect_subtitle_events(video_path, roi)
+        if not subtitle_events:
+            subtitle_events = detect_subtitle_events(video_path, roi)
 
         if cfg["use_vad_ocr"] and vocals_wav and os.path.exists(vocals_wav):
             vad_intervals, vad_ts = extract_vad_intervals_and_timestamps(vocals_wav, duration)
@@ -1805,15 +1825,17 @@ def main():
 
     qwen_model_id = _get_qwen25_vl_config()["model_id"]
     t_demucs = time.time()
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         fut_qwen = pool.submit(prefetch_qwen_model_async, qwen_model_id)
+        fut_events = pool.submit(detect_subtitle_events, video_path, dict(SUBTITLE_ROI))
         vocals_wav, bgm_wav = separate_vocals_and_bgm(audio_16k, work_dir)
         fut_qwen.result()
-    print(f"[TIMING] Tách vocals/BGM (demucs, song song prefetch Qwen): {time.time() - t_demucs:.2f}s", flush=True)
+        sub_events_pre = fut_events.result()
+    print(f"[TIMING] Tách vocals/BGM + dò phụ đề (song song): {time.time() - t_demucs:.2f}s", flush=True)
 
     t_ocr = time.time()
     subtitle_roi, screen_texts, bbox_zip_path, duration, vad_intervals, subtitle_events = run_ocr_with_qwen25_vl(
-        video_path, work_dir, vocals_wav=vocals_wav
+        video_path, work_dir, vocals_wav=vocals_wav, subtitle_events_in=sub_events_pre
     )
     print(f"[TIMING] Dò phụ đề + OCR Qwen: {time.time() - t_ocr:.2f}s", flush=True)
 
