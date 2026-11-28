@@ -51,22 +51,7 @@ functools.wraps = (
 
 def _patch_pyannote_ufunc_compat():
     """Gắn module/qualname giả lập và vá wrapt/decorator/inspect cho numpy.ufunc trên Python 3.13."""
-    import builtins
     import inspect
-
-    orig_setattr = builtins.setattr
-
-    def safe_setattr(obj, name, value):
-        if type(obj).__name__ == "ufunc":
-            return None
-        return orig_setattr(obj, name, value)
-
-    if hf_diag.get("hf_api_ok") is False:
-        print(
-            f"[WARN] HF API báo lỗi khi truy cập {model_id} (kiểm tra token hoặc chấp thuận điều khoản gated model trên HF): "
-            f"{hf_diag.get('hf_api_error')}",
-            flush=True,
-        )
 
     try:
         import numpy as np
@@ -133,7 +118,6 @@ import sys
 import sysconfig
 import time
 import traceback
-import urllib.request
 import zipfile
 import requests
 
@@ -314,44 +298,29 @@ def _is_installed(pkg_name: str) -> bool:
 
 
 def ensure_deps():
+    """Chỉ cài các gói còn thiếu một cách nhẹ nhàng để giảm tối đa thời gian khởi tạo."""
     wanted = [
         ("demucs", "demucs"),
         ("soundfile", "soundfile"),
         ("cv2", "opencv-python"),
         ("gdown", "gdown"),
-        ("pyannote.audio", "pyannote.audio"),
     ]
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
     if missing:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-q", "numpy>=1.26.4,<2.3.0", *missing],
+            [sys.executable, "-m", "pip", "install", "-q", "--no-deps", *missing],
             check=False,
         )
-    else:
-        try:
-            import importlib.metadata as ilm
-
-            np_ver = ilm.version("numpy")
-            major, minor = [int(x) for x in np_ver.split(".")[:2]]
-            if major > 2 or (major == 2 and minor >= 3):
-                subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "-q", "--force-reinstall", "numpy>=1.26.4,<2.3.0"],
-                    check=False,
-                )
-        except Exception:
-            pass
 
 
 def _build_cuda_ld_library_path(venv_dir: str = "/tmp/ocr_venv") -> str:
-    """Thu thập toàn bộ đường dẫn lib CUDA/cuDNN từ hệ thống & venv để onnxruntime-gpu nạp GPU thật."""
+    """Thu thập nhanh đường dẫn lib CUDA/cuDNN từ hệ thống & venv."""
     lib_dirs: list[str] = []
     search_roots = [
         os.path.join(venv_dir, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages", "nvidia"),
         os.path.join(sysconfig.get_paths().get("purelib", ""), "nvidia"),
         "/usr/local/lib/python3.13/dist-packages/nvidia",
         "/usr/local/lib/python3.12/dist-packages/nvidia",
-        "/usr/local/lib/python3.11/dist-packages/nvidia",
-        "/usr/local/lib/python3.10/dist-packages/nvidia",
     ]
     for root in search_roots:
         if os.path.isdir(root):
@@ -362,9 +331,6 @@ def _build_cuda_ld_library_path(venv_dir: str = "/tmp/ocr_venv") -> str:
     for std_dir in [
         "/usr/local/cuda/lib64",
         "/usr/local/cuda-12/lib64",
-        "/usr/local/cuda-12.4/lib64",
-        "/usr/local/cuda-12.2/lib64",
-        "/usr/local/cuda-11/lib64",
         "/usr/lib/x86_64-linux-gnu",
     ]:
         if os.path.isdir(std_dir) and std_dir not in lib_dirs:
@@ -379,9 +345,9 @@ def _build_cuda_ld_library_path(venv_dir: str = "/tmp/ocr_venv") -> str:
 
 
 def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
-    """Tạo venv cô lập không cần ensurepip/pip bên trong venv, cài trực tiếp qua --target vào site-packages."""
+    """Khởi tạo venv cô lập nhanh qua --target, chỉ cài gói tối thiểu cần thiết cho RapidOCR GPU."""
     venv_py = os.path.join(venv_dir, "bin", "python")
-    marker = os.path.join(venv_dir, ".rapidocr_gpu_v8_ready")
+    marker = os.path.join(venv_dir, ".rapidocr_gpu_v15_binsearch_ready")
     if os.path.exists(venv_py) and os.path.exists(marker):
         return venv_py
 
@@ -398,8 +364,6 @@ def ensure_ocr_venv(venv_dir: str = "/tmp/ocr_venv") -> str:
     pkgs = [
         "wrapt",
         "numpy>=1.26.4,<2.3.0",
-        "nvidia-cublas-cu12",
-        "nvidia-cudnn-cu12",
         "onnxruntime-gpu==1.20.2",
         "rapidocr",
         "opencv-python-headless",
@@ -496,14 +460,13 @@ def _get_dbnet_config() -> dict:
         "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.34")),
         "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.52")),
         "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.55")),
-        "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "800")),
-        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.58")),
+        "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "768")),
+        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.60")),
         "step_sec": max(0.25, float(os.environ.get("OCR_STEP_SEC", "0.50"))),
-        "idle_jump_sec": max(0.60, float(os.environ.get("OCR_IDLE_JUMP_SEC", "1.00"))),
-        "active_jump_sec": max(0.35, float(os.environ.get("OCR_ACTIVE_JUMP_SEC", "0.50"))),
+        "coarse_step_sec": max(0.50, float(os.environ.get("OCR_COARSE_STEP_SEC", "1.00"))),
+        "bin_tol_sec": max(0.12, float(os.environ.get("OCR_BIN_TOL_SEC", "0.20"))),
         "min_clean_chars": max(2, int(os.environ.get("OCR_MIN_CLEAN_CHARS", "2"))),
-        "edge_min_density": float(os.environ.get("OCR_EDGE_MIN_DENSITY", "0.028")),
-        "edge_diff_delta": float(os.environ.get("OCR_EDGE_DIFF_DELTA", "0.008")),
+        "edge_min_density": float(os.environ.get("OCR_EDGE_MIN_DENSITY", "0.025")),
         "use_clahe": os.environ.get("OCR_USE_CLAHE", "1").strip() == "1",
         "save_bbox_vis": os.environ.get("SAVE_BBOX_VIS", "0").strip() == "1",
         "use_cuda": os.environ.get("OCR_USE_CUDA", "1").strip() == "1",
@@ -527,7 +490,7 @@ with open(req_path, "r", encoding="utf-8") as f:
 
 cfg = req["cfg"]
 samples = req["samples"]
-min_score = float(cfg.get("min_score", 0.50))
+min_score = float(cfg.get("min_score", 0.60))
 want_cuda = bool(cfg.get("use_cuda", True))
 
 has_cuda = False
@@ -555,10 +518,10 @@ def build_ocr(use_gpu: bool):
         "Det.lang_type": LangDet.CH,
         "Det.model_type": ModelType.MOBILE,
         "Det.ocr_version": OCRVersion.PPOCRV5,
-        "Det.thresh": float(cfg.get("dbnet_thresh", 0.26)),
-        "Det.box_thresh": float(cfg.get("dbnet_box_thresh", 0.46)),
-        "Det.unclip_ratio": float(cfg.get("dbnet_unclip_ratio", 1.70)),
-        "Det.limit_side_len": int(cfg.get("dbnet_limit_side_len", 960)),
+        "Det.thresh": float(cfg.get("dbnet_thresh", 0.34)),
+        "Det.box_thresh": float(cfg.get("dbnet_box_thresh", 0.52)),
+        "Det.unclip_ratio": float(cfg.get("dbnet_unclip_ratio", 1.55)),
+        "Det.limit_side_len": int(cfg.get("dbnet_limit_side_len", 768)),
         "Rec.engine_type": EngineType.ONNXRUNTIME,
         "Rec.lang_type": LangRec.CH,
         "Rec.model_type": ModelType.MOBILE,
@@ -652,7 +615,6 @@ def run_one(engine, crop):
             continue
         if len(clean_chars) < min_clean_chars:
             continue
-        # Loại bỏ các chuỗi toàn ký tự lặp đơn điệu (ví dụ 'aaaa', '....', '111')
         if len(set(clean_chars)) == 1 and len(clean_chars) >= 2:
             continue
         pts = []
@@ -673,10 +635,8 @@ def run_one(engine, crop):
             bw = max(xs) - min(xs)
             if bh < 9 or bw < 14:
                 continue
-            # Loại box nằm sát mép đáy/đỉnh crop (dễ là viền khung hình hoặc logo góc)
             if min(ys) <= 2 or max(ys) >= crop_h - 2:
                 continue
-        # Loại chuỗi chỉ gồm 2 ký tự ASCII ngẫu nhiên khi score chưa đủ cao (< 0.80)
         if clean_chars.isascii() and len(clean_chars) <= 2 and sc < 0.80:
             continue
         if is_valid_det(txt, pts, crop_w, crop_h):
@@ -762,7 +722,28 @@ def _draw_bbox_visualization(
     cv2.imwrite(out_vis_path, vis)
 
 
+def _has_subtitle_edge_signal(gray_band, cv2_mod, edge_thresh: float = 75.0, edge_min_density: float = 0.025) -> tuple[bool, float]:
+    gx = cv2_mod.Sobel(gray_band, cv2_mod.CV_32F, 1, 0, ksize=3)
+    gy = cv2_mod.Sobel(gray_band, cv2_mod.CV_32F, 0, 1, ksize=3)
+    grad_mag = cv2_mod.magnitude(gx, gy)
+    density = float((grad_mag >= edge_thresh).mean())
+    return (density >= edge_min_density), density
+
+
+def _extract_roi_crop_at_time(cap, fps: float, duration: float, t_sec: float, roi: dict, cv2_mod):
+    t_clamped = max(0.0, min(max(0.0, duration - 0.04), float(t_sec)))
+    frame_no = int(round(t_clamped * fps))
+    cap.set(cv2_mod.CAP_PROP_POS_FRAMES, frame_no)
+    ok, frm = cap.read()
+    if not ok or frm is None:
+        return None
+    fh, fw, _ = frm.shape
+    crp = frm[int(fh * roi["y1"]) : int(fh * roi["y2"]), int(fw * roi["x1"]) : int(fw * roi["x2"])]
+    return crp if (crp is not None and crp.size > 0) else None
+
+
 def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[dict], str, float]:
+    """Định vị biên phụ đề bằng tìm kiếm nhị phân (Binary Search) trên trục thời gian."""
     roi = {"x1": 0.02, "y1": 0.58, "x2": 0.98, "y2": 0.97}
     vis_dir = os.path.join(work_dir, "bbox_vis")
     crops_dir = os.path.join(work_dir, "ocr_crops")
@@ -790,64 +771,117 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
         duration = total_frames / fps if fps > 0 else 60.0
 
         step_sec = db_cfg["step_sec"]
-        idle_jump_sec = db_cfg["idle_jump_sec"]
-        step_frames = max(1, int(round(step_sec * fps)))
+        bin_tol_sec = float(db_cfg.get("bin_tol_sec", 0.20))
+        edge_min_density = float(db_cfg.get("edge_min_density", 0.025))
+        use_clahe = bool(db_cfg.get("use_clahe", True))
+        clahe_obj = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 4)) if use_clahe else None
 
-        # Giữ step_sec (mặc định 0.50s), đọc tuần tự và lọc theo mật độ cạnh chữ (Sobel) + chênh lệch cạnh
-        sampled_entries = []
-        frame_idx = 0
+        edge_cache: dict[float, tuple[bool, float]] = {}
+        crop_path_cache: dict[float, str] = {}
         idx_s = 0
-        prev_edge_mask = None
-        prev_edge_density = 0.0
-        edge_min_density = float(db_cfg.get("edge_min_density", 0.028))
-        edge_diff_delta = float(db_cfg.get("edge_diff_delta", 0.008))
 
-        while True:
-            ok, frm = cap.read()
-            if not ok or frm is None:
-                break
-            if frame_idx % step_frames == 0:
-                cur_t = round(frame_idx / float(fps), 2)
-                fh, fw, _ = frm.shape
-                crp = frm[int(fh * roi["y1"]) : int(fh * roi["y2"]), int(fw * roi["x1"]) : int(fw * roi["x2"])]
-                if crp.size > 0:
-                    ch_h = crp.shape[0]
-                    sub_band = crp[int(ch_h * 0.25) :, :]
-                    gray_band = cv2.cvtColor(sub_band, cv2.COLOR_BGR2GRAY)
-                    if db_cfg.get("use_clahe", True):
-                        clahe_s = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 4))
-                        gray_band = clahe_s.apply(gray_band)
+        def eval_time(t_val: float) -> tuple[bool, float, str]:
+            nonlocal idx_s
+            t_r = round(max(0.0, min(duration, float(t_val))), 2)
+            if t_r in edge_cache:
+                has_sig, dens = edge_cache[t_r]
+                return has_sig, dens, crop_path_cache.get(t_r, "")
+            crp = _extract_roi_crop_at_time(cap, fps, duration, t_r, roi, cv2)
+            if crp is None:
+                edge_cache[t_r] = (False, 0.0)
+                return False, 0.0, ""
+            ch_h = crp.shape[0]
+            sub_band = crp[int(ch_h * 0.25) :, :]
+            gray = cv2.cvtColor(sub_band, cv2.COLOR_BGR2GRAY)
+            if clahe_obj is not None:
+                gray = clahe_obj.apply(gray)
+            has_sig, dens = _has_subtitle_edge_signal(gray, cv2, edge_min_density=edge_min_density)
+            edge_cache[t_r] = (has_sig, dens)
+            if has_sig:
+                cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{t_r:.2f}s.jpg")
+                cv2.imwrite(cp, crp)
+                crop_path_cache[t_r] = cp
+                idx_s += 1
+                return True, dens, cp
+            return False, dens, ""
 
-                    gx = cv2.Sobel(gray_band, cv2.CV_32F, 1, 0, ksize=3)
-                    gy = cv2.Sobel(gray_band, cv2.CV_32F, 0, 1, ksize=3)
-                    grad_mag = cv2.magnitude(gx, gy)
-                    edge_mask = (grad_mag >= 75.0).astype("uint8")
-                    edge_density = float(edge_mask.mean())
+        def binary_search_onset(t_off: float, t_on: float) -> float:
+            lo, hi = t_off, t_on
+            for _ in range(8):
+                if (hi - lo) <= bin_tol_sec:
+                    break
+                mid = round((lo + hi) * 0.5, 2)
+                sig_mid, _, _ = eval_time(mid)
+                if sig_mid:
+                    hi = mid
+                else:
+                    lo = mid
+            return hi
 
-                    should_ocr = False
-                    if edge_density >= edge_min_density:
-                        if prev_edge_mask is None:
-                            should_ocr = True
-                        else:
-                            # Tỷ lệ pixel cạnh thay đổi (xuất hiện chữ mới hoặc đổi phụ đề)
-                            changed_ratio = float(cv2.bitwise_xor(edge_mask, prev_edge_mask).mean())
-                            density_jump = abs(edge_density - prev_edge_density)
-                            if changed_ratio >= 0.015 or density_jump >= edge_diff_delta:
-                                should_ocr = True
+        def binary_search_offset(t_on: float, t_off: float) -> float:
+            lo, hi = t_on, t_off
+            for _ in range(8):
+                if (hi - lo) <= bin_tol_sec:
+                    break
+                mid = round((lo + hi) * 0.5, 2)
+                sig_mid, _, _ = eval_time(mid)
+                if sig_mid:
+                    lo = mid
+                else:
+                    hi = mid
+            return lo
 
-                    prev_edge_mask = edge_mask
-                    prev_edge_density = edge_density
+        # Tìm kiếm nhị phân trực tiếp trên toàn bộ khoảng [0.0, duration] (bỏ bước quét thô)
+        candidate_times: list[float] = []
 
-                    if should_ocr:
-                        cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{cur_t:.2f}s.jpg")
-                        cv2.imwrite(cp, crp)
-                        sampled_entries.append({"time": cur_t, "crop_path": cp})
-                        idx_s += 1
-            frame_idx += 1
+        def _collect_point(t_pt: float):
+            pt_r = round(max(0.0, min(duration, float(t_pt))), 2)
+            sig_p, _, _ = eval_time(pt_r)
+            if sig_p and pt_r not in candidate_times:
+                candidate_times.append(pt_r)
 
-        if frame_idx > 0:
-            duration = round(frame_idx / float(fps), 2)
+        def _binsearch_span(t_left: float, t_right: float, depth: int = 0):
+            t_l = round(max(0.0, min(duration, float(t_left))), 2)
+            t_r = round(max(0.0, min(duration, float(t_right))), 2)
+            if t_r <= t_l:
+                return
+            sig_l, _, _ = eval_time(t_l)
+            sig_r, _, _ = eval_time(t_r)
+            if sig_l and t_l not in candidate_times:
+                candidate_times.append(t_l)
+            if sig_r and t_r not in candidate_times:
+                candidate_times.append(t_r)
+
+            if (t_r - t_l) <= bin_tol_sec or depth >= 10:
+                if sig_l or sig_r:
+                    _collect_point((t_l + t_r) * 0.5)
+                return
+
+            if not sig_l and sig_r:
+                onset = binary_search_onset(t_l, t_r)
+                _collect_point(onset)
+                _collect_point((onset + t_r) * 0.5)
+                return
+
+            if sig_l and not sig_r:
+                offset = binary_search_offset(t_l, t_r)
+                _collect_point(offset)
+                _collect_point((t_l + offset) * 0.5)
+                return
+
+            mid = round((t_l + t_r) * 0.5, 2)
+            _binsearch_span(t_l, mid, depth + 1)
+            _binsearch_span(mid, t_r, depth + 1)
+
+        _binsearch_span(0.0, duration, depth=0)
+
         cap.release()
+
+        sampled_entries = [
+            {"time": t_k, "crop_path": crop_path_cache[t_k]}
+            for t_k in sorted(candidate_times)
+            if t_k in crop_path_cache and os.path.exists(crop_path_cache[t_k])
+        ]
 
         req_json = os.path.join(work_dir, "_ocr_req.json")
         res_json = os.path.join(work_dir, "_ocr_res.json")
@@ -870,26 +904,18 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
 
         screen_texts: list[dict] = []
         vis_files: list[str] = []
-        consecutive_empty = 0
-        steps_visited = 0
         hits = 0
-        next_allowed_t = 0.0
 
         cap_vis = cv2.VideoCapture(video_path) if save_vis else None
         for entry in sampled_entries:
             ts = float(entry["time"])
-            if ts + 1e-6 < next_allowed_t:
-                continue
-            steps_visited += 1
             dets = raw_ocr_map.get(ts, [])
             texts_found = [d["text"] for d in dets if str(d.get("text") or "").strip()]
-
             if dets or texts_found:
                 hits += 1
-                consecutive_empty = 0
                 vis_name = f"frame_{hits - 1:03d}_{ts:.2f}s.jpg"
                 if save_vis and cap_vis is not None:
-                    cap_vis.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
+                    cap_vis.set(cv2.CAP_PROP_POS_FRAMES, int(round(ts * fps)))
                     ok_v, frm_v = cap_vis.read()
                     if ok_v and frm_v is not None:
                         vp = os.path.join(vis_dir, vis_name)
@@ -904,11 +930,6 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                         "vis_image": vis_name if save_vis else "",
                     }
                 )
-                next_allowed_t = ts + step_sec
-            else:
-                consecutive_empty += 1
-                jump = idle_jump_sec if consecutive_empty >= 2 else step_sec
-                next_allowed_t = ts + jump
 
         if cap_vis is not None:
             cap_vis.release()
@@ -921,8 +942,8 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
         shutil.rmtree(crops_dir, ignore_errors=True)
 
         print(
-            f"[INFO] [RapidOCR venv (GPU={active_gpu}) | Step={step_sec}s/Idle={idle_jump_sec}s] "
-            f"mốc đã nhảy qua={steps_visited} | hits={hits}"
+            f"[INFO] [RapidOCR venv (GPU={active_gpu}) | BinarySearch(tol={bin_tol_sec}s)] "
+            f"ứng viên OCR={len(sampled_entries)} | hits={hits}"
         )
         return roi, screen_texts, zip_path if (save_vis and vis_files) else "", duration
     except Exception as e:
@@ -943,9 +964,9 @@ def _is_same_subtitle(t1: str, t2: str) -> bool:
     return SequenceMatcher(None, s1, s2).ratio() >= 0.90
 
 
-def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 0.28) -> list[dict]:
+def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 0.50) -> list[dict]:
     grouped: list[dict] = []
-    max_merge_gap = max(1.20, step_sec * 4.5)
+    max_merge_gap = max(1.20, step_sec * 3.0)
 
     for item in sorted(screen_texts, key=lambda x: float(x.get("time", 0.0))):
         ts = float(item.get("time", 0.0))
@@ -955,7 +976,6 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
         if not joined or len(clean_joined) < 2:
             continue
 
-        # Tìm trong vài segment gần nhất nếu cùng phụ đề hoặc một vế mở rộng của câu trước
         merged_into_idx = -1
         for back_i in range(len(grouped) - 1, max(-1, len(grouped) - 3), -1):
             prev_g = grouped[back_i]
@@ -969,12 +989,11 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
                 target_g["ocr_text"] = joined
                 target_g["best_text"] = joined
             target_g["_last_ts"] = max(target_g["_last_ts"], ts)
-            target_g["end"] = round(min(duration, max(target_g["end"], ts + step_sec * 0.65)), 2)
+            target_g["end"] = round(min(duration, max(target_g["end"], ts + step_sec * 0.5)), 2)
             continue
 
-        # Phụ đề ngắn chớp nhoáng vẫn giữ tối thiểu 0.35s để không bị mất ở các bước sau
-        start_t = round(max(0.0, ts - step_sec * 0.5), 2)
-        end_t = round(min(duration, max(start_t + 0.35, ts + step_sec * 0.65)), 2)
+        start_t = round(max(0.0, ts - step_sec * 0.4), 2)
+        end_t = round(min(duration, max(start_t + 0.35, ts + step_sec * 0.6)), 2)
         grouped.append(
             {
                 "id": len(grouped),
@@ -988,13 +1007,12 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
                 "asr_text": "",
                 "ocr_text": joined,
                 "best_text": joined,
-                "subtitle_source": "rapidocr_mobile_dbnet_jump",
+                "subtitle_source": "rapidocr_mobile_dbnet_binsearch",
                 "boxes": item.get("boxes") or [],
                 "vis_image": item.get("vis_image") or "",
             }
         )
 
-    # Khử lặp lần 2: nếu đoạn ngắn (< 0.7s) nằm sát đoạn liền kề (< 1.2s) có nội dung tương đồng/bao hàm thì gộp/bỏ lặp
     deduped: list[dict] = []
     for g in grouped:
         g.pop("_last_ts", None)
@@ -1060,61 +1078,6 @@ def _extract_voice_features(samples, sr: int) -> tuple[float | None, float]:
     return pitch_med, cent_med
 
 
-
-def _inspect_hf_cache_and_auth(model_id: str, hf_tok: str) -> dict:
-    """Kiểm tra thư mục cache Hugging Face cục bộ và trạng thái truy cập model pyannote."""
-    hf_home = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
-    hub_dir = os.path.join(hf_home, "hub")
-    repo_folder = "models--" + model_id.replace("/", "--")
-    model_cache_dir = os.path.join(hub_dir, repo_folder)
-
-    cached_files = []
-    total_bytes = 0
-    if os.path.isdir(model_cache_dir):
-        for root, _, files in os.walk(model_cache_dir):
-            for fn in files:
-                fp = os.path.join(root, fn)
-                try:
-                    sz = os.path.getsize(fp)
-                except Exception:
-                    sz = 0
-                total_bytes += sz
-                cached_files.append(f"{os.path.relpath(fp, model_cache_dir)} ({sz}B)")
-
-    info = {
-        "hf_home": hf_home,
-        "model_id": model_id,
-        "token_present": bool(hf_tok),
-        "cache_dir_exists": os.path.isdir(model_cache_dir),
-        "cache_total_bytes": total_bytes,
-        "cached_files_count": len(cached_files),
-        "cached_files_sample": cached_files[:15],
-    }
-
-    # Thử kiểm tra metadata model qua huggingface_hub nếu có
-    try:
-        from huggingface_hub import HfApi
-        api = HfApi(token=hf_tok or None)
-        m_info = api.model_info(model_id, token=hf_tok or None)
-        info["hf_api_ok"] = True
-        info["hf_gated"] = bool(getattr(m_info, "gated", False))
-        info["hf_sha"] = getattr(m_info, "sha", "")
-        info["hf_siblings"] = [s.rfilename for s in (getattr(m_info, "siblings", None) or [])][:15]
-    except Exception as e:
-        info["hf_api_ok"] = False
-        info["hf_api_error"] = f"{type(e).__name__}: {e}"
-
-    print(
-        f"[HF-DIAG] model={model_id} token={info['token_present']} cache_exists={info['cache_dir_exists']} "
-        f"bytes={info['cache_total_bytes']} files={info['cached_files_count']} "
-        f"hf_api_ok={info.get('hf_api_ok')} gated={info.get('hf_gated')} err={info.get('hf_api_error', '')}",
-        flush=True,
-    )
-    if cached_files:
-        print(f"[HF-DIAG] Cache files: {cached_files[:10]}", flush=True)
-    return info
-
-
 def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: int, work_dir: str) -> dict | None:
     hf_tok = _clean_url_or_str(
         os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN
@@ -1129,17 +1092,8 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
     )
 
     try:
-        import numpy as np
-        # Đảm bảo mọi numpy.ufunc không bị decorator/wrapper cố gán __module__ hoặc __dict__ trên Python 3.13
-        for _uf_name in dir(np):
-            _uf = getattr(np, _uf_name, None)
-            if type(_uf).__name__ == "ufunc":
-                try:
-                    if not hasattr(_uf, "__qualname__"):
-                        pass
-                except Exception:
-                    pass
         _patch_pyannote_ufunc_compat()
+        import numpy as np
         import soundfile as sf
         import torch
         from pyannote.audio import Pipeline
@@ -1267,291 +1221,8 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
         )
         return speaker_refs
     except Exception as e:
-        tb_full = traceback.format_exc()[-2000:]
+        tb_full = traceback.format_exc()[-1500:]
         print(f"[WARN] pyannote.audio lỗi ({e}), chuyển sang VAD/pitch dự phòng.\n{tb_full}", flush=True)
-        free_gpu()
-        return None
-
-
-
-def _find_py311_or_312_python() -> str:
-    """Tìm interpreter Python 3.11 hoặc 3.12 trên hệ thống nếu có để chạy pyannote tránh lỗi numpy.ufunc trên 3.13."""
-    candidates = [
-        "/usr/bin/python3.12",
-        "/usr/bin/python3.11",
-        "/opt/conda/bin/python3.12",
-        "/opt/conda/bin/python3.11",
-    ]
-    for p in sorted(glob.glob("/opt/conda/envs/*/bin/python")):
-        candidates.append(p)
-    for c in candidates:
-        if os.path.exists(c) and os.access(c, os.X_OK):
-            try:
-                r = subprocess.run([c, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"], capture_output=True, text=True, timeout=10)
-                ver = (r.stdout or "").strip()
-                if ver in ("3.11", "3.12"):
-                    return c
-            except Exception:
-                continue
-    return ""
-
-
-def _diarize_with_pyannote_subprocess(vocals_wav: str, segments: list[dict], wav_data, sr: int, work_dir: str) -> dict | None:
-    """Chạy pyannote.audio qua interpreter Python 3.11/3.12 nếu hệ thống có sẵn."""
-    py_alt = _find_py311_or_312_python()
-    hf_tok = _clean_url_or_str(
-        os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN
-    )
-    if not py_alt or not hf_tok:
-        return None
-
-    model_id = (
-        os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip()
-        or "pyannote/speaker-diarization-3.1"
-    )
-    out_json = os.path.join(work_dir, "_pyannote_sub_res.json")
-    worker_script = os.path.join(work_dir, "_pyannote_sub_worker.py")
-    worker_code = r"""
-import json, sys, torch, soundfile as sf
-from pyannote.audio import Pipeline
-
-wav_path, model_id, hf_tok, out_path = sys.argv[1:5]
-data, sr = sf.read(wav_path, dtype="float32")
-if data.ndim > 1:
-    data = data.mean(axis=-1)
-try:
-    pipe = Pipeline.from_pretrained(model_id, token=hf_tok)
-except TypeError:
-    pipe = Pipeline.from_pretrained(model_id, use_auth_token=hf_tok)
-if pipe is None:
-    raise RuntimeError("Pipeline is None")
-if torch.cuda.is_available():
-    pipe.to(torch.device("cuda"))
-wf = torch.from_numpy(data).unsqueeze(0)
-diar = pipe({"waveform": wf, "sample_rate": int(sr)})
-ann = getattr(diar, "speaker_diarization", diar)
-turns = []
-for turn, _, spk in ann.itertracks(yield_label=True):
-    if float(turn.end) > float(turn.start):
-        turns.append([float(turn.start), float(turn.end), str(spk)])
-with open(out_path, "w", encoding="utf-8") as f:
-    json.dump({"turns": turns}, f)
-"""
-    with open(worker_script, "w", encoding="utf-8") as f:
-        f.write(worker_code.lstrip())
-
-    try:
-        res = subprocess.run([py_alt, worker_script, vocals_wav, model_id, hf_tok, out_json], capture_output=True, text=True, timeout=300)
-        if res.returncode != 0 or not os.path.exists(out_json):
-            return None
-        with open(out_json, "r", encoding="utf-8") as f:
-            turns_raw = (json.load(f) or {}).get("turns") or []
-        turns = [(float(a), float(b), str(c)) for a, b, c in turns_raw if float(b) > float(a)]
-        if not turns:
-            return None
-
-        import numpy as np
-        raw_spk_order = []
-        for _, _, spk_raw in sorted(turns, key=lambda x: x[0]):
-            if spk_raw not in raw_spk_order:
-                raw_spk_order.append(spk_raw)
-
-        spk_pitches: dict[str, list[float]] = {k: [] for k in raw_spk_order}
-        for t0, t1, spk_raw in turns:
-            i0 = max(0, int(t0 * sr))
-            i1 = min(len(wav_data), int(t1 * sr))
-            if i1 > i0:
-                p_val, _ = _extract_voice_features(wav_data[i0:i1], sr)
-                if p_val is not None:
-                    spk_pitches[spk_raw].append(p_val)
-
-        raw_to_clean: dict[str, str] = {}
-        male_idx = 0
-        female_idx = 0
-        for spk_raw in raw_spk_order:
-            p_list = spk_pitches.get(spk_raw) or []
-            med_p = float(statistics.median(p_list)) if p_list else None
-            if med_p is not None and med_p >= 185.0:
-                raw_to_clean[spk_raw] = f"SPEAKER_{female_idx:02d}_F"
-                female_idx += 1
-            else:
-                raw_to_clean[spk_raw] = f"SPEAKER_{male_idx:02d}_M"
-                male_idx += 1
-
-        for seg in segments:
-            s_start = float(seg["start"])
-            s_end = float(seg["end"])
-            overlap_by_spk: dict[str, float] = {}
-            nearest_spk = raw_spk_order[0]
-            best_dist = float("inf")
-            for t0, t1, spk_raw in turns:
-                ov = max(0.0, min(s_end, t1) - max(s_start, t0))
-                if ov > 0.0:
-                    overlap_by_spk[spk_raw] = overlap_by_spk.get(spk_raw, 0.0) + ov
-                dist = 0.0 if (t0 <= s_start <= t1 or t0 <= s_end <= t1) else min(abs(t0 - s_end), abs(s_start - t1))
-                if dist < best_dist:
-                    best_dist = dist
-                    nearest_spk = spk_raw
-            chosen_raw = max(overlap_by_spk.items(), key=lambda x: x[1])[0] if overlap_by_spk else nearest_spk
-            clean_spk = raw_to_clean.get(chosen_raw, "SPEAKER_00_M")
-            seg["speaker_id"] = clean_spk
-            seg["gender_hint"] = "female" if clean_spk.endswith("_F") else "male"
-            i0 = max(0, int(s_start * sr))
-            i1 = min(len(wav_data), int(s_end * sr))
-            p_seg, _ = _extract_voice_features(wav_data[i0:i1], sr) if i1 > i0 else (None, 0.0)
-            if p_seg is not None:
-                seg["pitch_hz"] = p_seg
-
-        speaker_refs = {}
-        spk_groups: dict[str, list[tuple[float, float]]] = {}
-        for seg in segments:
-            spk_groups.setdefault(seg["speaker_id"], []).append((float(seg["start"]), float(seg["end"])))
-        for spk, intervals in spk_groups.items():
-            chunks = []
-            total_len = 0
-            for t0, t1 in sorted(intervals, key=lambda x: x[1] - x[0], reverse=True):
-                a0 = max(0, int(t0 * sr))
-                a1 = min(len(wav_data), int(t1 * sr))
-                if a1 > a0:
-                    chunks.append(wav_data[a0:a1])
-                    total_len += a1 - a0
-                if total_len >= sr * 5:
-                    break
-            ref_name = f"ref_speaker_{spk}.wav"
-            ref_path = os.path.join(work_dir, ref_name)
-            merged_wav = np.concatenate(chunks)[: sr * 6] if chunks else np.zeros(sr, dtype=np.float32)
-            sf.write(ref_path, merged_wav, sr)
-            pitches = [float(s["pitch_hz"]) for s in segments if s["speaker_id"] == spk and s.get("pitch_hz")]
-            avg_pitch = round(float(statistics.mean(pitches)), 1) if pitches else None
-            speaker_refs[spk] = {
-                "ref_asset": ref_name,
-                "gender_hint": "female" if spk.endswith("_F") else "male",
-                "pitch_hz": avg_pitch,
-            }
-        print(f"[INFO] pyannote subprocess ({py_alt}) phân tách {len(speaker_refs)} người nói: {list(speaker_refs.keys())}")
-        return speaker_refs
-    except Exception:
-        return None
-
-
-def _diarize_with_speechbrain_ecapa(segments: list[dict], wav_data, sr: int, work_dir: str) -> dict | None:
-    """Phân tách người nói bằng SpeechBrain ECAPA-TDNN (PyTorch thuần, không đụng numpy.ufunc trên Python 3.13)."""
-    try:
-        if not _is_installed("speechbrain"):
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "speechbrain", "torchaudio"], check=False)
-        import numpy as np
-        import soundfile as sf
-        import torch
-        from speechbrain.inference.speaker import EncoderClassifier
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        classifier = EncoderClassifier.from_hparams(
-            source="speechbrain/spkrec-ecapa-voxceleb",
-            savedir=os.path.join(work_dir, "sb_ecapa_cache"),
-            run_opts={"device": device},
-        )
-
-        embs: list[np.ndarray | None] = []
-        pitches: list[float | None] = []
-        for seg in segments:
-            s_start = float(seg["start"])
-            s_end = float(seg["end"])
-            i0 = max(0, int(s_start * sr))
-            i1 = min(len(wav_data), int(s_end * sr))
-            chunk = wav_data[i0:i1].astype(np.float32) if i1 > i0 else np.zeros(0, dtype=np.float32)
-            p_val, _ = _extract_voice_features(chunk, sr) if len(chunk) >= max(64, sr // 10) else (None, 0.0)
-            pitches.append(p_val)
-            seg["pitch_hz"] = p_val
-
-            if len(chunk) >= int(0.35 * sr):
-                w_t = torch.from_numpy(chunk).unsqueeze(0).to(device)
-                with torch.no_grad():
-                    e = classifier.encode_batch(w_t).squeeze().detach().cpu().numpy()
-                nrm = float(np.linalg.norm(e))
-                embs.append(e / nrm if nrm > 1e-8 else None)
-            else:
-                embs.append(None)
-
-        # Clustering đơn giản theo cosine similarity (ngưỡng 0.68)
-        clusters: list[tuple[np.ndarray, list[int]]] = []
-        for idx_s, e in enumerate(embs):
-            if e is None:
-                continue
-            best_c = -1
-            best_sim = -1.0
-            for c_i, (centroid, _) in enumerate(clusters):
-                sim = float(np.dot(e, centroid))
-                if sim > best_sim:
-                    best_sim = sim
-                    best_c = c_i
-            if best_c >= 0 and best_sim >= 0.68:
-                c_vec, members = clusters[best_c]
-                members.append(idx_s)
-                new_vec = c_vec * (len(members) - 1) + e
-                nrm = float(np.linalg.norm(new_vec))
-                clusters[best_c] = (new_vec / nrm if nrm > 1e-8 else c_vec, members)
-            else:
-                clusters.append((e, [idx_s]))
-
-        if not clusters:
-            del classifier
-            free_gpu()
-            return None
-
-        # Đặt tên SPEAKER_XX_F / SPEAKER_XX_M theo median pitch từng cluster
-        male_c = 0
-        female_c = 0
-        seg_spk_map: dict[int, str] = {}
-        for _, members in clusters:
-            c_pitches = [float(pitches[m]) for m in members if pitches[m] is not None]
-            med_p = float(statistics.median(c_pitches)) if c_pitches else 130.0
-            if med_p >= 185.0:
-                label = f"SPEAKER_{female_c:02d}_F"
-                female_c += 1
-            else:
-                label = f"SPEAKER_{male_c:02d}_M"
-                male_c += 1
-            for m in members:
-                seg_spk_map[m] = label
-
-        default_label = next(iter(seg_spk_map.values()))
-        for idx_s, seg in enumerate(segments):
-            lbl = seg_spk_map.get(idx_s, default_label)
-            seg["speaker_id"] = lbl
-            seg["gender_hint"] = "female" if lbl.endswith("_F") else "male"
-
-        speaker_refs = {}
-        spk_groups: dict[str, list[tuple[float, float]]] = {}
-        for seg in segments:
-            spk_groups.setdefault(seg["speaker_id"], []).append((float(seg["start"]), float(seg["end"])))
-        for spk, intervals in spk_groups.items():
-            chunks_wav = []
-            total_len = 0
-            for t0, t1 in sorted(intervals, key=lambda x: x[1] - x[0], reverse=True):
-                a0 = max(0, int(t0 * sr))
-                a1 = min(len(wav_data), int(t1 * sr))
-                if a1 > a0:
-                    chunks_wav.append(wav_data[a0:a1])
-                    total_len += a1 - a0
-                if total_len >= sr * 5:
-                    break
-            ref_name = f"ref_speaker_{spk}.wav"
-            ref_path = os.path.join(work_dir, ref_name)
-            merged_wav = np.concatenate(chunks_wav)[: sr * 6] if chunks_wav else np.zeros(sr, dtype=np.float32)
-            sf.write(ref_path, merged_wav, sr)
-            p_list = [float(s["pitch_hz"]) for s in segments if s["speaker_id"] == spk and s.get("pitch_hz")]
-            speaker_refs[spk] = {
-                "ref_asset": ref_name,
-                "gender_hint": "female" if spk.endswith("_F") else "male",
-                "pitch_hz": round(float(statistics.mean(p_list)), 1) if p_list else None,
-            }
-
-        del classifier
-        free_gpu()
-        print(f"[INFO] SpeechBrain ECAPA-TDNN phân tách {len(speaker_refs)} người nói: {list(speaker_refs.keys())}")
-        return speaker_refs
-    except Exception as e:
-        print(f"[WARN] SpeechBrain ECAPA-TDNN lỗi ({e}), dùng VAD/pitch dự phòng.")
         free_gpu()
         return None
 
@@ -1593,11 +1264,7 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
                     seg["start"] = new_s
                     seg["end"] = new_e
 
-    pyannote_refs = _diarize_with_pyannote_subprocess(vocals_wav, segments, wav_data, sr, work_dir)
-    if pyannote_refs is None:
-        pyannote_refs = _diarize_with_pyannote(vocals_wav, segments, wav_data, sr, work_dir)
-    if pyannote_refs is None:
-        pyannote_refs = _diarize_with_speechbrain_ecapa(segments, wav_data, sr, work_dir)
+    pyannote_refs = _diarize_with_pyannote(vocals_wav, segments, wav_data, sr, work_dir)
     if pyannote_refs is not None:
         return pyannote_refs
 
@@ -1738,7 +1405,7 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
         start_t = float(seg.get("start", 0.0))
         end_t = max(start_t + 0.25, float(seg.get("end", start_t + 0.65)))
         spk = seg.get("speaker_id", "SPEAKER_00")
-        src_tag = seg.get("subtitle_source", "rapidocr_mobile_dbnet_jump")
+        src_tag = seg.get("subtitle_source", "rapidocr_mobile_dbnet_binsearch")
         blocks.append(
             f"{idx_out}\n"
             f"{_format_srt_time(start_t)} --> {_format_srt_time(end_t)}\n"
@@ -1748,16 +1415,15 @@ def export_stage1_srt(segments: list[dict], out_srt_path: str) -> str:
         blocks.append("1\n00:00:00,000 --> 00:00:01,000\n[NO_OCR_TEXT_DETECTED]\n")
     with open(out_srt_path, "w", encoding="utf-8") as f:
         f.write("\n".join(blocks).strip() + "\n")
-    print(f"[INFO] Đã xuất file SRT Stage 1 (RapidOCR venv GPU + VAD/pyannote): {out_srt_path} ({idx_out} dòng)")
+    print(f"[INFO] Đã xuất file SRT Stage 1 (RapidOCR venv GPU + BinarySearch): {out_srt_path} ({idx_out} dòng)")
     return out_srt_path
 
 
 sync = GitHubSync(GH_REPO, GH_TOKEN)
 
 
-
 def run_auto_health_check(work_dir: str, venv_dir: str = "/tmp/ocr_venv") -> dict:
-    """Tự động kiểm tra môi trường CUDA, ONNXRuntime GPU provider, RapidOCR venv và pyannote/HF token."""
+    """Kiểm tra nhanh môi trường CUDA, ONNXRuntime GPU provider và RapidOCR venv."""
     import numpy as np
 
     report = {
@@ -1765,16 +1431,13 @@ def run_auto_health_check(work_dir: str, venv_dir: str = "/tmp/ocr_venv") -> dic
         "numpy": getattr(np, "__version__", "unknown"),
         "torch_cuda": False,
         "gpu_name": "none",
-        "venv_exists": os.path.isdir(venv_dir),
         "venv_python_exists": os.path.exists(os.path.join(venv_dir, "bin", "python")),
         "venv_ort_providers": [],
         "venv_cuda_provider": False,
         "venv_rapidocr_ok": False,
-        "ld_library_path_entries": 0,
         "hf_token_present": bool(
             _clean_url_or_str(os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN)
         ),
-        "pyannote_installed": _is_installed("pyannote.audio"),
         "ffmpeg_ok": shutil.which("ffmpeg") is not None,
     }
 
@@ -1788,42 +1451,33 @@ def run_auto_health_check(work_dir: str, venv_dir: str = "/tmp/ocr_venv") -> dic
         report["torch_error"] = str(e)
 
     ld_path = _build_cuda_ld_library_path(venv_dir)
-    report["ld_library_path_entries"] = len([p for p in ld_path.split(":") if p])
-
     venv_py = os.path.join(venv_dir, "bin", "python")
     if os.path.exists(venv_py):
         probe_code = (
             "import json\n"
-            "out = {'providers': [], 'has_cuda': False, 'rapidocr_ok': False, 'err': ''}\n"
+            "out = {'providers': [], 'has_cuda': False, 'rapidocr_ok': False}\n"
             "try:\n"
             "    import onnxruntime as ort\n"
-            "    if hasattr(ort, 'preload_dlls'):\n"
-            "        ort.preload_dlls()\n"
             "    provs = list(ort.get_available_providers() or [])\n"
             "    out['providers'] = provs\n"
             "    out['has_cuda'] = 'CUDAExecutionProvider' in provs\n"
             "    from rapidocr import RapidOCR\n"
             "    out['rapidocr_ok'] = True\n"
-            "except Exception as exc:\n"
-            "    out['err'] = str(exc)\n"
+            "except Exception:\n"
+            "    pass\n"
             "print(json.dumps(out))\n"
         )
         probe_env = os.environ.copy()
         probe_env["LD_LIBRARY_PATH"] = ld_path
         try:
-            res = subprocess.run([venv_py, "-c", probe_code], env=probe_env, capture_output=True, text=True, timeout=45)
+            res = subprocess.run([venv_py, "-c", probe_code], env=probe_env, capture_output=True, text=True, timeout=20)
             if res.returncode == 0 and res.stdout.strip():
-                last_line = res.stdout.strip().splitlines()[-1]
-                parsed = json.loads(last_line)
+                parsed = json.loads(res.stdout.strip().splitlines()[-1])
                 report["venv_ort_providers"] = parsed.get("providers") or []
                 report["venv_cuda_provider"] = bool(parsed.get("has_cuda", False))
                 report["venv_rapidocr_ok"] = bool(parsed.get("rapidocr_ok", False))
-                if parsed.get("err"):
-                    report["venv_probe_err"] = parsed["err"]
-            else:
-                report["venv_probe_err"] = (res.stderr or res.stdout or "").strip()[-300:]
-        except Exception as e:
-            report["venv_probe_err"] = str(e)
+        except Exception:
+            pass
 
     check_path = os.path.join(work_dir, f"{JOB_ID}_stage1_healthcheck.json")
     os.makedirs(work_dir, exist_ok=True)
@@ -1833,30 +1487,17 @@ def run_auto_health_check(work_dir: str, venv_dir: str = "/tmp/ocr_venv") -> dic
     print(
         f"[AUTO-CHECK] py={report['python']} numpy={report['numpy']} "
         f"torch_cuda={report['torch_cuda']}({report['gpu_name']}) | "
-        f"venv_cuda={report['venv_cuda_provider']} providers={report['venv_ort_providers']} "
-        f"rapidocr={report['venv_rapidocr_ok']} | ld_paths={report['ld_library_path_entries']} | "
-        f"hf_token={report['hf_token_present']} pyannote={report['pyannote_installed']} ffmpeg={report['ffmpeg_ok']}",
+        f"venv_cuda={report['venv_cuda_provider']} rapidocr={report['venv_rapidocr_ok']} "
+        f"hf_token={report['hf_token_present']} ffmpeg={report['ffmpeg_ok']}",
         flush=True,
     )
-    if not report["venv_cuda_provider"] and report["torch_cuda"]:
-        print(
-            "[AUTO-CHECK][WARN] Host có CUDA nhưng venv ONNXRuntime chưa bật CUDAExecutionProvider "
-            f"(err={report.get('venv_probe_err', 'none')}) -> OCR có thể fallback CPU.",
-            flush=True,
-        )
-    if not report["hf_token_present"]:
-        print(
-            "[AUTO-CHECK][WARN] Thiếu HF_TOKEN -> pyannote.audio sẽ fallback sang VAD/pitch.",
-            flush=True,
-        )
-
     return report
 
 
 def main():
     send_ntfy(
         f"[Stage 1] {JOB_ID}",
-        f"Bắt đầu nhận diện RapidOCR venv GPU + VAD/pyannote cho job {JOB_ID}.",
+        f"Bắt đầu nhận diện RapidOCR venv GPU (Binary Search) cho job {JOB_ID}.",
         tags="film_frames",
     )
     jobs_data, _ = sync.read_json("state/jobs.json")
@@ -1895,7 +1536,7 @@ def main():
         "job_id": JOB_ID,
         "video_asset": video_asset,
         "asr_enabled": False,
-        "ocr_engine": "rapidocr_mobile_dbnet_jump",
+        "ocr_engine": "rapidocr_mobile_dbnet_binsearch",
         "ocr_step_sec": step_sec,
         "subtitle_roi": subtitle_roi,
         "screen_texts": screen_texts,
@@ -1911,7 +1552,7 @@ def main():
     sync.write_json(
         f"state/{JOB_ID}_stage1.json",
         stage1_payload,
-        f"stage1 done (rapidocr venv gpu+pyannote): {JOB_ID}",
+        f"stage1 done (rapidocr venv gpu+binsearch): {JOB_ID}",
     )
 
     updated_jobs, _ = sync.read_json("state/jobs.json")
@@ -1922,7 +1563,7 @@ def main():
     sync.trigger_dispatch("stage1_completed", {"job_id": JOB_ID})
     send_ntfy(
         f"[Stage 1 Done] {JOB_ID}",
-        f"Hoàn tất RapidOCR venv GPU + pyannote ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
+        f"Hoàn tất RapidOCR venv GPU (Binary Search) ({len(segments)} đoạn, {len(speaker_refs)} người nói) -> sang Stage 2.",
         tags="white_check_mark",
     )
 
