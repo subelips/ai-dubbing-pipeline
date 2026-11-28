@@ -421,13 +421,15 @@ def separate_vocals_and_bgm(audio_16k: str, work_dir: str) -> tuple[str, str]:
 
 def _get_dbnet_config() -> dict:
     return {
-        "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.26")),
-        "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.46")),
-        "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.70")),
-        "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "960")),
-        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.50")),
-        "step_sec": max(0.25, float(os.environ.get("OCR_STEP_SEC", "0.35"))),
-        "idle_jump_sec": max(0.6, float(os.environ.get("OCR_IDLE_JUMP_SEC", "0.85"))),
+        "dbnet_thresh": float(os.environ.get("DBNET_THRESH", "0.34")),
+        "dbnet_box_thresh": float(os.environ.get("DBNET_BOX_THRESH", "0.55")),
+        "dbnet_unclip_ratio": float(os.environ.get("DBNET_UNCLIP_RATIO", "1.55")),
+        "dbnet_limit_side_len": int(os.environ.get("DBNET_LIMIT_SIDE_LEN", "768")),
+        "min_score": float(os.environ.get("OCR_MIN_SCORE", "0.62")),
+        "step_sec": max(0.35, float(os.environ.get("OCR_STEP_SEC", "0.50"))),
+        "idle_jump_sec": max(1.0, float(os.environ.get("OCR_IDLE_JUMP_SEC", "1.40"))),
+        "active_jump_sec": max(0.45, float(os.environ.get("OCR_ACTIVE_JUMP_SEC", "0.70"))),
+        "min_clean_chars": max(2, int(os.environ.get("OCR_MIN_CLEAN_CHARS", "2"))),
         "save_bbox_vis": os.environ.get("SAVE_BBOX_VIS", "0").strip() == "1",
         "use_cuda": os.environ.get("OCR_USE_CUDA", "1").strip() == "1",
     }
@@ -463,7 +465,8 @@ if want_cuda:
                 ort.preload_dlls()
         except Exception as _dll_err:
             print(f"[VENV-OCR][WARN] preload_dlls cảnh báo: {_dll_err}", flush=True)
-        providers = list(ort.get_available_providers() or [])
+        raw_provs = list(ort.get_available_providers() or [])
+        providers = [p for p in raw_provs if p != "TensorrtExecutionProvider"] or raw_provs
         has_cuda = "CUDAExecutionProvider" in providers
     except Exception as _ort_err:
         print(f"[VENV-OCR][WARN] Không kiểm tra được onnxruntime providers: {_ort_err}", flush=True)
@@ -487,6 +490,7 @@ def build_ocr(use_gpu: bool):
         "Rec.ocr_version": OCRVersion.PPOCRV5,
         "EngineConfig.onnxruntime.use_cuda": use_gpu,
         "EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_algo_search": "DEFAULT",
+        "EngineConfig.onnxruntime.providers": ["CUDAExecutionProvider", "CPUExecutionProvider"] if use_gpu else ["CPUExecutionProvider"],
     }
     return RapidOCR(params=params), use_gpu
 
@@ -554,9 +558,13 @@ def run_one(engine, crop):
         txt = str(txt_raw or "").strip()
         sc = float(scores[i]) if (scores is not None and i < len(scores) and scores[i] is not None) else 1.0
         clean_chars = re.sub(r"[\s\W_]+", "", txt, flags=re.UNICODE)
+        min_clean_chars = int(cfg.get("min_clean_chars", 2))
         if not clean_chars or sc < min_score:
             continue
-        if len(clean_chars) < 2 and sc < 0.55:
+        if len(clean_chars) < min_clean_chars:
+            continue
+        # Loại bỏ các chuỗi toàn ký tự lặp đơn điệu (ví dụ 'aaaa', '....', '111')
+        if len(set(clean_chars)) == 1 and len(clean_chars) >= 2:
             continue
         pts = []
         if boxes is not None and i < len(boxes) and boxes[i] is not None:
@@ -569,6 +577,14 @@ def run_one(engine, crop):
                         pts.append([px, py])
             except Exception:
                 pts = []
+        # Lọc box quá nhỏ hoặc không nằm ở vùng phụ đề ngang (chiều cao box quá bé < 10px dễ là nhiễu hạt)
+        if len(pts) >= 4:
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            bh = max(ys) - min(ys)
+            bw = max(xs) - min(xs)
+            if bh < 10 or bw < 16:
+                continue
         if is_valid_det(txt, pts, crop_w, crop_h):
             dets.append({"poly": pts, "text": txt, "score": round(sc, 3)})
     return dets
@@ -685,6 +701,7 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
         sampled_entries = []
         cur_t = round(min(duration * 0.005, 0.2), 2)
         idx_s = 0
+        prev_crp_gray = None
         while cur_t < duration:
             cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, min(duration, cur_t)) * 1000.0)
             ok, frm = cap.read()
@@ -692,10 +709,20 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                 fh, fw, _ = frm.shape
                 crp = frm[int(fh * roi["y1"]) : int(fh * roi["y2"]), int(fw * roi["x1"]) : int(fw * roi["x2"])]
                 if crp.size > 0:
-                    cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{cur_t:.2f}s.jpg")
-                    cv2.imwrite(cp, crp)
-                    sampled_entries.append({"time": cur_t, "crop_path": cp})
-                    idx_s += 1
+                    crp_small = cv2.resize(crp, (160, 48), interpolation=cv2.INTER_AREA)
+                    crp_gray = cv2.cvtColor(crp_small, cv2.COLOR_BGR2GRAY)
+                    # Bỏ qua frame gần như giống hệt frame trước (chênh lệch pixel trung bình < 2.5) để tránh OCR lặp
+                    is_near_dup = False
+                    if prev_crp_gray is not None:
+                        diff_mean = float(cv2.absdiff(crp_gray, prev_crp_gray).mean())
+                        if diff_mean < 2.5:
+                            is_near_dup = True
+                    prev_crp_gray = crp_gray
+                    if not is_near_dup:
+                        cp = os.path.join(crops_dir, f"crop_{idx_s:04d}_{cur_t:.2f}s.jpg")
+                        cv2.imwrite(cp, crp)
+                        sampled_entries.append({"time": cur_t, "crop_path": cp})
+                        idx_s += 1
             cur_t = round(cur_t + step_sec, 2)
 
         cap.release()
@@ -787,11 +814,11 @@ def _is_same_subtitle(t1: str, t2: str) -> bool:
     s2 = re.sub(r"[\s\W_]+", "", str(t2 or ""), flags=re.UNICODE).lower()
     if not s1 or not s2:
         return False
-    if s1 == s2:
+    if s1 == s2 or s1 in s2 or s2 in s1:
         return True
     if min(len(s1), len(s2)) <= 3:
-        return SequenceMatcher(None, s1, s2).ratio() >= 0.85
-    return SequenceMatcher(None, s1, s2).ratio() >= 0.88
+        return SequenceMatcher(None, s1, s2).ratio() >= 0.88
+    return SequenceMatcher(None, s1, s2).ratio() >= 0.90
 
 
 def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60.0, step_sec: float = 0.35) -> list[dict]:
@@ -802,7 +829,8 @@ def build_ocr_segments_from_jumps(screen_texts: list[dict], duration: float = 60
         ts = float(item.get("time", 0.0))
         texts = [str(t).strip() for t in (item.get("texts") or []) if str(t).strip()]
         joined = " ".join(texts).strip()
-        if not joined:
+        clean_joined = re.sub(r"[\s\W_]+", "", joined, flags=re.UNICODE)
+        if not joined or len(clean_joined) < 2:
             continue
 
         if (
@@ -1046,6 +1074,289 @@ def _diarize_with_pyannote(vocals_wav: str, segments: list[dict], wav_data, sr: 
         return None
 
 
+
+def _find_py311_or_312_python() -> str:
+    """Tìm interpreter Python 3.11 hoặc 3.12 trên hệ thống nếu có để chạy pyannote tránh lỗi numpy.ufunc trên 3.13."""
+    candidates = [
+        "/usr/bin/python3.12",
+        "/usr/bin/python3.11",
+        "/opt/conda/bin/python3.12",
+        "/opt/conda/bin/python3.11",
+    ]
+    for p in sorted(glob.glob("/opt/conda/envs/*/bin/python")):
+        candidates.append(p)
+    for c in candidates:
+        if os.path.exists(c) and os.access(c, os.X_OK):
+            try:
+                r = subprocess.run([c, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"], capture_output=True, text=True, timeout=10)
+                ver = (r.stdout or "").strip()
+                if ver in ("3.11", "3.12"):
+                    return c
+            except Exception:
+                continue
+    return ""
+
+
+def _diarize_with_pyannote_subprocess(vocals_wav: str, segments: list[dict], wav_data, sr: int, work_dir: str) -> dict | None:
+    """Chạy pyannote.audio qua interpreter Python 3.11/3.12 nếu hệ thống có sẵn."""
+    py_alt = _find_py311_or_312_python()
+    hf_tok = _clean_url_or_str(
+        os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGING_FACE_HUB_TOKEN", "") or HF_TOKEN
+    )
+    if not py_alt or not hf_tok:
+        return None
+
+    model_id = (
+        os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1").strip()
+        or "pyannote/speaker-diarization-3.1"
+    )
+    out_json = os.path.join(work_dir, "_pyannote_sub_res.json")
+    worker_script = os.path.join(work_dir, "_pyannote_sub_worker.py")
+    worker_code = r"""
+import json, sys, torch, soundfile as sf
+from pyannote.audio import Pipeline
+
+wav_path, model_id, hf_tok, out_path = sys.argv[1:5]
+data, sr = sf.read(wav_path, dtype="float32")
+if data.ndim > 1:
+    data = data.mean(axis=-1)
+try:
+    pipe = Pipeline.from_pretrained(model_id, token=hf_tok)
+except TypeError:
+    pipe = Pipeline.from_pretrained(model_id, use_auth_token=hf_tok)
+if pipe is None:
+    raise RuntimeError("Pipeline is None")
+if torch.cuda.is_available():
+    pipe.to(torch.device("cuda"))
+wf = torch.from_numpy(data).unsqueeze(0)
+diar = pipe({"waveform": wf, "sample_rate": int(sr)})
+ann = getattr(diar, "speaker_diarization", diar)
+turns = []
+for turn, _, spk in ann.itertracks(yield_label=True):
+    if float(turn.end) > float(turn.start):
+        turns.append([float(turn.start), float(turn.end), str(spk)])
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump({"turns": turns}, f)
+"""
+    with open(worker_script, "w", encoding="utf-8") as f:
+        f.write(worker_code.lstrip())
+
+    try:
+        res = subprocess.run([py_alt, worker_script, vocals_wav, model_id, hf_tok, out_json], capture_output=True, text=True, timeout=300)
+        if res.returncode != 0 or not os.path.exists(out_json):
+            return None
+        with open(out_json, "r", encoding="utf-8") as f:
+            turns_raw = (json.load(f) or {}).get("turns") or []
+        turns = [(float(a), float(b), str(c)) for a, b, c in turns_raw if float(b) > float(a)]
+        if not turns:
+            return None
+
+        import numpy as np
+        raw_spk_order = []
+        for _, _, spk_raw in sorted(turns, key=lambda x: x[0]):
+            if spk_raw not in raw_spk_order:
+                raw_spk_order.append(spk_raw)
+
+        spk_pitches: dict[str, list[float]] = {k: [] for k in raw_spk_order}
+        for t0, t1, spk_raw in turns:
+            i0 = max(0, int(t0 * sr))
+            i1 = min(len(wav_data), int(t1 * sr))
+            if i1 > i0:
+                p_val, _ = _extract_voice_features(wav_data[i0:i1], sr)
+                if p_val is not None:
+                    spk_pitches[spk_raw].append(p_val)
+
+        raw_to_clean: dict[str, str] = {}
+        male_idx = 0
+        female_idx = 0
+        for spk_raw in raw_spk_order:
+            p_list = spk_pitches.get(spk_raw) or []
+            med_p = float(statistics.median(p_list)) if p_list else None
+            if med_p is not None and med_p >= 185.0:
+                raw_to_clean[spk_raw] = f"SPEAKER_{female_idx:02d}_F"
+                female_idx += 1
+            else:
+                raw_to_clean[spk_raw] = f"SPEAKER_{male_idx:02d}_M"
+                male_idx += 1
+
+        for seg in segments:
+            s_start = float(seg["start"])
+            s_end = float(seg["end"])
+            overlap_by_spk: dict[str, float] = {}
+            nearest_spk = raw_spk_order[0]
+            best_dist = float("inf")
+            for t0, t1, spk_raw in turns:
+                ov = max(0.0, min(s_end, t1) - max(s_start, t0))
+                if ov > 0.0:
+                    overlap_by_spk[spk_raw] = overlap_by_spk.get(spk_raw, 0.0) + ov
+                dist = 0.0 if (t0 <= s_start <= t1 or t0 <= s_end <= t1) else min(abs(t0 - s_end), abs(s_start - t1))
+                if dist < best_dist:
+                    best_dist = dist
+                    nearest_spk = spk_raw
+            chosen_raw = max(overlap_by_spk.items(), key=lambda x: x[1])[0] if overlap_by_spk else nearest_spk
+            clean_spk = raw_to_clean.get(chosen_raw, "SPEAKER_00_M")
+            seg["speaker_id"] = clean_spk
+            seg["gender_hint"] = "female" if clean_spk.endswith("_F") else "male"
+            i0 = max(0, int(s_start * sr))
+            i1 = min(len(wav_data), int(s_end * sr))
+            p_seg, _ = _extract_voice_features(wav_data[i0:i1], sr) if i1 > i0 else (None, 0.0)
+            if p_seg is not None:
+                seg["pitch_hz"] = p_seg
+
+        speaker_refs = {}
+        spk_groups: dict[str, list[tuple[float, float]]] = {}
+        for seg in segments:
+            spk_groups.setdefault(seg["speaker_id"], []).append((float(seg["start"]), float(seg["end"])))
+        for spk, intervals in spk_groups.items():
+            chunks = []
+            total_len = 0
+            for t0, t1 in sorted(intervals, key=lambda x: x[1] - x[0], reverse=True):
+                a0 = max(0, int(t0 * sr))
+                a1 = min(len(wav_data), int(t1 * sr))
+                if a1 > a0:
+                    chunks.append(wav_data[a0:a1])
+                    total_len += a1 - a0
+                if total_len >= sr * 5:
+                    break
+            ref_name = f"ref_speaker_{spk}.wav"
+            ref_path = os.path.join(work_dir, ref_name)
+            merged_wav = np.concatenate(chunks)[: sr * 6] if chunks else np.zeros(sr, dtype=np.float32)
+            sf.write(ref_path, merged_wav, sr)
+            pitches = [float(s["pitch_hz"]) for s in segments if s["speaker_id"] == spk and s.get("pitch_hz")]
+            avg_pitch = round(float(statistics.mean(pitches)), 1) if pitches else None
+            speaker_refs[spk] = {
+                "ref_asset": ref_name,
+                "gender_hint": "female" if spk.endswith("_F") else "male",
+                "pitch_hz": avg_pitch,
+            }
+        print(f"[INFO] pyannote subprocess ({py_alt}) phân tách {len(speaker_refs)} người nói: {list(speaker_refs.keys())}")
+        return speaker_refs
+    except Exception:
+        return None
+
+
+def _diarize_with_speechbrain_ecapa(segments: list[dict], wav_data, sr: int, work_dir: str) -> dict | None:
+    """Phân tách người nói bằng SpeechBrain ECAPA-TDNN (PyTorch thuần, không đụng numpy.ufunc trên Python 3.13)."""
+    try:
+        if not _is_installed("speechbrain"):
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "speechbrain", "torchaudio"], check=False)
+        import numpy as np
+        import soundfile as sf
+        import torch
+        from speechbrain.inference.speaker import EncoderClassifier
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        classifier = EncoderClassifier.from_hparams(
+            source="speechbrain/spkrec-ecapa-voxceleb",
+            savedir=os.path.join(work_dir, "sb_ecapa_cache"),
+            run_opts={"device": device},
+        )
+
+        embs: list[np.ndarray | None] = []
+        pitches: list[float | None] = []
+        for seg in segments:
+            s_start = float(seg["start"])
+            s_end = float(seg["end"])
+            i0 = max(0, int(s_start * sr))
+            i1 = min(len(wav_data), int(s_end * sr))
+            chunk = wav_data[i0:i1].astype(np.float32) if i1 > i0 else np.zeros(0, dtype=np.float32)
+            p_val, _ = _extract_voice_features(chunk, sr) if len(chunk) >= max(64, sr // 10) else (None, 0.0)
+            pitches.append(p_val)
+            seg["pitch_hz"] = p_val
+
+            if len(chunk) >= int(0.35 * sr):
+                w_t = torch.from_numpy(chunk).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    e = classifier.encode_batch(w_t).squeeze().detach().cpu().numpy()
+                nrm = float(np.linalg.norm(e))
+                embs.append(e / nrm if nrm > 1e-8 else None)
+            else:
+                embs.append(None)
+
+        # Clustering đơn giản theo cosine similarity (ngưỡng 0.68)
+        clusters: list[tuple[np.ndarray, list[int]]] = []
+        for idx_s, e in enumerate(embs):
+            if e is None:
+                continue
+            best_c = -1
+            best_sim = -1.0
+            for c_i, (centroid, _) in enumerate(clusters):
+                sim = float(np.dot(e, centroid))
+                if sim > best_sim:
+                    best_sim = sim
+                    best_c = c_i
+            if best_c >= 0 and best_sim >= 0.68:
+                c_vec, members = clusters[best_c]
+                members.append(idx_s)
+                new_vec = c_vec * (len(members) - 1) + e
+                nrm = float(np.linalg.norm(new_vec))
+                clusters[best_c] = (new_vec / nrm if nrm > 1e-8 else c_vec, members)
+            else:
+                clusters.append((e, [idx_s]))
+
+        if not clusters:
+            del classifier
+            free_gpu()
+            return None
+
+        # Đặt tên SPEAKER_XX_F / SPEAKER_XX_M theo median pitch từng cluster
+        male_c = 0
+        female_c = 0
+        seg_spk_map: dict[int, str] = {}
+        for _, members in clusters:
+            c_pitches = [float(pitches[m]) for m in members if pitches[m] is not None]
+            med_p = float(statistics.median(c_pitches)) if c_pitches else 130.0
+            if med_p >= 185.0:
+                label = f"SPEAKER_{female_c:02d}_F"
+                female_c += 1
+            else:
+                label = f"SPEAKER_{male_c:02d}_M"
+                male_c += 1
+            for m in members:
+                seg_spk_map[m] = label
+
+        default_label = next(iter(seg_spk_map.values()))
+        for idx_s, seg in enumerate(segments):
+            lbl = seg_spk_map.get(idx_s, default_label)
+            seg["speaker_id"] = lbl
+            seg["gender_hint"] = "female" if lbl.endswith("_F") else "male"
+
+        speaker_refs = {}
+        spk_groups: dict[str, list[tuple[float, float]]] = {}
+        for seg in segments:
+            spk_groups.setdefault(seg["speaker_id"], []).append((float(seg["start"]), float(seg["end"])))
+        for spk, intervals in spk_groups.items():
+            chunks_wav = []
+            total_len = 0
+            for t0, t1 in sorted(intervals, key=lambda x: x[1] - x[0], reverse=True):
+                a0 = max(0, int(t0 * sr))
+                a1 = min(len(wav_data), int(t1 * sr))
+                if a1 > a0:
+                    chunks_wav.append(wav_data[a0:a1])
+                    total_len += a1 - a0
+                if total_len >= sr * 5:
+                    break
+            ref_name = f"ref_speaker_{spk}.wav"
+            ref_path = os.path.join(work_dir, ref_name)
+            merged_wav = np.concatenate(chunks_wav)[: sr * 6] if chunks_wav else np.zeros(sr, dtype=np.float32)
+            sf.write(ref_path, merged_wav, sr)
+            p_list = [float(s["pitch_hz"]) for s in segments if s["speaker_id"] == spk and s.get("pitch_hz")]
+            speaker_refs[spk] = {
+                "ref_asset": ref_name,
+                "gender_hint": "female" if spk.endswith("_F") else "male",
+                "pitch_hz": round(float(statistics.mean(p_list)), 1) if p_list else None,
+            }
+
+        del classifier
+        free_gpu()
+        print(f"[INFO] SpeechBrain ECAPA-TDNN phân tách {len(speaker_refs)} người nói: {list(speaker_refs.keys())}")
+        return speaker_refs
+    except Exception as e:
+        print(f"[WARN] SpeechBrain ECAPA-TDNN lỗi ({e}), dùng VAD/pitch dự phòng.")
+        free_gpu()
+        return None
+
+
 def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], work_dir: str) -> dict:
     import numpy as np
     import soundfile as sf
@@ -1083,7 +1394,11 @@ def align_vad_and_diarize_from_vocals(vocals_wav: str, segments: list[dict], wor
                     seg["start"] = new_s
                     seg["end"] = new_e
 
-    pyannote_refs = _diarize_with_pyannote(vocals_wav, segments, wav_data, sr, work_dir)
+    pyannote_refs = _diarize_with_pyannote_subprocess(vocals_wav, segments, wav_data, sr, work_dir)
+    if pyannote_refs is None:
+        pyannote_refs = _diarize_with_pyannote(vocals_wav, segments, wav_data, sr, work_dir)
+    if pyannote_refs is None:
+        pyannote_refs = _diarize_with_speechbrain_ecapa(segments, wav_data, sr, work_dir)
     if pyannote_refs is not None:
         return pyannote_refs
 
