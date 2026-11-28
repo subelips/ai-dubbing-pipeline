@@ -298,7 +298,7 @@ def _is_installed(pkg_name: str) -> bool:
 
 
 def ensure_deps():
-    """Cài gói thiếu (kèm phụ thuộc tối thiểu cho demucs như sphn, julius, lameenc) mà không reinstall nặng."""
+    """Cài các gói thiếu (gồm phụ thuộc demucs và pyannote.audio) với overhead thấp."""
     wanted = [
         ("demucs", "demucs"),
         ("sphn", "sphn"),
@@ -307,11 +307,12 @@ def ensure_deps():
         ("soundfile", "soundfile"),
         ("cv2", "opencv-python"),
         ("gdown", "gdown"),
+        ("pyannote.audio", "pyannote.audio"),
     ]
     missing = [pip_name for mod_name, pip_name in wanted if not _is_installed(mod_name)]
     if missing:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-q", "--no-deps", *missing],
+            [sys.executable, "-m", "pip", "install", "-q", *missing],
             check=False,
         )
 
@@ -834,49 +835,66 @@ def run_ocr_with_jump_step(video_path: str, work_dir: str) -> tuple[dict, list[d
                     hi = mid
             return lo
 
-        # Tìm kiếm nhị phân trực tiếp trên toàn bộ khoảng [0.0, duration] (bỏ bước quét thô)
+        # Tìm kiếm nhị phân có giới hạn (Bounded Bisection) chỉ tại vùng đổi cạnh, giới hạn max_ocr_frames (~120 ảnh)
+        max_ocr_frames = max(40, int(os.environ.get("OCR_MAX_FRAMES", "120")))
+        probe_step = max(0.75, float(os.environ.get("OCR_PROBE_STEP_SEC", "1.25")))
         candidate_times: list[float] = []
 
-        def _collect_point(t_pt: float):
+        def _add_candidate(t_pt: float):
+            if len(candidate_times) >= max_ocr_frames:
+                return
             pt_r = round(max(0.0, min(duration, float(t_pt))), 2)
             sig_p, _, _ = eval_time(pt_r)
             if sig_p and pt_r not in candidate_times:
                 candidate_times.append(pt_r)
 
-        def _binsearch_span(t_left: float, t_right: float, depth: int = 0):
-            t_l = round(max(0.0, min(duration, float(t_left))), 2)
-            t_r = round(max(0.0, min(duration, float(t_right))), 2)
-            if t_r <= t_l:
+        def _bisect_transition(t_a: float, t_b: float, want_on_at_b: bool, depth: int = 0):
+            if len(candidate_times) >= max_ocr_frames:
                 return
-            sig_l, _, _ = eval_time(t_l)
-            sig_r, _, _ = eval_time(t_r)
-            if sig_l and t_l not in candidate_times:
-                candidate_times.append(t_l)
-            if sig_r and t_r not in candidate_times:
-                candidate_times.append(t_r)
-
-            if (t_r - t_l) <= bin_tol_sec or depth >= 10:
-                if sig_l or sig_r:
-                    _collect_point((t_l + t_r) * 0.5)
+            if abs(t_b - t_a) <= max(0.25, bin_tol_sec) or depth >= 4:
+                _add_candidate(t_b if want_on_at_b else t_a)
                 return
+            mid = round((t_a + t_b) * 0.5, 2)
+            sig_m, _, _ = eval_time(mid)
+            if want_on_at_b:
+                if sig_m:
+                    _bisect_transition(t_a, mid, True, depth + 1)
+                else:
+                    _bisect_transition(mid, t_b, True, depth + 1)
+            else:
+                if sig_m:
+                    _bisect_transition(mid, t_b, False, depth + 1)
+                else:
+                    _bisect_transition(t_a, mid, False, depth + 1)
 
-            if not sig_l and sig_r:
-                onset = binary_search_onset(t_l, t_r)
-                _collect_point(onset)
-                _collect_point((onset + t_r) * 0.5)
-                return
+        t_cursor = 0.0
+        prev_t = 0.0
+        prev_sig, _, _ = eval_time(0.0)
+        if prev_sig:
+            _add_candidate(0.0)
 
-            if sig_l and not sig_r:
-                offset = binary_search_offset(t_l, t_r)
-                _collect_point(offset)
-                _collect_point((t_l + offset) * 0.5)
-                return
+        while t_cursor + probe_step <= duration and len(candidate_times) < max_ocr_frames:
+            nxt_t = round(min(duration, t_cursor + probe_step), 2)
+            nxt_sig, _, _ = eval_time(nxt_t)
 
-            mid = round((t_l + t_r) * 0.5, 2)
-            _binsearch_span(t_l, mid, depth + 1)
-            _binsearch_span(mid, t_r, depth + 1)
+            if not prev_sig and nxt_sig:
+                _bisect_transition(prev_t, nxt_t, want_on_at_b=True, depth=0)
+                _add_candidate(nxt_t)
+            elif prev_sig and not nxt_sig:
+                _bisect_transition(prev_t, nxt_t, want_on_at_b=False, depth=0)
+                _add_candidate(prev_t)
+            elif prev_sig and nxt_sig:
+                # Chỉ lấy điểm giữa nếu khoảng có ngắt tín hiệu tạm thời, tránh nhân bản dày đặc
+                mid_t = round((prev_t + nxt_t) * 0.5, 2)
+                mid_sig, _, _ = eval_time(mid_t)
+                if not mid_sig:
+                    _bisect_transition(prev_t, mid_t, want_on_at_b=False, depth=1)
+                    _bisect_transition(mid_t, nxt_t, want_on_at_b=True, depth=1)
+                _add_candidate(nxt_t)
 
-        _binsearch_span(0.0, duration, depth=0)
+            prev_t = nxt_t
+            prev_sig = nxt_sig
+            t_cursor = round(t_cursor + probe_step, 2)
 
         cap.release()
 
