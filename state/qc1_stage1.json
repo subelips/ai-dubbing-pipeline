@@ -225,13 +225,13 @@
     {
       "time": 36.3,
       "texts": [
-        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        "今天食材新鲜吗"
       ],
       "visual_speaker": "unknown",
       "boxes": [
         {
           "poly": [],
-          "text": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+          "text": "今天食材新鲜吗",
           "score": 1.0
         }
       ],
@@ -675,13 +675,13 @@
     {
       "time": 86.74,
       "texts": [
-        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        "夏氏靠陆氏撑腰"
       ],
       "visual_speaker": "unknown",
       "boxes": [
         {
           "poly": [],
-          "text": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+          "text": "夏氏靠陆氏撑腰",
           "score": 1.0
         }
       ],
@@ -852,15 +852,15 @@
     "SPEAKER_00_M": {
       "ref_asset": "ref_speaker_SPEAKER_00_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 113.3,
-      "segments_count": 32,
+      "pitch_hz": 114.7,
+      "segments_count": 33,
       "pyannote_label": "SPEAKER_01"
     },
     "SPEAKER_01_M": {
       "ref_asset": "ref_speaker_SPEAKER_01_M.wav",
       "gender_hint": "male",
-      "pitch_hz": 181.6,
-      "segments_count": 21,
+      "pitch_hz": 188.7,
+      "segments_count": 22,
       "pyannote_label": "SPEAKER_00"
     }
   },
@@ -894,7 +894,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 114.0,
+      "pitch_hz": 113.7,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "你的饭给狗吃了",
@@ -960,7 +960,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 111.7,
+      "pitch_hz": 118.6,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "该你吃了",
@@ -1004,7 +1004,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 103.6,
+      "pitch_hz": 103.2,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "这是今天的午餐",
@@ -1026,7 +1026,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 101.7,
+      "pitch_hz": 101.6,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "结婚三年",
@@ -1048,7 +1048,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 99.8,
+      "pitch_hz": 95.0,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "我的妻子对餐饮要求",
@@ -1070,7 +1070,7 @@
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 106.3,
+      "pitch_hz": 103.9,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "苛刻到极致",
@@ -1087,7 +1087,7 @@
     },
     {
       "id": 10,
-      "start": 28.74,
+      "start": 28.62,
       "end": 29.54,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
@@ -1132,11 +1132,11 @@
     {
       "id": 12,
       "start": 31.06,
-      "end": 32.52,
+      "end": 32.5,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 114.8,
+      "pitch_hz": 115.0,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "所以我每天四点起",
@@ -1154,11 +1154,11 @@
     {
       "id": 13,
       "start": 32.98,
-      "end": 35.8,
+      "end": 35.28,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 82.4,
+      "pitch_hz": 81.7,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "给她做最健康卫生的三餐",
@@ -1175,12 +1175,34 @@
     },
     {
       "id": 14,
+      "start": 35.62,
+      "end": 36.75,
+      "speaker_id": "SPEAKER_01_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 343.2,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "今天食材新鲜吗",
+      "best_text": "今天食材新鲜吗",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "今天食材新鲜吗",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 15,
       "start": 37.14,
       "end": 38.2,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 107.0,
+      "pitch_hz": 102.7,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "都是早上四点",
@@ -1196,13 +1218,13 @@
       "vis_image": ""
     },
     {
-      "id": 15,
+      "id": 16,
       "start": 38.23,
       "end": 39.75,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 95.9,
+      "pitch_hz": 96.1,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "从菜市场买最新鲜的食材",
@@ -1218,13 +1240,13 @@
       "vis_image": ""
     },
     {
-      "id": 16,
+      "id": 17,
       "start": 39.98,
       "end": 40.75,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 301.1,
+      "pitch_hz": 296.0,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "菜擦洗了几遍",
@@ -1240,13 +1262,13 @@
       "vis_image": ""
     },
     {
-      "id": 17,
+      "id": 18,
       "start": 40.99,
       "end": 41.3,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 133.4,
+      "pitch_hz": 133.7,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "三遍",
@@ -1262,7 +1284,7 @@
       "vis_image": ""
     },
     {
-      "id": 18,
+      "id": 19,
       "start": 41.67,
       "end": 42.69,
       "speaker_id": "SPEAKER_00_M",
@@ -1284,13 +1306,13 @@
       "vis_image": ""
     },
     {
-      "id": 19,
+      "id": 20,
       "start": 42.72,
-      "end": 43.56,
+      "end": 43.55,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 114.2,
+      "pitch_hz": 115.7,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "浸泡了十五分钟",
@@ -1306,13 +1328,13 @@
       "vis_image": ""
     },
     {
-      "id": 20,
-      "start": 43.96,
-      "end": 44.43,
+      "id": 21,
+      "start": 43.95,
+      "end": 44.45,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 284.5,
+      "pitch_hz": 277.4,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "行了",
@@ -1328,13 +1350,13 @@
       "vis_image": ""
     },
     {
-      "id": 21,
+      "id": 22,
       "start": 44.91,
       "end": 45.47,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 358.5,
+      "pitch_hz": 361.5,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "你走吧",
@@ -1350,7 +1372,7 @@
       "vis_image": ""
     },
     {
-      "id": 22,
+      "id": 23,
       "start": 45.74,
       "end": 47.09,
       "speaker_id": "SPEAKER_01_M",
@@ -1372,7 +1394,7 @@
       "vis_image": ""
     },
     {
-      "id": 23,
+      "id": 24,
       "start": 47.41,
       "end": 48.49,
       "speaker_id": "SPEAKER_01_M",
@@ -1394,9 +1416,9 @@
       "vis_image": ""
     },
     {
-      "id": 24,
+      "id": 25,
       "start": 49.19,
-      "end": 50.91,
+      "end": 50.49,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
@@ -1416,13 +1438,13 @@
       "vis_image": ""
     },
     {
-      "id": 25,
+      "id": 26,
       "start": 54.65,
       "end": 55.48,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 92.3,
+      "pitch_hz": 165.3,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "好",
@@ -1438,13 +1460,13 @@
       "vis_image": ""
     },
     {
-      "id": 26,
+      "id": 27,
       "start": 56.29,
       "end": 56.97,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 96.9,
+      "pitch_hz": 97.0,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "那你趁热吃",
@@ -1460,7 +1482,7 @@
       "vis_image": ""
     },
     {
-      "id": 27,
+      "id": 28,
       "start": 57.73,
       "end": 58.73,
       "speaker_id": "SPEAKER_00_M",
@@ -1482,13 +1504,13 @@
       "vis_image": ""
     },
     {
-      "id": 28,
+      "id": 29,
       "start": 62.84,
       "end": 63.31,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 123.5,
+      "pitch_hz": 125.3,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "炎辰",
@@ -1504,7 +1526,7 @@
       "vis_image": ""
     },
     {
-      "id": 29,
+      "id": 30,
       "start": 63.5,
       "end": 64.75,
       "speaker_id": "SPEAKER_01_M",
@@ -1526,13 +1548,13 @@
       "vis_image": ""
     },
     {
-      "id": 30,
+      "id": 31,
       "start": 65.03,
       "end": 66.2,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 144.6,
+      "pitch_hz": 145.1,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "真是辛苦你了",
@@ -1548,7 +1570,7 @@
       "vis_image": ""
     },
     {
-      "id": 31,
+      "id": 32,
       "start": 66.23,
       "end": 66.89,
       "speaker_id": "SPEAKER_00_M",
@@ -1570,13 +1592,13 @@
       "vis_image": ""
     },
     {
-      "id": 32,
+      "id": 33,
       "start": 67.43,
       "end": 69.3,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 94.8,
+      "pitch_hz": 94.2,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "只是我作为丈夫的责任",
@@ -1592,9 +1614,9 @@
       "vis_image": ""
     },
     {
-      "id": 33,
-      "start": 69.95,
-      "end": 70.99,
+      "id": 34,
+      "start": 69.94,
+      "end": 70.98,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
@@ -1614,13 +1636,13 @@
       "vis_image": ""
     },
     {
-      "id": 34,
+      "id": 35,
       "start": 71.44,
       "end": 73.11,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 118.9,
+      "pitch_hz": 118.7,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "与我们夏氏商业联姻",
@@ -1636,13 +1658,13 @@
       "vis_image": ""
     },
     {
-      "id": 35,
+      "id": 36,
       "start": 73.39,
-      "end": 74.39,
+      "end": 74.4,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 111.4,
+      "pitch_hz": 114.6,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "我们夏氏集团",
@@ -1658,13 +1680,13 @@
       "vis_image": ""
     },
     {
-      "id": 36,
+      "id": 37,
       "start": 74.51,
       "end": 76.0,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 157.5,
+      "pitch_hz": 153.8,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "早在三年前就破产了",
@@ -1680,7 +1702,7 @@
       "vis_image": ""
     },
     {
-      "id": 37,
+      "id": 38,
       "start": 76.11,
       "end": 77.8,
       "speaker_id": "SPEAKER_01_M",
@@ -1702,13 +1724,13 @@
       "vis_image": ""
     },
     {
-      "id": 38,
+      "id": 39,
       "start": 78.01,
       "end": 79.2,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 107.0,
+      "pitch_hz": 107.4,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "甘愿隐姓埋名",
@@ -1724,13 +1746,13 @@
       "vis_image": ""
     },
     {
-      "id": 39,
+      "id": 40,
       "start": 79.23,
       "end": 80.6,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 108.9,
+      "pitch_hz": 107.2,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "来我们公司做一个小职员",
@@ -1746,7 +1768,7 @@
       "vis_image": ""
     },
     {
-      "id": 40,
+      "id": 41,
       "start": 81.12,
       "end": 82.83,
       "speaker_id": "SPEAKER_01_M",
@@ -1768,7 +1790,7 @@
       "vis_image": ""
     },
     {
-      "id": 41,
+      "id": 42,
       "start": 83.01,
       "end": 83.89,
       "speaker_id": "SPEAKER_00_M",
@@ -1790,13 +1812,13 @@
       "vis_image": ""
     },
     {
-      "id": 42,
+      "id": 43,
       "start": 84.07,
-      "end": 86.3,
+      "end": 85.82,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 99.5,
+      "pitch_hz": 97.0,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "一是不想让公司上下知道",
@@ -1812,13 +1834,35 @@
       "vis_image": ""
     },
     {
-      "id": 43,
+      "id": 44,
+      "start": 86.04,
+      "end": 87.44,
+      "speaker_id": "SPEAKER_00_M",
+      "gender_hint": "male",
+      "visual_speaker": "unknown",
+      "pitch_hz": 93.6,
+      "asr_raw": "",
+      "asr_text": "",
+      "ocr_text": "夏氏靠陆氏撑腰",
+      "best_text": "夏氏靠陆氏撑腰",
+      "subtitle_source": "qwen2_5_vl_3b_instruct",
+      "boxes": [
+        {
+          "poly": [],
+          "text": "夏氏靠陆氏撑腰",
+          "score": 1.0
+        }
+      ],
+      "vis_image": ""
+    },
+    {
+      "id": 45,
       "start": 87.83,
       "end": 88.74,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 88.2,
+      "pitch_hz": 88.1,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "免得人心浮动",
@@ -1834,7 +1878,7 @@
       "vis_image": ""
     },
     {
-      "id": 44,
+      "id": 46,
       "start": 88.91,
       "end": 89.19,
       "speaker_id": "SPEAKER_00_M",
@@ -1856,13 +1900,13 @@
       "vis_image": ""
     },
     {
-      "id": 45,
+      "id": 47,
       "start": 89.35,
       "end": 90.77,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 88.7,
+      "pitch_hz": 88.9,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "也是对明瑶的一种考验吧",
@@ -1878,7 +1922,7 @@
       "vis_image": ""
     },
     {
-      "id": 46,
+      "id": 48,
       "start": 91.13,
       "end": 92.19,
       "speaker_id": "SPEAKER_01_M",
@@ -1900,13 +1944,13 @@
       "vis_image": ""
     },
     {
-      "id": 47,
+      "id": 49,
       "start": 92.95,
       "end": 93.96,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 110.0,
+      "pitch_hz": 110.2,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "不知道你的好",
@@ -1922,13 +1966,13 @@
       "vis_image": ""
     },
     {
-      "id": 48,
+      "id": 50,
       "start": 94.36,
       "end": 95.32,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 119.2,
+      "pitch_hz": 118.9,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "我作为当爸的",
@@ -1944,13 +1988,13 @@
       "vis_image": ""
     },
     {
-      "id": 49,
+      "id": 51,
       "start": 96.11,
-      "end": 97.31,
+      "end": 97.29,
       "speaker_id": "SPEAKER_01_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 126.7,
+      "pitch_hz": 128.6,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "真的很感激你啊",
@@ -1966,7 +2010,7 @@
       "vis_image": ""
     },
     {
-      "id": 50,
+      "id": 52,
       "start": 97.55,
       "end": 98.1,
       "speaker_id": "SPEAKER_00_M",
@@ -1988,13 +2032,13 @@
       "vis_image": ""
     },
     {
-      "id": 51,
+      "id": 53,
       "start": 101.24,
-      "end": 102.78,
+      "end": 102.26,
       "speaker_id": "SPEAKER_00_M",
       "gender_hint": "male",
       "visual_speaker": "unknown",
-      "pitch_hz": 84.7,
+      "pitch_hz": 83.1,
       "asr_raw": "",
       "asr_text": "",
       "ocr_text": "我车钥匙落在餐厅了",
@@ -2010,7 +2054,7 @@
       "vis_image": ""
     },
     {
-      "id": 52,
+      "id": 54,
       "start": 103.18,
       "end": 103.85,
       "speaker_id": "SPEAKER_00_M",
