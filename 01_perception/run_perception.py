@@ -137,6 +137,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import zipfile
@@ -385,6 +386,7 @@ def ensure_deps():
         ("accelerate", "accelerate"),
         ("qwen_vl_utils", "qwen-vl-utils"),
         ("PIL", "pillow"),
+        ("jieba", "jieba"),
     ]
     missing = [pip_spec for mod_name, pip_spec in wanted if not _is_installed(mod_name)]
     if missing:
@@ -666,6 +668,101 @@ def _parse_qwen_ocr_and_speaker(raw_text: str) -> tuple[list[str], str]:
     return text_lines, visual_spk
 
 
+def _text_mask_stats(frame) -> tuple[float, float]:
+    """Đo độ 'giống chữ' của dải phụ đề: (tỉ lệ pixel chữ, bề rộng component lớn nhất / bề rộng)."""
+    import cv2
+    import numpy as np
+
+    h, w, _ = frame.shape
+    band = frame[int(h * 0.60) : int(h * 0.71), int(w * 0.02) : int(w * 0.98)]
+    if band.size == 0:
+        return 0.0, 0.0
+    hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+    v, s = hsv[:, :, 2], hsv[:, :, 1]
+    white = ((v > 195) & (s < 70)).astype(np.uint8)
+    dark = cv2.dilate((v < 80).astype(np.uint8), np.ones((5, 5), np.uint8))
+    mask = cv2.morphologyEx((white & (dark > 0)), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    area = float(band.shape[0] * band.shape[1])
+    n, _lab, st, _cent = cv2.connectedComponentsWithStats(mask, 8)
+    max_w = max([int(st[i, cv2.CC_STAT_WIDTH]) for i in range(1, n)] or [0])
+    return float(mask.sum()) / area, max_w / float(band.shape[1])
+
+
+def _zh_unknown_tokens(text: str) -> int:
+    """Đếm token đa âm không có trong từ điển jieba (dấu hiệu chữ OCR sai)."""
+    try:
+        import jieba
+
+        jieba.initialize()
+        bad = 0
+        for tok in jieba.cut(text):
+            tok = tok.strip()
+            if len(tok) >= 2 and not tok.isascii() and jieba.get_FREQ(tok) is None:
+                bad += 1
+        return bad
+    except Exception:
+        return 0
+
+
+def _merge_dual_ocr(qwen_text: str, rapid_text: str, rapid_score: float = 0.0) -> tuple[str, str]:
+    """Hợp nhất text từ Qwen và RapidOCR cho cùng một khung phụ đề.
+
+    Trả về (text, nguồn). Quy tắc:
+    - một bên rỗng -> lấy bên kia
+    - một chuỗi chứa chuỗi kia -> lấy chuỗi dài hơn (bắt ký tự bị sót)
+    - lệch nhau: bên nào ít token lạ trong từ điển hơn thì thắng
+    - cả hai đều hợp lệ -> tin RapidOCR (PP-OCR đọc chữ in tốt hơn)
+    """
+    q = _fix_ocr_confusions(str(qwen_text or "").strip())
+    r = _fix_ocr_confusions(str(rapid_text or "").strip())
+    if not q:
+        return (r, "rapid") if r else ("", "")
+    if not r:
+        return (q, "qwen")
+    nq = re.sub(r"[\s\W_]+", "", q)
+    nr = re.sub(r"[\s\W_]+", "", r)
+    if nq == nr:
+        # cùng nội dung: chọn bản ít khoảng trắng/dấu câu thừa hơn
+        return (q if len(q.replace(" ", "")) <= len(r.replace(" ", "")) else r, "both")
+    if nq and nr and nq in nr:
+        return (r, "rapid")
+    if nq and nr and nr in nq:
+        return (q, "qwen")
+    sim = SequenceMatcher(None, nq, nr).ratio()
+    if sim >= 0.80 and len(nq) != len(nr):
+        # lệch độ dài nhưng vẫn gần nhau: bản dài thường không bị sót ký tự
+        return (q, "qwen") if len(nq) > len(nr) else (r, "rapid")
+    bad_q = _zh_unknown_tokens(q)
+    bad_r = _zh_unknown_tokens(r)
+    if bad_q != bad_r:
+        return (q, "qwen") if bad_q < bad_r else (r, "rapid")
+    if rapid_score >= 0.60:
+        return (r, "rapid")
+    return (q, "qwen")
+
+
+def _run_rapidocr_all(sampled_entries: list[dict], cv2_mod) -> dict:
+    """Chạy RapidOCR (ONNX, CPU) trên toàn bộ khung đã lấy mẫu."""
+    out: dict = {}
+    try:
+        fb = _get_rapidocr()
+    except Exception as e:
+        print(f"[RAPIDOCR][WARN] Không khởi tạo được: {e}", flush=True)
+        return out
+    for entry in sampled_entries:
+        try:
+            img = cv2_mod.imread(entry["crop_path"])
+            if img is None or img.size == 0:
+                continue
+            res, _ = fb(img)
+            texts = [_fix_ocr_confusions(str(r[1]).strip()) for r in (res or []) if str(r[1]).strip()]
+            score = float(sum(float(r[2]) for r in (res or [])) / len(res)) if res else 0.0
+            out[float(entry["time"])] = {"texts": texts, "score": score}
+        except Exception:
+            continue
+    return out
+
+
 def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple[dict[float, dict], bool]:
     """Chạy Qwen/Qwen2.5-VL-3B-Instruct theo batch trên GPU (reasoning=OFF) cho cả OCR và gợi ý nhân vật."""
     if not sampled_entries:
@@ -770,6 +867,18 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
     try:
         target_dev = next(model.parameters()).device
 
+        # RapidOCR (ONNX, CPU) chạy song song với Qwen (GPU) trên toàn bộ khung
+        rapid_map: dict = {}
+
+        def _rapid_worker():
+            try:
+                rapid_map.update(_run_rapidocr_all(sampled_entries, cv2_mod))
+            except Exception as e_r:
+                print(f"[RAPIDOCR][WARN] {e_r}", flush=True)
+
+        th_rapid = threading.Thread(target=_rapid_worker, daemon=True)
+        th_rapid.start()
+
         # Đọc ảnh theo từng batch để tiết kiệm RAM CPU trên video dài
         for b_start in range(0, len(sampled_entries), batch_size):
             raw_chunk = sampled_entries[b_start : b_start + batch_size]
@@ -837,27 +946,54 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                     except Exception:
                         raw_ocr_map[ts_c] = {"boxes": [], "visual_speaker": "unknown"}
 
-        # Fallback các khung OCR ra rác (chỉ dấu câu) bằng RapidOCR (ONNX, CPU) — ổn định hơn Qwen
-        retry_items = []
-        for entry in sampled_entries:
-            ts_r = float(entry["time"])
-            res_r = raw_ocr_map.get(ts_r) or {}
-            txt_r = " ".join(str(b.get("text") or "") for b in (res_r.get("boxes") or []))
-            if entry.get("event") and _is_garbage_text(txt_r):
-                retry_items.append(entry)
+        # Chờ RapidOCR xong rồi hợp nhất 2 engine + chặn hallucination
+        try:
+            th_rapid.join(timeout=900)
+        except Exception:
+            pass
 
-        if retry_items:
-            print(f"[QWEN2.5-VL-3B] {len(retry_items)} khung OCR rác -> retry zoom + RapidOCR...", flush=True)
-            still_bad = []
-            for entry in retry_items[:12]:
-                zp = entry.get("zoom_path")
-                if not zp:
-                    still_bad.append(entry)
-                    continue
+        fixed = 0
+        dropped = 0
+        for entry in sampled_entries:
+            ts_c = float(entry["time"])
+            res_q = raw_ocr_map.get(ts_c) or {}
+            q_txt = " ".join(str(b.get("text") or "") for b in (res_q.get("boxes") or [])).strip()
+            r_info = rapid_map.get(ts_c) or {}
+            r_txt = " ".join(r_info.get("texts") or []).strip()
+            r_score = float(r_info.get("score") or 0.0)
+
+            if not entry.get("textlike", True):
+                # Vùng không giống chữ -> chặn Qwen bịa chữ trên ánh sáng/nền
+                if q_txt or r_txt:
+                    dropped += 1
+                raw_ocr_map[ts_c] = {"boxes": [], "visual_speaker": "unknown"}
+                continue
+
+            merged, src = _merge_dual_ocr(q_txt, r_txt, r_score)
+            if merged and merged != q_txt:
+                fixed += 1
+            raw_ocr_map[ts_c] = {
+                "boxes": ([{"poly": [], "text": merged, "score": 1.0}] if merged else []),
+                "visual_speaker": res_q.get("visual_speaker", "unknown"),
+            }
+
+        if fixed or dropped:
+            print(f"[DUAL-OCR] RapidOCR sửa {fixed} dòng | bỏ {dropped} khung không giống chữ.", flush=True)
+
+        # Khung vẫn trống nhưng có chữ: đọc lại crop zoom bằng Qwen (ký tự ngắn)
+        still_bad = [
+            e
+            for e in sampled_entries
+            if e.get("textlike", True)
+            and e.get("zoom_path")
+            and not ((raw_ocr_map.get(float(e["time"])) or {}).get("boxes") or [])
+        ]
+        if still_bad:
+            print(f"[DUAL-OCR] {len(still_bad)} khung trống -> đọc lại crop zoom...", flush=True)
+            for entry in still_bad[:8]:
                 try:
-                    bgr_z = cv2_mod.imread(zp)
+                    bgr_z = cv2_mod.imread(entry["zoom_path"])
                     if bgr_z is None or bgr_z.size == 0:
-                        still_bad.append(entry)
                         continue
                     im_z = Image.fromarray(cv2_mod.cvtColor(bgr_z, cv2_mod.COLOR_BGR2RGB))
                     chat_z = _build_chat_str(im_z)
@@ -875,45 +1011,8 @@ def _run_qwen25_vl_ocr(sampled_entries: list[dict], cfg: dict, cv2_mod) -> tuple
                             "boxes": [{"poly": [], "text": x, "score": 1.0} for x in lines_z],
                             "visual_speaker": spk_z,
                         }
-                    else:
-                        still_bad.append(entry)
                 except Exception as e_z:
                     print(f"[ZOOM][WARN] {e_z}", flush=True)
-                    still_bad.append(entry)
-            retry_items = still_bad
-
-            try:
-                fb_ocr = _get_rapidocr()
-                for entry in retry_items[:12]:
-                    for cand_path in (
-                        entry.get("crop_path"),
-                        entry.get("alt2_path"),
-                        entry.get("alt3_path"),
-                        entry.get("alt_path"),
-                    ):
-                        if not cand_path:
-                            continue
-                        try:
-                            bgr_r = cv2_mod.imread(cand_path)
-                            if bgr_r is None or bgr_r.size == 0:
-                                continue
-                            fb_res, _ = fb_ocr(bgr_r)
-                            texts_fb = [
-                                _fix_ocr_confusions(str(r[1]).strip())
-                                for r in (fb_res or [])
-                                if str(r[1]).strip()
-                            ]
-                            joined_fb = " ".join(texts_fb).strip()
-                            if joined_fb and not _is_garbage_text(joined_fb):
-                                raw_ocr_map[float(entry["time"])] = {
-                                    "boxes": [{"poly": [], "text": t, "score": 1.0} for t in texts_fb],
-                                    "visual_speaker": "unknown",
-                                }
-                                break
-                        except Exception as e_fb:
-                            print(f"[RAPIDOCR][WARN] {e_fb}", flush=True)
-            except Exception as e_fb0:
-                print(f"[RAPIDOCR][WARN] Không khởi tạo được fallback: {e_fb0}", flush=True)
     finally:
         del model, processor
         free_gpu()
@@ -1185,6 +1284,8 @@ def run_ocr_with_qwen25_vl(
                 else:
                     cur_entry = {"time": t_c, "crop_path": cp, "event": sp.get("event")}
                     sampled_entries.append(cur_entry)
+                    px_r, mw_r = _text_mask_stats(frm)
+                    cur_entry["textlike"] = bool(px_r >= 0.0012 and mw_r >= 0.02)
                     # Crop zoom quanh bbox chữ (dòng ngắn 1-2 ký tự) để model đọc được
                     bb = (sp.get("event") or {}).get("bbox")
                     if bb:
